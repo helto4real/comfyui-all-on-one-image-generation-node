@@ -29,16 +29,6 @@ class AIOFlux2Klein9BSettings:
                         "tooltip": "Model guidance value passed to FLUX. Higher values follow the prompt more tightly.",
                     },
                 ),
-                "reference_strength": (
-                    "FLOAT",
-                    {
-                        "default": 0.75,
-                        "min": 0.0,
-                        "max": 1.0,
-                        "step": 0.01,
-                        "tooltip": "How strongly connected reference images influence the generated image.",
-                    },
-                ),
                 "precision_policy": (
                     ["auto", "fp8", "bf16"],
                     {"tooltip": "Model precision preference. Auto chooses a practical format for the current runtime."},
@@ -98,18 +88,24 @@ class AIOFlux2Klein9BSettings:
         self,
         variant: str,
         guidance: float,
-        reference_strength: float | str,
-        precision_policy: str | float | None = None,
-        memory_policy: str | None = None,
-        base_shift: float | str | None = None,
-        max_shift: float | None = None,
-        reference_megapixels: float = 1.0,
+        precision_policy: str | float | None = "auto",
+        memory_policy: str | float | None = "balanced",
+        base_shift: float | str | None = 0.5,
+        max_shift: float | str | None = 1.15,
+        reference_megapixels: float | str = 1.0,
         reference_upscale_method: str | float = "area",
         reference_resolution_steps: int | str = 1,
         *legacy_values,
     ):
-        if reference_strength in {"text_to_image", "single_reference", "multi_reference"}:
-            reference_strength = precision_policy
+        if precision_policy in {"text_to_image", "single_reference", "multi_reference"}:
+            precision_policy = base_shift
+            memory_policy = max_shift
+            base_shift = reference_megapixels
+            max_shift = reference_upscale_method
+            reference_megapixels = reference_resolution_steps
+            reference_upscale_method = legacy_values[0] if legacy_values else "area"
+            reference_resolution_steps = legacy_values[1] if len(legacy_values) > 1 else 1
+        elif not isinstance(precision_policy, str):
             precision_policy = memory_policy
             memory_policy = base_shift
             base_shift = max_shift
@@ -123,7 +119,6 @@ class AIOFlux2Klein9BSettings:
                 "family": "flux2_klein_9b",
                 "variant": variant,
                 "guidance": guidance,
-                "reference_strength": reference_strength,
                 "precision_policy": precision_policy,
                 "memory_policy": memory_policy,
                 "base_shift": base_shift,
