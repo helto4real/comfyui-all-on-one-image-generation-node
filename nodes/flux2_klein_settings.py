@@ -15,33 +15,81 @@ class AIOFlux2Klein9BSettings:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "variant": (["distilled", "base"],),
+                "variant": (
+                    ["distilled", "base"],
+                    {"tooltip": "Select the FLUX.2 Klein 9B variant. Distilled uses the fast low-step defaults."},
+                ),
                 "guidance": (
                     "FLOAT",
-                    {"default": 1.0, "min": 0.0, "max": 20.0, "step": 0.1},
+                    {
+                        "default": 1.0,
+                        "min": 0.0,
+                        "max": 20.0,
+                        "step": 0.1,
+                        "tooltip": "Model guidance value passed to FLUX. Higher values follow the prompt more tightly.",
+                    },
                 ),
                 "reference_strength": (
                     "FLOAT",
-                    {"default": 0.75, "min": 0.0, "max": 1.0, "step": 0.01},
+                    {
+                        "default": 0.75,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "tooltip": "How strongly connected reference images influence the generated image.",
+                    },
                 ),
-                "precision_policy": (["auto", "fp8", "bf16"],),
-                "memory_policy": (["auto", "low_vram", "balanced", "high_vram"],),
+                "precision_policy": (
+                    ["auto", "fp8", "bf16"],
+                    {"tooltip": "Model precision preference. Auto chooses a practical format for the current runtime."},
+                ),
+                "memory_policy": (
+                    ["auto", "low_vram", "balanced", "high_vram"],
+                    {"tooltip": "Memory strategy for loading and running the model on your hardware."},
+                ),
                 "base_shift": (
                     "FLOAT",
-                    {"default": 0.5, "min": 0.0, "max": 10.0, "step": 0.01},
+                    {
+                        "default": 0.5,
+                        "min": 0.0,
+                        "max": 10.0,
+                        "step": 0.01,
+                        "tooltip": "Base timestep shift used by the FLUX sampler schedule.",
+                    },
                 ),
                 "max_shift": (
                     "FLOAT",
-                    {"default": 1.15, "min": 0.0, "max": 10.0, "step": 0.01},
+                    {
+                        "default": 1.15,
+                        "min": 0.0,
+                        "max": 10.0,
+                        "step": 0.01,
+                        "tooltip": "Maximum timestep shift used by the FLUX sampler schedule.",
+                    },
                 ),
                 "reference_megapixels": (
                     "FLOAT",
-                    {"default": 1.0, "min": 0.01, "max": 16.0, "step": 0.01},
+                    {
+                        "default": 1.0,
+                        "min": 0.01,
+                        "max": 16.0,
+                        "step": 0.01,
+                        "tooltip": "Target megapixels for resizing each reference image before encoding.",
+                    },
                 ),
-                "reference_upscale_method": (REFERENCE_UPSCALE_METHODS,),
+                "reference_upscale_method": (
+                    REFERENCE_UPSCALE_METHODS,
+                    {"tooltip": "Resize filter used when scaling reference images for encoding."},
+                ),
                 "reference_resolution_steps": (
                     "INT",
-                    {"default": 1, "min": 1, "max": 256, "step": 1},
+                    {
+                        "default": 1,
+                        "min": 1,
+                        "max": 256,
+                        "step": 1,
+                        "tooltip": "Resolution bucket step for reference image preprocessing.",
+                    },
                 ),
             }
         }

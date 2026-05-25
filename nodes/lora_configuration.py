@@ -22,8 +22,20 @@ class AIOLoraConfiguration:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "show_strengths": (["single", "separate"], {"default": "single"}),
-                "match": ("STRING", {"default": ""}),
+                "show_strengths": (
+                    ["single", "separate"],
+                    {
+                        "default": "single",
+                        "tooltip": "Choose one shared LoRA strength or separate model and CLIP strengths per row.",
+                    },
+                ),
+                "match": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "tooltip": "Optional regular expression used to filter the LoRA chooser list.",
+                    },
+                ),
             },
             "optional": FlexibleOptionalInputType(ANY_TYPE),
             "hidden": {},

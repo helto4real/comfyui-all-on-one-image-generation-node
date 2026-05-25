@@ -98,9 +98,19 @@ class AIOImageGenerate:
 
     @classmethod
     def INPUT_TYPES(cls):
+        reference_tooltips = {
+            name: (
+                f"Optional reference image {index}. Connect images in order starting "
+                "with image 1. Currently used by FLUX.2 Klein 9B image-reference workflows."
+            )
+            for index, name in enumerate(REFERENCE_IMAGE_INPUT_NAMES, start=1)
+        }
         return {
             "required": {
-                "model_type": (list_model_types(),),
+                "model_type": (
+                    list_model_types(),
+                    {"tooltip": "Select the model family/profile that controls defaults, validation, and adapter behavior."},
+                ),
                 "diffusion_model": (
                     _combined_filenames(
                         (
@@ -111,38 +121,108 @@ class AIOImageGenerate:
                             "model_gguf",
                         )
                     ),
+                    {"tooltip": "Diffusion model file to load. Supports standard and GGUF model folders when available."},
                 ),
-                "text_encoder": (_combined_filenames(("text_encoders", "clip", "clip_gguf")),),
-                "vae": (_combined_filenames(("vae", "vae_gguf")),),
+                "text_encoder": (
+                    _combined_filenames(("text_encoders", "clip", "clip_gguf")),
+                    {"tooltip": "Text encoder or CLIP file used to encode the prompts for the selected model family."},
+                ),
+                "vae": (
+                    _combined_filenames(("vae", "vae_gguf")),
+                    {"tooltip": "VAE file used to decode generated latents into the final image."},
+                ),
                 "positive_prompt": (
                     "STRING",
-                    {"default": DEFAULT_PROMPT, "multiline": True, "dynamicPrompts": True},
+                    {
+                        "default": DEFAULT_PROMPT,
+                        "multiline": True,
+                        "dynamicPrompts": True,
+                        "tooltip": "Prompt describing what the generated image should contain.",
+                    },
                 ),
                 "negative_prompt": (
                     "STRING",
-                    {"default": "", "multiline": True, "dynamicPrompts": True},
+                    {
+                        "default": "",
+                        "multiline": True,
+                        "dynamicPrompts": True,
+                        "tooltip": "Prompt describing content to avoid. Some model families ignore this input by default.",
+                    },
                 ),
-                "size mode": (list(SIZE_MODES),),
-                "max side": ("INT", {"default": 1024, "min": 256, "max": 4096, "step": 1}),
-                "aspect ratio": (list(ASPECT_RATIOS),),
-                "multiple value": (list(MULTIPLE_VALUES),),
+                "size mode": (
+                    list(SIZE_MODES),
+                    {"tooltip": "Choose whether output dimensions come from the aspect ratio controls or from image 1."},
+                ),
+                "max side": (
+                    "INT",
+                    {
+                        "default": 1024,
+                        "min": 256,
+                        "max": 4096,
+                        "step": 1,
+                        "tooltip": "Longest output edge in pixels when using aspect-ratio sizing.",
+                    },
+                ),
+                "aspect ratio": (
+                    list(ASPECT_RATIOS),
+                    {"tooltip": "Output shape to use with max side when size mode is set to use aspect ratio."},
+                ),
+                "multiple value": (
+                    list(MULTIPLE_VALUES),
+                    {"tooltip": "Round generated dimensions to a multiple required or preferred by the selected model."},
+                ),
                 "seed": (
                     "INT",
-                    {"default": 0, "min": 0, "max": 2**63 - 1, "control_after_generate": True},
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 2**63 - 1,
+                        "control_after_generate": True,
+                        "tooltip": "Random seed for generation. Reuse the same seed and settings for repeatable results.",
+                    },
                 ),
-                "steps": ("INT", {"default": 0, "min": 0, "max": 100}),
+                "steps": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 100,
+                        "tooltip": "Sampling step count. Use 0 to let the selected model profile choose its default.",
+                    },
+                ),
                 "cfg": (
                     "FLOAT",
-                    {"default": 0.0, "min": 0.0, "max": 20.0, "step": 0.1},
+                    {
+                        "default": 0.0,
+                        "min": 0.0,
+                        "max": 20.0,
+                        "step": 0.1,
+                        "tooltip": "Classifier-free guidance scale. Use 0 to let the selected profile choose its default.",
+                    },
                 ),
-                "sampler": (_samplers(),),
-                "scheduler": (_schedulers(),),
+                "sampler": (
+                    _samplers(),
+                    {"tooltip": "Sampling algorithm. Auto lets the selected model profile choose a compatible sampler."},
+                ),
+                "scheduler": (
+                    _schedulers(),
+                    {"tooltip": "Noise schedule used during sampling. Auto lets the selected model profile choose a default."},
+                ),
             },
             "optional": {
-                "model_settings": ("AIO_MODEL_SETTINGS",),
-                "lora_config": ("AIO_LORA_CONFIG",),
-                **{name: ("IMAGE",) for name in REFERENCE_IMAGE_INPUT_NAMES},
-                "mask": ("MASK",),
+                "model_settings": (
+                    "AIO_MODEL_SETTINGS",
+                    {"tooltip": "Optional settings object from a matching AIO model settings node."},
+                ),
+                "lora_config": (
+                    "AIO_LORA_CONFIG",
+                    {"tooltip": "Optional LoRA stack from the AIO LoRA Configuration node."},
+                ),
+                **{name: ("IMAGE", {"tooltip": tooltip}) for name, tooltip in reference_tooltips.items()},
+                "mask": (
+                    "MASK",
+                    {"tooltip": "Optional mask for reference-image workflows. Connect image 1 before using a mask."},
+                ),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",

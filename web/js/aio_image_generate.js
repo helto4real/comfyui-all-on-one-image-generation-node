@@ -11,6 +11,9 @@ const ADD_BUTTON_LABEL = "+ Add LoRA";
 const MIN_NODE_WIDTH = 560;
 const MAX_SIDE_MIN = 256;
 const MAX_SIDE_MAX = 4096;
+const LORA_HEADER_TOOLTIP = "Toggle every configured LoRA row on or off.";
+const LORA_ROW_TOOLTIP = "LoRA row: choose a LoRA, toggle it, inspect metadata, and adjust strength.";
+const ADD_LORA_TOOLTIP = "Add a LoRA row filtered by the match field.";
 
 const DEFAULT_ROW = {
   on: true,
@@ -1056,6 +1059,7 @@ class LoraHeaderWidget {
     this.name = HEADER_NAME;
     this.type = "custom";
     this.value = { type: HEADER_NAME };
+    this.tooltip = LORA_HEADER_TOOLTIP;
     this.last_y = 0;
     this.hitAreas = {};
   }
@@ -1120,6 +1124,7 @@ class LoraRowWidget {
     this.name = name;
     this.type = "custom";
     this.value = { ...DEFAULT_ROW, ...(value || {}) };
+    this.tooltip = LORA_ROW_TOOLTIP;
     this.last_y = 0;
     this.hitAreas = {};
     this.showModelAndClip = null;
@@ -1464,6 +1469,9 @@ function addControls(node) {
     await showLoraChooser(event, node, (value) => addRow(node, value));
   });
   button._aioLoraAddButton = true;
+  button.tooltip = ADD_LORA_TOOLTIP;
+  button.options ||= {};
+  button.options.tooltip = ADD_LORA_TOOLTIP;
 }
 
 function addRow(node, lora = null, value = null) {
