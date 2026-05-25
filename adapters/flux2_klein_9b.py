@@ -44,6 +44,7 @@ class Flux2Klein9BAdapter(BaseImageAdapter):
         height: int,
         settings: dict[str, Any],
         reference_image: Any = None,
+        reference_inputs: Any = None,
         mask: Any = None,
     ) -> list[str]:
         profile = self.profile()
@@ -54,19 +55,37 @@ class Flux2Klein9BAdapter(BaseImageAdapter):
         if not positive_prompt.strip():
             raise ValueError("positive_prompt is required.")
         edit_mode = settings.get("edit_mode", "text_to_image")
-        if edit_mode != "text_to_image":
+        reference_count = int(getattr(reference_inputs, "count", 0))
+        if reference_image is not None:
+            reference_count += 1
+        if edit_mode == "single_reference" and reference_count != 1:
             raise ValueError(
-                "FLUX.2 Klein reference editing settings are accepted by the "
-                "settings node but not implemented in this adapter yet. Use "
-                "edit_mode='text_to_image'."
+                "single_reference mode requires exactly one connected reference image."
+            )
+        if edit_mode == "multi_reference" and not 1 <= reference_count <= 4:
+            raise ValueError(
+                "multi_reference mode requires between one and four connected "
+                "reference images."
             )
         validation.validate_reference_inputs(
-            profile, reference_image=reference_image, mask=mask
+            profile,
+            reference_image=reference_image,
+            reference_inputs=reference_inputs,
+            mask=mask,
         )
         validation.validate_gguf_available_for_models(
             gguf_backend.is_available(), diffusion_model, text_encoder, vae
         )
-        return []
+        warnings: list[str] = []
+        active_mask = mask if mask is not None else getattr(reference_inputs, "mask", None)
+        if active_mask is not None:
+            warnings.append("mask is accepted for image 1, but inpaint behavior is not implemented yet.")
+        if edit_mode == "text_to_image" and reference_count:
+            warnings.append(
+                "reference images were connected with edit_mode='text_to_image'; "
+                "using the reference conditioning path."
+            )
+        return warnings
 
     def generate(self, **kwargs):
         progress = kwargs.get("progress")
@@ -87,5 +106,6 @@ class Flux2Klein9BAdapter(BaseImageAdapter):
             scheduler=kwargs["scheduler"],
             settings=kwargs["settings"],
             lora_config=kwargs.get("lora_config"),
+            reference_inputs=kwargs.get("reference_inputs"),
             progress=progress,
         )

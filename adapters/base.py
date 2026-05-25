@@ -57,6 +57,7 @@ class BaseImageAdapter(ABC):
         height: int,
         settings: dict[str, Any],
         reference_image: Any = None,
+        reference_inputs: Any = None,
         mask: Any = None,
     ) -> list[str]:
         """Validate adapter-specific inputs and return non-fatal warnings."""
@@ -77,6 +78,7 @@ class BaseImageAdapter(ABC):
         sampler: str,
         scheduler: str,
         reference_image: Any = None,
+        reference_inputs: Any = None,
         mask: Any = None,
         lora_config: dict[str, Any] | None = None,
         progress: Any = None,

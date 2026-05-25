@@ -14,6 +14,11 @@ def test_main_node_exposes_core_inputs():
     assert "negative_prompt" in required
     assert "model_settings" in optional
     assert "lora_config" in optional
+    assert "image 1" in optional
+    assert "image 2" in optional
+    assert "image 3" in optional
+    assert "image 4" in optional
+    assert "reference_image" not in optional
 
 
 def test_main_node_lists_gguf_text_encoder_category(monkeypatch):
@@ -101,3 +106,53 @@ def test_main_node_passes_lora_config_to_adapter(monkeypatch):
     assert latent == {"samples": "latent"}
     assert captured["lora_config"]["loras"][0]["name"] == "style"
     assert '"loras": [{"enabled": true, "name": "style"' in run_info
+
+
+def test_main_node_normalizes_named_reference_images(monkeypatch):
+    from nodes import aio_generate
+
+    captured = {}
+
+    class FakeAdapter:
+        version = "test"
+
+        def resolve_settings(self, **kwargs):
+            return {
+                "width": kwargs["width"],
+                "height": kwargs["height"],
+                "steps": 8,
+                "cfg": 1.0,
+                "sampler": "auto",
+                "scheduler": "auto",
+            }
+
+        def validate_inputs(self, **kwargs):
+            captured["validated"] = kwargs["reference_inputs"]
+            return []
+
+        def generate(self, **kwargs):
+            captured["generated"] = kwargs["reference_inputs"]
+            return "image", {"samples": "latent"}
+
+    monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
+
+    AIOImageGenerate().generate(
+        model_type="z_image_turbo",
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="",
+        width=1024,
+        height=1024,
+        seed=0,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+        mask="mask",
+        **{"image 1": "first", "image 2": "second"},
+    )
+
+    assert captured["validated"].images == ("first", "second")
+    assert captured["generated"].mask == "mask"

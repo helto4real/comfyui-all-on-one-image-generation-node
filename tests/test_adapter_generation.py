@@ -4,6 +4,7 @@ from adapters import flux2_klein_9b, z_image_turbo
 from adapters.flux2_klein_9b import Flux2Klein9BAdapter
 from adapters.z_image_turbo import ZImageTurboAdapter
 from nodes.aio_generate import AIOImageGenerate
+from services.reference_inputs import ReferenceInputs
 
 
 def test_z_image_adapter_calls_real_generation_pipeline(monkeypatch):
@@ -82,6 +83,56 @@ def test_flux2_adapter_calls_real_generation_pipeline(monkeypatch):
     assert latent == {"samples": "latent"}
     assert calls["steps"] == 4
     assert calls["negative_prompt"] == "negative"
+
+
+def test_flux2_adapter_passes_reference_inputs_to_pipeline(monkeypatch):
+    calls = {}
+
+    def fake_generate(**kwargs):
+        calls.update(kwargs)
+        return "image", {"samples": "latent"}
+
+    monkeypatch.setattr(flux2_klein_9b.pipeline, "generate_flux2_klein_t2i", fake_generate)
+    adapter = Flux2Klein9BAdapter()
+    reference_inputs = ReferenceInputs(images=("first", "second"))
+
+    image, latent = adapter.generate(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="negative",
+        width=1024,
+        height=1024,
+        seed=123,
+        settings={"steps": 4, "cfg": 1.0},
+        sampler="auto",
+        scheduler="auto",
+        reference_inputs=reference_inputs,
+    )
+
+    assert image == "image"
+    assert latent == {"samples": "latent"}
+    assert calls["reference_inputs"] is reference_inputs
+
+
+def test_flux2_single_reference_mode_requires_one_reference(monkeypatch):
+    adapter = Flux2Klein9BAdapter()
+    monkeypatch.setattr(flux2_klein_9b.gguf_backend, "is_available", lambda: True)
+
+    warnings = adapter.validate_inputs(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="negative",
+        width=1024,
+        height=1024,
+        settings={"edit_mode": "single_reference"},
+        reference_inputs=ReferenceInputs(images=("first",)),
+    )
+
+    assert warnings == []
 
 
 def test_z_image_negative_prompt_warning_is_in_run_info(monkeypatch):

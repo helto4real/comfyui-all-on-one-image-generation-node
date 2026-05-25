@@ -10,6 +10,10 @@ try:
     from ..services.registry import get_adapter, get_profile, list_model_types
     from ..services.model_resolution import infer_model_format
     from ..services.lora_config import normalize_lora_config, summarize_loras
+    from ..services.reference_inputs import (
+        REFERENCE_IMAGE_INPUT_NAMES,
+        normalize_reference_inputs,
+    )
     from ..services.run_info import build_run_info, to_json
     from ..services.validation import (
         validate_model_type,
@@ -21,6 +25,10 @@ except ImportError:  # pragma: no cover - direct test imports
     from services.registry import get_adapter, get_profile, list_model_types
     from services.model_resolution import infer_model_format
     from services.lora_config import normalize_lora_config, summarize_loras
+    from services.reference_inputs import (
+        REFERENCE_IMAGE_INPUT_NAMES,
+        normalize_reference_inputs,
+    )
     from services.run_info import build_run_info, to_json
     from services.validation import (
         validate_model_type,
@@ -119,7 +127,7 @@ class AIOImageGenerate:
             "optional": {
                 "model_settings": ("AIO_MODEL_SETTINGS",),
                 "lora_config": ("AIO_LORA_CONFIG",),
-                "reference_image": ("IMAGE",),
+                **{name: ("IMAGE",) for name in REFERENCE_IMAGE_INPUT_NAMES},
                 "mask": ("MASK",),
             },
             "hidden": {
@@ -152,8 +160,14 @@ class AIOImageGenerate:
         prompt: Any = None,
         extra_pnginfo: Any = None,
         weight_format: str | None = None,
+        **reference_values: Any,
     ):
         del prompt, extra_pnginfo, weight_format
+        reference_inputs = normalize_reference_inputs(
+            reference_values,
+            reference_image=reference_image,
+            mask=mask,
+        )
 
         validate_model_type(model_type)
         profile = get_profile(model_type)
@@ -187,8 +201,7 @@ class AIOImageGenerate:
             width=effective_width,
             height=effective_height,
             settings=settings,
-            reference_image=reference_image,
-            mask=mask,
+            reference_inputs=reference_inputs,
         )
 
         progress = ProgressReporter(total_steps=effective_steps, node_id=unique_id)
@@ -206,8 +219,7 @@ class AIOImageGenerate:
             sampler=effective_sampler,
             scheduler=effective_scheduler,
             lora_config=normalized_lora_config,
-            reference_image=reference_image,
-            mask=mask,
+            reference_inputs=reference_inputs,
             progress=progress,
         )
         progress.done()

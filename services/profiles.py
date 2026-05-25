@@ -56,13 +56,13 @@ PROFILES: dict[str, ModelProfile] = {
         default_sampler="auto",
         default_scheduler="auto",
         supports_negative_prompt=True,
-        supports_reference_image=False,
-        supports_mask=False,
+        supports_reference_image=True,
+        supports_mask=True,
         supports_gguf=True,
         required_components=("diffusion_model", "text_encoder", "vae"),
         notes=(
-            "Distilled text-to-image defaults. Reference editing settings are "
-            "accepted by the settings node but are not implemented yet."
+            "Distilled text-to-image defaults with up to four reference images. "
+            "Mask input is reserved for future inpaint behavior."
         ),
     ),
 }

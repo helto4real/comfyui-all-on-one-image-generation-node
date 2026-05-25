@@ -74,9 +74,17 @@ def validate_reference_inputs(
     profile: ModelProfile,
     *,
     reference_image: Any = None,
+    reference_inputs: Any = None,
     mask: Any = None,
 ) -> None:
-    if reference_image is not None and not profile.supports_reference_image:
+    reference_count = 0
+    if reference_image is not None:
+        reference_count += 1
+    if reference_inputs is not None:
+        reference_count += int(getattr(reference_inputs, "count", 0))
+        mask = mask if mask is not None else getattr(reference_inputs, "mask", None)
+
+    if reference_count and not profile.supports_reference_image:
         raise ValueError(
             f"reference_image was connected, but {profile.key} currently supports "
             "text-to-image only in this adapter."

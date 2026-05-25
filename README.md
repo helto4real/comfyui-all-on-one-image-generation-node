@@ -94,7 +94,8 @@ API workflows can pass rgthree-style dynamic row payloads directly:
 ## Known Limitations
 
 - GGUF depends on an external compatible backend such as ComfyUI-GGUF.
-- FLUX.2 Klein reference editing is staged for a later adapter pass. Use `edit_mode='text_to_image'`.
+- FLUX.2 Klein supports up to four reference images through `image 1` to `image 4`.
+- FLUX.2 Klein accepts a mask with `image 1`, but inpaint behavior is staged for a later adapter pass.
 - Z-Image reference-image and mask paths are staged for a later adapter pass.
 
 ## Adapter Implementation Notes

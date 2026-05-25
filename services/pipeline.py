@@ -129,6 +129,46 @@ def encode_flux2_prompt(*, clip: Any, prompt: str, guidance: float):
     return node_helpers.conditioning_set_values(conditioning, {"guidance": guidance})
 
 
+def scale_image_to_total_pixels(
+    *,
+    image: Any,
+    megapixels: float = 1.0,
+    upscale_method: str = "area",
+    resolution_steps: int = 1,
+):
+    from comfy_extras.nodes_post_processing import ImageScaleToTotalPixels  # type: ignore
+
+    return _node_output_first(
+        ImageScaleToTotalPixels.execute(
+            image=image,
+            upscale_method=upscale_method,
+            megapixels=megapixels,
+            resolution_steps=resolution_steps,
+        )
+    )
+
+
+def encode_image_to_latent(*, vae: Any, image: Any):
+    import nodes  # type: ignore
+
+    return nodes.VAEEncode().encode(vae, image)[0]
+
+
+def apply_reference_latents_to_conditioning(
+    *,
+    positive: Any,
+    negative: Any,
+    reference_latents: list[dict[str, Any]],
+):
+    import node_helpers  # type: ignore
+
+    for latent in reference_latents:
+        value = {"reference_latents": [latent["samples"]]}
+        positive = node_helpers.conditioning_set_values(positive, value, append=True)
+        negative = node_helpers.conditioning_set_values(negative, value, append=True)
+    return positive, negative
+
+
 def make_empty_z_image_latent(*, width: int, height: int):
     import nodes  # type: ignore
 
@@ -304,6 +344,7 @@ def generate_flux2_klein_t2i(
     scheduler: str,
     settings: dict[str, Any],
     lora_config: dict[str, Any] | None = None,
+    reference_inputs: Any = None,
     progress: Any = None,
 ):
     _phase(progress, "loading diffusion model")
@@ -324,6 +365,23 @@ def generate_flux2_klein_t2i(
     guidance = float(settings.get("guidance", settings.get("cfg", 1.0)))
     positive = encode_flux2_prompt(clip=clip, prompt=positive_prompt, guidance=guidance)
     negative = encode_flux2_prompt(clip=clip, prompt=negative_prompt or "", guidance=guidance)
+    reference_images = tuple(getattr(reference_inputs, "images", ()) or ())
+    if reference_images:
+        _phase(progress, "encoding reference images")
+        reference_latents = []
+        for reference_image in reference_images:
+            scaled_image = scale_image_to_total_pixels(
+                image=reference_image,
+                megapixels=float(settings.get("reference_megapixels", 1.0)),
+                upscale_method=str(settings.get("reference_upscale_method", "area")),
+                resolution_steps=int(settings.get("reference_resolution_steps", 1)),
+            )
+            reference_latents.append(encode_image_to_latent(vae=loaded_vae, image=scaled_image))
+        positive, negative = apply_reference_latents_to_conditioning(
+            positive=positive,
+            negative=negative,
+            reference_latents=reference_latents,
+        )
     latent = make_empty_flux2_latent(width=width, height=height)
     _phase(progress, "sampling")
     if scheduler == "auto":

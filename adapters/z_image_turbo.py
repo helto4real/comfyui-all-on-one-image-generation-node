@@ -43,6 +43,7 @@ class ZImageTurboAdapter(BaseImageAdapter):
         height: int,
         settings: dict[str, Any],
         reference_image: Any = None,
+        reference_inputs: Any = None,
         mask: Any = None,
     ) -> list[str]:
         profile = self.profile()
@@ -51,7 +52,10 @@ class ZImageTurboAdapter(BaseImageAdapter):
         )
         validation.validate_dimensions(width, height, self.dimension_multiple)
         validation.validate_reference_inputs(
-            profile, reference_image=reference_image, mask=mask
+            profile,
+            reference_image=reference_image,
+            reference_inputs=reference_inputs,
+            mask=mask,
         )
         if not positive_prompt.strip():
             raise ValueError("positive_prompt is required.")
