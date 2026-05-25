@@ -131,6 +131,6 @@ This pack uses classic nodes for broad community compatibility. The contracts ar
 
 ## License Guidance
 
-This project does not currently include a license file. Because the LoRA UI intentionally adapts behavior and styling from rgthree-comfy, a suitable choice is the MIT License. MIT matches rgthree-comfy's license, keeps the same permissive terms, and only requires preserving the original rgthree MIT copyright and permission notice for substantial adapted portions.
+This project is distributed under the MIT License. Because the LoRA UI intentionally adapts behavior and styling from rgthree-comfy, MIT matches rgthree-comfy's license, keeps the same permissive terms, and preserves the original rgthree MIT copyright and permission notice in `THIRD_PARTY_NOTICES.md`.
 
 Other compatible options include Apache-2.0, if you want an explicit patent grant, or GPL-3.0, if you want downstream copyleft requirements. For this ComfyUI node pack, MIT is the simplest and most community-friendly fit.

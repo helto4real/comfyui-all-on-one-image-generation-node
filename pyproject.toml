@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Classic ComfyUI all-in-one image generation node scaffold."
 requires-python = ">=3.10"
 dependencies = []
+license = "MIT"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
