@@ -1,0 +1,103 @@
+import pytest
+
+from nodes.aio_generate import AIOImageGenerate
+
+
+def test_main_node_exposes_core_inputs():
+    inputs = AIOImageGenerate.INPUT_TYPES()
+    required = inputs["required"]
+    optional = inputs["optional"]
+
+    assert "model_type" in required
+    assert "weight_format" not in required
+    assert "positive_prompt" in required
+    assert "negative_prompt" in required
+    assert "model_settings" in optional
+    assert "lora_config" in optional
+
+
+def test_main_node_lists_gguf_text_encoder_category(monkeypatch):
+    from nodes import aio_generate
+
+    def filename_list(category):
+        if category == "clip_gguf":
+            return ["t5-q4.gguf"]
+        return []
+
+    monkeypatch.setattr(aio_generate, "_filename_list", filename_list)
+
+    text_encoder_options = AIOImageGenerate.INPUT_TYPES()["required"]["text_encoder"][0]
+
+    assert text_encoder_options == ["clip_gguf/t5-q4.gguf"]
+
+
+def test_main_node_rejects_settings_family_mismatch():
+    node = AIOImageGenerate()
+
+    with pytest.raises(ValueError, match="Selected settings are for flux2_klein_9b"):
+        node.generate(
+            model_type="z_image_turbo",
+            diffusion_model="model.safetensors",
+            text_encoder="text.safetensors",
+            vae="vae.safetensors",
+            positive_prompt="prompt",
+            negative_prompt="",
+            width=1024,
+            height=1024,
+            seed=0,
+            steps=0,
+            cfg=0.0,
+            sampler="auto",
+            scheduler="auto",
+            model_settings={"family": "flux2_klein_9b"},
+        )
+
+
+def test_main_node_passes_lora_config_to_adapter(monkeypatch):
+    from nodes import aio_generate
+
+    captured = {}
+
+    class FakeAdapter:
+        version = "test"
+
+        def resolve_settings(self, **kwargs):
+            return {
+                "width": kwargs["width"],
+                "height": kwargs["height"],
+                "steps": 8,
+                "cfg": 1.0,
+                "sampler": "auto",
+                "scheduler": "auto",
+            }
+
+        def validate_inputs(self, **kwargs):
+            return []
+
+        def generate(self, **kwargs):
+            captured.update(kwargs)
+            return "image", {"samples": "latent"}
+
+    monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
+
+    image, latent, run_info = AIOImageGenerate().generate(
+        model_type="z_image_turbo",
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="",
+        width=1024,
+        height=1024,
+        seed=0,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+        lora_config={"lora_1": {"on": True, "lora": "style", "strength": 0.8}},
+    )
+
+    assert image == "image"
+    assert latent == {"samples": "latent"}
+    assert captured["lora_config"]["loras"][0]["name"] == "style"
+    assert '"loras": [{"enabled": true, "name": "style"' in run_info

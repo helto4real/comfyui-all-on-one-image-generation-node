@@ -1,0 +1,1532 @@
+import { app } from "/scripts/app.js";
+import { api } from "/scripts/api.js";
+
+const NODE_NAME = "AIOLoraConfiguration";
+const NODE_DISPLAY_NAME = "AIO LoRA Configuration";
+const ROW_PREFIX = "lora_";
+const HEADER_NAME = "aio_lora_header";
+const ADD_BUTTON_LABEL = "+ Add LoRA";
+const MIN_NODE_WIDTH = 560;
+
+const DEFAULT_ROW = {
+  on: true,
+  lora: null,
+  strength: 1,
+  strengthTwo: null,
+};
+
+const NUMBER_WIDTH_TOTAL = 9 + 3 + 32 + 3 + 9;
+
+let loraListPromise = null;
+
+function widgetValue(node, name, fallback = "") {
+  const widget = node.widgets?.find((item) => item.name === name);
+  return widget?.value ?? fallback;
+}
+
+function isAioLoraNodeData(nodeData) {
+  return nodeData?.name === NODE_NAME || nodeData?.display_name === NODE_DISPLAY_NAME;
+}
+
+function isAioLoraNode(node) {
+  return (
+    node?.type === NODE_NAME ||
+    node?.comfyClass === NODE_NAME ||
+    node?.constructor?.type === NODE_NAME ||
+    node?.constructor?.comfyClass === NODE_NAME ||
+    node?.title === NODE_DISPLAY_NAME
+  );
+}
+
+function showSeparateStrengths(node) {
+  return widgetValue(node, "show_strengths", "single") === "separate";
+}
+
+function dynamicWidgets(node) {
+  return (node.widgets || []).filter(
+    (widget) =>
+      String(widget.name).startsWith(ROW_PREFIX) ||
+      widget.name === HEADER_NAME ||
+      widget._aioLoraAddButton === true,
+  );
+}
+
+function rowWidgets(node) {
+  return (node.widgets || []).filter((widget) => String(widget.name).startsWith(ROW_PREFIX));
+}
+
+function moveArrayItem(array, item, index) {
+  const current = array.indexOf(item);
+  if (current < 0 || index < 0 || index >= array.length) {
+    return;
+  }
+  array.splice(current, 1);
+  array.splice(index, 0, item);
+}
+
+function removeArrayItem(array, item) {
+  const index = array.indexOf(item);
+  if (index >= 0) {
+    array.splice(index, 1);
+  }
+}
+
+function nextRowName(node) {
+  let max = 0;
+  for (const widget of node.widgets || []) {
+    const match = String(widget.name || "").match(/^lora_(\d+)$/);
+    if (match) {
+      max = Math.max(max, Number(match[1]));
+    }
+  }
+  return `${ROW_PREFIX}${max + 1}`;
+}
+
+function fitString(ctx, str, maxWidth) {
+  str = String(str);
+  if (ctx.measureText(str).width <= maxWidth) {
+    return str;
+  }
+  const ellipsis = "...";
+  let low = 0;
+  let high = str.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (ctx.measureText(str.slice(0, mid) + ellipsis).width <= maxWidth) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return str.slice(0, low) + ellipsis;
+}
+
+function isLowQuality() {
+  return (app.canvas?.ds?.scale || 1) <= 0.5;
+}
+
+function drawRoundedRectangle(ctx, { pos, size, borderRadius = null }) {
+  const radius = isLowQuality() ? 0 : borderRadius ?? size[1] * 0.5;
+  ctx.save();
+  ctx.strokeStyle = LiteGraph.WIDGET_OUTLINE_COLOR;
+  ctx.fillStyle = LiteGraph.WIDGET_BGCOLOR;
+  ctx.beginPath();
+  ctx.roundRect(pos[0], pos[1], size[0], size[1], [radius]);
+  ctx.fill();
+  if (!isLowQuality()) {
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawTogglePart(ctx, { posX, posY, height, value }) {
+  const lowQuality = isLowQuality();
+  const toggleRadius = height * 0.36;
+  const toggleBgWidth = height * 1.5;
+  ctx.save();
+  if (!lowQuality) {
+    ctx.beginPath();
+    ctx.roundRect(posX + 4, posY + 4, toggleBgWidth - 8, height - 8, [height * 0.5]);
+    ctx.globalAlpha = app.canvas.editor_alpha * 0.25;
+    ctx.fillStyle = "rgba(255,255,255,0.45)";
+    ctx.fill();
+    ctx.globalAlpha = app.canvas.editor_alpha;
+  }
+  ctx.fillStyle = value === true ? "#89B" : "#888";
+  const toggleX =
+    lowQuality || value === false ? posX + height * 0.5 : value === true ? posX + height : posX + height * 0.75;
+  ctx.beginPath();
+  ctx.arc(toggleX, posY + height * 0.5, toggleRadius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  return [posX, posY, toggleBgWidth, height];
+}
+
+function drawNumberWidgetPart(ctx, { posX, posY, height, value, direction = -1, textColor }) {
+  const arrowWidth = 9;
+  const arrowHeight = 10;
+  const innerMargin = 3;
+  const numberWidth = 32;
+  let x = direction === -1 ? posX - NUMBER_WIDTH_TOTAL : posX;
+  const midY = posY + height / 2;
+
+  ctx.save();
+  ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
+  ctx.fill(new Path2D(`M ${x} ${midY} l ${arrowWidth} ${arrowHeight / 2} l 0 -${arrowHeight} L ${x} ${midY} z`));
+  const left = [x, posY, arrowWidth, height];
+  x += arrowWidth + innerMargin;
+
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  if (textColor) {
+    ctx.fillStyle = textColor;
+  }
+  ctx.fillText(fitString(ctx, Number(value ?? 1).toFixed(2), numberWidth), x + numberWidth / 2, midY);
+  const text = [x, posY, numberWidth, height];
+  x += numberWidth + innerMargin;
+
+  ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
+  ctx.fill(new Path2D(`M ${x} ${midY - arrowHeight / 2} l ${arrowWidth} ${arrowHeight / 2} l -${arrowWidth} ${arrowHeight / 2} v -${arrowHeight} z`));
+  const right = [x, posY, arrowWidth, height];
+  ctx.restore();
+  return [left, text, right, [left[0], posY, right[0] + right[2] - left[0], height]];
+}
+
+function drawInfoIcon(ctx, x, y, size, treatment = "GRAYED") {
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(x, y, size, size, [size * 0.1]);
+  ctx.fillStyle = treatment === "GRAYED" ? "#aaa" : "#2f82ec";
+  ctx.strokeStyle = ctx.fillStyle;
+  if (treatment === "FILLED") {
+    ctx.fill();
+  } else {
+    ctx.stroke();
+  }
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 2;
+  const midX = x + size / 2;
+  const serif = size * 0.175;
+  ctx.stroke(
+    new Path2D(`
+      M ${midX} ${y + size * 0.15}
+      v 2
+      M ${midX - serif} ${y + size * 0.45}
+      h ${serif}
+      v ${size * 0.325}
+      h ${serif}
+      h -${serif * 2}
+    `),
+  );
+  ctx.restore();
+}
+
+function inArea(pos, area) {
+  return (
+    area &&
+    pos[0] >= area[0] &&
+    pos[0] <= area[0] + area[2] &&
+    pos[1] >= area[1] &&
+    pos[1] <= area[1] + area[3]
+  );
+}
+
+async function getLoras(force = false) {
+  if (force) {
+    loraListPromise = null;
+  }
+  if (!loraListPromise) {
+    loraListPromise = api
+      .fetchApi("/aio-image-gen/api/loras?format=details", { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : Promise.reject(new Error("No AIO loras route"))))
+      .then((data) => data.map((item) => item.file ?? item))
+      .catch(() =>
+        api
+          .fetchApi("/object_info/LoraLoader", { cache: "no-store" })
+          .then((response) => response.json())
+          .then((data) => data?.LoraLoader?.input?.required?.lora_name?.[0] || [])
+          .catch(() => []),
+      );
+  }
+  return loraListPromise;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+async function fetchLoraInfo(file, { refresh = false, light = false } = {}) {
+  const endpoint = refresh ? "/aio-image-gen/api/loras/info/refresh" : "/aio-image-gen/api/loras/info";
+  const params = new URLSearchParams({ files: file });
+  if (light) {
+    params.set("light", "1");
+  }
+  const response = await api.fetchApi(`${endpoint}?${params.toString()}`, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`AIO LoRA info request failed: ${response.status}`);
+  }
+  const payload = await response.json();
+  return payload?.data?.[0] ?? null;
+}
+
+function filteredChooserData(node, loras) {
+  let filtered = [...loras];
+  let prefix = "";
+  const match = String(widgetValue(node, "match", "") || "");
+  if (match) {
+    try {
+      const regex = new RegExp(match);
+      filtered = filtered.filter((lora) => regex.test(lora));
+    } catch {
+      filtered = [...loras];
+    }
+  }
+
+  if (filtered.length > 0) {
+    prefix = filtered[0];
+    for (const lora of filtered) {
+      let common = "";
+      for (let index = 0; prefix[index] && prefix[index] === lora[index]; index++) {
+        common += prefix[index];
+      }
+      prefix = common;
+      if (!prefix) {
+        break;
+      }
+    }
+    if (prefix) {
+      filtered = filtered.map((lora) => lora.replace(prefix, ""));
+    }
+  }
+
+  return { prefix, choices: filtered };
+}
+
+async function showLoraChooser(event, node, onChoose) {
+  const { prefix, choices } = filteredChooserData(node, await getLoras());
+  new LiteGraph.ContextMenu(["None", ...choices], {
+    event,
+    title: "Choose LoRA",
+    className: "dark",
+    callback: (value) => {
+      if (typeof value === "string" && value !== "None") {
+        onChoose(prefix + value);
+      }
+      node.setDirtyCanvas(true, true);
+    },
+  });
+}
+
+function showFallbackInfo(file, error = null) {
+  const message = error ? `Could not load LoRA/Civitai info for ${file}: ${error.message}` : `LoRA: ${file}`;
+  if (app.extensionManager?.toast) {
+    app.extensionManager.toast.add({ severity: error ? "warn" : "info", summary: "LoRA", detail: message });
+    return;
+  }
+  console.info(`[AIO LoRA Configuration] ${message}`);
+}
+
+const CIVITAI_LOGO = `<svg class="logo-civitai" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7.2 3.8 12 1l4.8 2.8v5.5l4.8 2.7v5.6L12 23l-9.6-5.4V12l4.8-2.7V3.8Zm1.6 1v5.4L4 13v3.6l8 4.5 8-4.5V13l-4.8-2.8V4.8L12 3 8.8 4.8Zm1.6 7.3L12 11l1.6 1.1v2.1L12 15.2l-1.6-1v-2.1Z"/></svg>`;
+const EXTERNAL_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M10 2h4v4h-1.5V4.6L7 10.1 5.9 9 11.4 3.5H10V2ZM3.5 4h4v1.5h-4v7h7v-4H12v4.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h.5Z"/></svg>`;
+const EDIT_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M11.9 1.7 14.3 4 5.5 12.8 2.6 13.4l.6-2.9 8.7-8.8Zm-.9 2.1-6.4 6.4-.2.9.9-.2 6.4-6.4-.7-.7Z"/></svg>`;
+const SAVE_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M2 2h10.5L14 3.5V14H2V2Zm2 1.5v3h7v-3H4Zm0 9h8v-4H4v4Z"/></svg>`;
+
+async function saveLoraInfoPartial(file, partial) {
+  const body = new FormData();
+  body.append("json", JSON.stringify(partial));
+  const response = await api.fetchApi(`/aio-image-gen/api/loras/info?file=${encodeURIComponent(file)}`, {
+    method: "POST",
+    body,
+  });
+  if (!response.ok) {
+    throw new Error(`Save failed: ${response.status}`);
+  }
+  const payload = await response.json();
+  return payload?.data ?? null;
+}
+
+function infoTableRow(label, value, help = "", editableFieldName = "") {
+  if (value == null || value === "") {
+    return "";
+  }
+  return `
+    <tr class="${editableFieldName ? "editable" : ""}" ${editableFieldName ? `data-field-name="${editableFieldName}"` : ""}>
+      <td><span>${escapeHtml(label)} ${help ? `<span class="-help" title="${escapeHtml(help)}"></span>` : ""}<span></td>
+      <td ${editableFieldName ? "" : 'colspan="2"'}>${String(value).startsWith("<") ? value : `<span>${escapeHtml(value)}<span>`}</td>
+      ${
+        editableFieldName
+          ? `<td style="width: 24px;"><button class="rgthree-button-reset rgthree-button-edit" data-action="edit-row">${EDIT_ICON}${SAVE_ICON}</button></td>`
+          : ""
+      }
+    </tr>`;
+}
+
+function trainedWordsMarkup(words) {
+  if (!words?.length) {
+    return "";
+  }
+  return `<ul class="rgthree-info-trained-words-list">${words
+    .map((item) => {
+      const word = item.word ?? item;
+      return `<li title="${escapeHtml(word)}" data-word="${escapeHtml(word)}" class="rgthree-info-trained-words-list-item" data-action="toggle-trained-word">
+        <span>${escapeHtml(word)}</span>
+        ${item.civitai ? CIVITAI_LOGO : ""}
+        ${item.count != null ? `<small>${escapeHtml(item.count)}</small>` : ""}
+      </li>`;
+    })
+    .join("")}</ul>`;
+}
+
+function imagesMarkup(images) {
+  if (!images?.length) {
+    return "";
+  }
+  return `<ul class="rgthree-info-images">${images
+    .map((image) => {
+      const media =
+        image.type === "video"
+          ? `<video src="${escapeHtml(image.url)}" autoplay loop muted></video>`
+          : `<img src="${escapeHtml(image.url)}" alt="">`;
+      return `<li><figure>${media}<figcaption>
+        ${imgInfoField("", image.civitaiUrl ? `<a href="${escapeHtml(image.civitaiUrl)}" target="_blank" rel="noreferrer">civitai${EXTERNAL_ICON}</a>` : undefined)}
+        ${imgInfoField("seed", image.seed)}
+        ${imgInfoField("steps", image.steps)}
+        ${imgInfoField("cfg", image.cfg)}
+        ${imgInfoField("sampler", image.sampler)}
+        ${imgInfoField("model", image.model)}
+        ${imgInfoField("positive", image.positive)}
+        ${imgInfoField("negative", image.negative)}
+      </figcaption></figure></li>`;
+    })
+    .join("")}</ul>`;
+}
+
+function imgInfoField(label, value) {
+  return value != null ? `<span>${label ? `<label>${escapeHtml(label)} </label>` : ""}${String(value).startsWith("<") ? value : escapeHtml(value)}</span>` : "";
+}
+
+function renderInfoDialogContent(container, info, file, isLoading = false) {
+  const civitaiLink = info?.links?.find((link) => String(link).includes("civitai.com/models"));
+  const civitaiError = info?.raw?.civitai?.error;
+  const civitaiValue = civitaiLink
+    ? `<a href="${escapeHtml(civitaiLink)}" target="_blank" rel="noreferrer">${CIVITAI_LOGO}View on Civitai</a>`
+    : civitaiError
+      ? String(civitaiError) === "Model not found"
+        ? `<i>Model not found</i> <span class="-help" title="The model was not found on civitai with the sha256 hash. It is possible the model was removed, re-uploaded, or was never on civitai to begin with."></span>`
+        : escapeHtml(civitaiError)
+      : !info?.raw?.civitai
+        ? `<button type="button" class="rgthree-button" data-action="fetch-civitai">Fetch info from civitai</button>`
+        : "";
+  const trainedWords = trainedWordsMarkup(info?.trainedWords);
+  const metadata = info?.raw?.metadata || {};
+  const title = info?.name || info?.file || file || "Unknown";
+  container.innerHTML = `
+    <div class="rgthree-info-dialog">
+      <div class="aio-rgthree-dialog-title">
+        <h2>${escapeHtml(title)}</h2>
+        <button type="button" class="aio-lora-close" aria-label="Close">x</button>
+      </div>
+      <div class="aio-rgthree-dialog-content">
+        ${isLoading ? `<div class="aio-lora-loading">Loading...</div>` : ""}
+        <ul class="rgthree-info-area">
+          <li title="Type" class="rgthree-info-tag -type -type-${escapeHtml((info?.type || "").toLowerCase())}"><span>${escapeHtml(info?.type || "")}</span></li>
+          <li title="Base Model" class="rgthree-info-tag -basemodel -basemodel-${escapeHtml((info?.baseModel || "").toLowerCase())}"><span>${escapeHtml(info?.baseModel || "")}</span></li>
+          <li class="rgthree-info-menu"></li>
+        </ul>
+        <table class="rgthree-info-table">
+          ${infoTableRow("File", info?.file || file)}
+          ${infoTableRow("Hash (sha256)", info?.sha256)}
+          ${infoTableRow("Civitai", civitaiValue)}
+          ${infoTableRow("Name", info?.name || metadata.ss_output_name || "", "The name for display.", "name")}
+          ${!info?.baseModelFile && !info?.baseModel ? "" : infoTableRow("Base Model", `${info?.baseModel || ""}${info?.baseModelFile ? ` (${info.baseModelFile})` : ""}`)}
+          ${trainedWords ? infoTableRow("Trained Words", trainedWords, "Trained words from the metadata and/or civitai. Click to select for copy.") : ""}
+          ${!metadata.ss_clip_skip || metadata.ss_clip_skip === "None" ? "" : infoTableRow("Clip Skip", metadata.ss_clip_skip)}
+          ${infoTableRow("Strength Min", info?.strengthMin ?? "", "The recommended minimum strength. In the Power Lora Loader node, strength will signal when it is below this threshold.", "strengthMin")}
+          ${infoTableRow("Strength Max", info?.strengthMax ?? "", "The recommended maximum strength. In the Power Lora Loader node, strength will signal when it is above this threshold.", "strengthMax")}
+          ${infoTableRow("Additional Notes", info?.userNote ?? "", "Additional notes you'd like to keep and reference in the info dialog.", "userNote")}
+        </table>
+        ${imagesMarkup(info?.images)}
+      </div>
+    </div>
+  `;
+}
+
+function ensureDialogStyles() {
+  if (document.getElementById("aio-lora-info-styles")) {
+    return;
+  }
+  const style = document.createElement("style");
+  style.id = "aio-lora-info-styles";
+  style.textContent = `
+    .aio-lora-info-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 10000;
+      display: grid;
+      place-items: center;
+      background: rgba(0, 0, 0, 0.62);
+    }
+    .rgthree-info-dialog {
+      width: 90vw;
+      max-width: 960px;
+      max-height: calc(100vh - 48px);
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 6px;
+      background: #202020;
+      color: #eee;
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+      font: 13px/1.4 sans-serif;
+    }
+    .aio-rgthree-dialog-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 46px;
+      padding: 0 14px 0 18px;
+      background: #1f2937;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+      color: #fff;
+      font-weight: 700;
+    }
+    .aio-rgthree-dialog-title h2 {
+      margin: 0;
+      font-size: 18px;
+      line-height: 1.2;
+      color: #fff;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .aio-lora-close {
+      border: 0;
+      background: transparent;
+      color: #4b8dff;
+      font-size: 30px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .aio-rgthree-dialog-content {
+      padding: 12px 16px 16px;
+      max-height: calc(100vh - 96px);
+      overflow: auto;
+    }
+    .aio-lora-loading {
+      padding: 8px 10px;
+      margin-bottom: 10px;
+      color: #ddd;
+      background: rgba(255, 255, 255, 0.075);
+      border-radius: 4px;
+    }
+    .rgthree-button,
+    .rgthree-button-reset {
+      font: inherit;
+      color: inherit;
+    }
+    .rgthree-button {
+      border: 1px solid rgba(255, 255, 255, 0.24);
+      border-radius: 4px;
+      background: #2b3648;
+      color: #eee;
+      padding: 6px 16px;
+      cursor: pointer;
+    }
+    .rgthree-button:hover {
+      background: #34445e;
+    }
+    .rgthree-button-reset {
+      border: 0;
+      padding: 0;
+      background: transparent;
+      cursor: pointer;
+    }
+    .rgthree-info-dialog .rgthree-info-area {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: flex;
+      align-items: center;
+    }
+    .rgthree-info-dialog .rgthree-info-area > li {
+      display: inline-flex;
+      margin: 0;
+      vertical-align: top;
+    }
+    .rgthree-info-dialog .rgthree-info-area > li + li {
+      margin-left: 6px;
+    }
+    .rgthree-info-dialog .rgthree-info-area > li.rgthree-info-tag > * {
+      min-height: 24px;
+      border-radius: 4px;
+      line-height: 1;
+      color: rgba(255, 255, 255, 0.85);
+      background: rgb(69, 92, 85);
+      font-size: 14px;
+      font-weight: bold;
+      text-decoration: none;
+      display: flex;
+      height: 1.6em;
+      padding: 0 0.5em 0.1em;
+      align-content: center;
+      justify-content: center;
+      align-items: center;
+      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.5);
+    }
+    .rgthree-info-dialog .rgthree-info-area > li.rgthree-info-tag > *:empty {
+      display: none;
+    }
+    .rgthree-info-dialog .rgthree-info-area > li.-type > * {
+      background: rgb(73, 54, 94);
+      color: rgb(228, 209, 248);
+    }
+    .rgthree-info-dialog .rgthree-info-area > li.rgthree-info-menu {
+      margin-left: auto;
+    }
+    .rgthree-info-dialog .rgthree-info-table {
+      border-collapse: collapse;
+      margin: 16px 0;
+      width: 100%;
+      font-size: 12px;
+    }
+    .rgthree-info-dialog .rgthree-info-table tr.editable button {
+      display: flex;
+      width: 28px;
+      height: 28px;
+      align-items: center;
+      justify-content: center;
+    }
+    .rgthree-info-dialog .rgthree-info-table tr.editable button svg + svg {
+      display: none;
+    }
+    .rgthree-info-dialog .rgthree-info-table tr.editable.-rgthree-editing button svg {
+      display: none;
+    }
+    .rgthree-info-dialog .rgthree-info-table tr.editable.-rgthree-editing button svg + svg {
+      display: inline-block;
+    }
+    .rgthree-info-dialog .rgthree-info-table td {
+      position: relative;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      padding: 0;
+      vertical-align: top;
+    }
+    .rgthree-info-dialog .rgthree-info-table td:first-child {
+      background: rgba(255, 255, 255, 0.075);
+      width: 10px;
+    }
+    .rgthree-info-dialog .rgthree-info-table td:first-child > *:first-child {
+      white-space: nowrap;
+      padding-right: 32px;
+    }
+    .rgthree-info-dialog .rgthree-info-table td:first-child small {
+      display: block;
+      margin-top: 2px;
+      opacity: 0.75;
+    }
+    .rgthree-info-dialog .rgthree-info-table td:first-child small > [data-action] {
+      text-decoration: underline;
+      cursor: pointer;
+    }
+    .rgthree-info-dialog .rgthree-info-table td:first-child small > [data-action]:hover {
+      text-decoration: none;
+    }
+    .rgthree-info-dialog .rgthree-info-table td a,
+    .rgthree-info-dialog .rgthree-info-table td a:hover,
+    .rgthree-info-dialog .rgthree-info-table td a:visited {
+      color: inherit;
+    }
+    .rgthree-info-dialog .rgthree-info-table td svg {
+      width: 1.3333em;
+      height: 1.3333em;
+      vertical-align: -0.285em;
+    }
+    .rgthree-info-dialog .rgthree-info-table td svg.logo-civitai {
+      margin-right: 0.3333em;
+    }
+    .rgthree-info-dialog .rgthree-info-table td > *:first-child {
+      display: block;
+      padding: 6px 10px;
+    }
+    .rgthree-info-dialog .rgthree-info-table td > input,
+    .rgthree-info-dialog .rgthree-info-table td > textarea {
+      padding: 5px 10px;
+      border: 0;
+      box-shadow: inset 1px 1px 5px 0 rgba(0, 0, 0, 0.5);
+      font: inherit;
+      appearance: none;
+      background: #fff;
+      color: #121212;
+      resize: vertical;
+    }
+    .rgthree-info-dialog .rgthree-info-table td > input:only-child,
+    .rgthree-info-dialog .rgthree-info-table td > textarea:only-child {
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .rgthree-info-dialog .rgthree-info-table td .-help {
+      border: 1px solid currentColor;
+      position: absolute;
+      right: 5px;
+      top: 6px;
+      line-height: 1;
+      font-size: 11px;
+      width: 12px;
+      height: 12px;
+      border-radius: 8px;
+      display: flex;
+      align-content: center;
+      justify-content: center;
+      cursor: help;
+    }
+    .rgthree-info-dialog .rgthree-info-table td .-help::before {
+      content: "?";
+    }
+    .rgthree-info-dialog .rgthree-info-table td > ul.rgthree-info-trained-words-list {
+      list-style: none;
+      padding: 2px 8px;
+      margin: 0;
+      display: flex;
+      flex-direction: row;
+      flex-wrap: wrap;
+      max-height: 15vh;
+      overflow: auto;
+    }
+    .rgthree-info-dialog .rgthree-info-table td > ul.rgthree-info-trained-words-list > li {
+      display: inline-flex;
+      margin: 2px;
+      vertical-align: top;
+      border-radius: 4px;
+      line-height: 1;
+      color: rgba(255, 255, 255, 0.85);
+      background: rgb(73, 91, 106);
+      font-size: 1.2em;
+      font-weight: 600;
+      text-decoration: none;
+      height: 1.6em;
+      align-content: center;
+      justify-content: center;
+      align-items: center;
+      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.5);
+      cursor: pointer;
+      white-space: nowrap;
+      max-width: 183px;
+    }
+    .rgthree-info-dialog .rgthree-info-table td > ul.rgthree-info-trained-words-list > li:hover {
+      background: rgb(68, 109, 142);
+    }
+    .rgthree-info-dialog .rgthree-info-table td > ul.rgthree-info-trained-words-list > li > svg {
+      width: auto;
+      height: 1.2em;
+    }
+    .rgthree-info-dialog .rgthree-info-table td > ul.rgthree-info-trained-words-list > li > span {
+      padding-left: 0.5em;
+      padding-right: 0.5em;
+      padding-bottom: 0.1em;
+      text-overflow: ellipsis;
+      overflow: hidden;
+    }
+    .rgthree-info-dialog .rgthree-info-table td > ul.rgthree-info-trained-words-list > li > small {
+      align-self: stretch;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 0.5em;
+      background: rgba(0, 0, 0, 0.2);
+    }
+    .rgthree-info-dialog .rgthree-info-table td > ul.rgthree-info-trained-words-list > li.-rgthree-is-selected {
+      background: rgb(42, 126, 193);
+    }
+    .rgthree-info-dialog .rgthree-info-images {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      scroll-snap-type: x mandatory;
+      display: flex;
+      flex-direction: row;
+      overflow: auto;
+    }
+    .rgthree-info-dialog .rgthree-info-images > li {
+      scroll-snap-align: start;
+      max-width: 90%;
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      overflow: hidden;
+      padding: 0;
+      margin: 6px;
+      font-size: 0;
+      position: relative;
+    }
+    .rgthree-info-dialog .rgthree-info-images > li figure {
+      margin: 0;
+      position: static;
+    }
+    .rgthree-info-dialog .rgthree-info-images > li figure video,
+    .rgthree-info-dialog .rgthree-info-images > li figure img {
+      max-height: 45vh;
+      max-width: 100%;
+    }
+    .rgthree-info-dialog .rgthree-info-images > li figure figcaption {
+      position: absolute;
+      left: 0;
+      width: 100%;
+      bottom: 0;
+      padding: 12px;
+      font-size: 12px;
+      background: rgba(0, 0, 0, 0.85);
+      opacity: 0;
+      transform: translateY(50px);
+      transition: all 0.25s ease-in-out;
+      box-sizing: border-box;
+    }
+    .rgthree-info-dialog .rgthree-info-images > li figure figcaption > span {
+      display: inline-block;
+      padding: 2px 4px;
+      margin: 2px;
+      border-radius: 2px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      word-break: break-word;
+    }
+    .rgthree-info-dialog .rgthree-info-images > li figure figcaption > span label {
+      display: inline;
+      padding: 0;
+      margin: 0;
+      opacity: 0.5;
+      pointer-events: none;
+      user-select: none;
+    }
+    .rgthree-info-dialog .rgthree-info-images > li figure figcaption > span a {
+      color: inherit;
+      text-decoration: underline;
+    }
+    .rgthree-info-dialog .rgthree-info-images > li figure figcaption:empty {
+      text-align: center;
+    }
+    .rgthree-info-dialog .rgthree-info-images > li figure figcaption:empty::before {
+      content: "No data.";
+    }
+    .rgthree-info-dialog .rgthree-info-images > li:hover figure figcaption {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  `;
+  document.head.appendChild(style);
+}
+
+function showInfoToast(message, severity = "info") {
+  if (app.extensionManager?.toast) {
+    app.extensionManager.toast.add({ severity, summary: "LoRA", detail: message });
+    return;
+  }
+  console.info(`[AIO LoRA Configuration] ${message}`);
+}
+
+function selectedWordElements(tr) {
+  return Array.from(tr?.querySelectorAll(".-rgthree-is-selected") || []);
+}
+
+function updateSelectedWordsSummary(tr) {
+  const labelSpan = tr?.querySelector("td:first-child > *");
+  if (!labelSpan) {
+    return;
+  }
+  let small = labelSpan.querySelector("small");
+  if (!small) {
+    small = document.createElement("small");
+    labelSpan.appendChild(small);
+  }
+  const count = selectedWordElements(tr).length;
+  small.innerHTML = count
+    ? `${count} selected | <span role="button" data-action="copy-trained-words">Copy</span>`
+    : "";
+}
+
+async function copySelectedWords(target) {
+  const tr = target.closest("tr");
+  const words = selectedWordElements(tr).map((el) => el.getAttribute("data-word")).filter(Boolean);
+  await navigator.clipboard.writeText(words.join(", "));
+  showInfoToast(`Successfully copied ${words.length} key word${words.length === 1 ? "" : "s"}.`, "success");
+}
+
+async function saveEditableRow(info, file, tr, saving = true) {
+  const fieldName = tr?.dataset?.fieldName;
+  const td = tr?.querySelector("td:nth-child(2)");
+  const input = td?.querySelector("input,textarea");
+  if (!fieldName || !td) {
+    return false;
+  }
+
+  let newValue = info?.[fieldName] ?? "";
+  let modified = false;
+  if (saving && input) {
+    newValue = input.value;
+    if (fieldName.startsWith("strength")) {
+      if (Number.isNaN(Number(newValue))) {
+        alert(`You must enter a number into the ${fieldName} field.`);
+        return false;
+      }
+      newValue = (Math.round(Number(newValue) * 100) / 100).toFixed(2);
+    }
+    const saved = await saveLoraInfoPartial(file, { [fieldName]: newValue });
+    Object.assign(info, saved || { [fieldName]: newValue });
+    modified = true;
+  }
+
+  tr.classList.remove("-rgthree-editing");
+  td.replaceChildren();
+  const span = document.createElement("span");
+  span.textContent = newValue;
+  td.appendChild(span);
+  return modified;
+}
+
+function beginEditableRow(info, file, tr) {
+  const fieldName = tr?.dataset?.fieldName;
+  const td = tr?.querySelector("td:nth-child(2)");
+  if (!fieldName || !td) {
+    return;
+  }
+  tr.classList.add("-rgthree-editing");
+  const isTextarea = fieldName === "userNote";
+  const input = document.createElement(isTextarea ? "textarea" : "input");
+  if (!isTextarea) {
+    input.type = "text";
+  }
+  input.value = td.textContent || info?.[fieldName] || "";
+  input.addEventListener("keydown", async (event) => {
+    if (!isTextarea && event.key === "Enter") {
+      event.preventDefault();
+      event.stopPropagation();
+      await saveEditableRow(info, file, tr, true);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      await saveEditableRow(info, file, tr, false);
+    }
+  });
+  td.replaceChildren(input);
+  input.focus();
+}
+
+async function showLoraInfoDialog(file, row = null) {
+  ensureDialogStyles();
+  const overlay = document.createElement("div");
+  overlay.className = "aio-lora-info-overlay";
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay || event.target.closest(".aio-lora-close")) {
+      close();
+    }
+  });
+
+  let info = null;
+  try {
+    renderInfoDialogContent(overlay, null, file, true);
+    info = await fetchLoraInfo(file);
+    renderInfoDialogContent(overlay, info, file, false);
+    row?.setLoraInfo?.(info);
+  } catch (error) {
+    close();
+    showFallbackInfo(file, error);
+    return;
+  }
+
+  overlay.addEventListener("click", async (event) => {
+    const target = event.target.closest("[data-action]");
+    const action = target?.getAttribute("data-action");
+    if (!target || !action) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (action === "fetch-civitai") {
+      renderInfoDialogContent(overlay, info, file, true);
+      try {
+        info = await fetchLoraInfo(file, { refresh: true });
+        renderInfoDialogContent(overlay, info, file, false);
+        row?.setLoraInfo?.(info);
+      } catch (error) {
+        renderInfoDialogContent(overlay, info, file, false);
+        showFallbackInfo(file, error);
+      }
+    } else if (action === "toggle-trained-word") {
+      target.classList.toggle("-rgthree-is-selected");
+      updateSelectedWordsSummary(target.closest("tr"));
+    } else if (action === "copy-trained-words") {
+      await copySelectedWords(target);
+    } else if (action === "edit-row") {
+      const tr = target.closest("tr");
+      if (tr?.querySelector("input,textarea")) {
+        await saveEditableRow(info, file, tr, true);
+        row?.setLoraInfo?.(info);
+      } else {
+        beginEditableRow(info, file, tr);
+      }
+    }
+  });
+}
+
+class LoraHeaderWidget {
+  constructor() {
+    this.name = HEADER_NAME;
+    this.type = "custom";
+    this.value = { type: HEADER_NAME };
+    this.last_y = 0;
+    this.hitAreas = {};
+  }
+
+  computeSize(width) {
+    return [width, LiteGraph.NODE_WIDGET_HEIGHT];
+  }
+
+  serializeValue() {
+    return this.value;
+  }
+
+  draw(ctx, node, width, posY, height) {
+    const nodeWidth = node.size?.[0] ?? width;
+    this.last_y = posY;
+    if (!rowWidgets(node).length) {
+      return;
+    }
+    const margin = 10;
+    const innerMargin = margin * 0.33;
+    const midY = posY + height / 2;
+    let posX = margin;
+    const separate = showSeparateStrengths(node);
+
+    ctx.save();
+    this.hitAreas.toggle = drawTogglePart(ctx, {
+      posX,
+      posY: posY + 2,
+      height,
+      value: allLorasState(node),
+    });
+    if (!isLowQuality()) {
+      posX += this.hitAreas.toggle[2] + innerMargin;
+      ctx.globalAlpha = app.canvas.editor_alpha * 0.55;
+      ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText("Toggle All", posX, midY);
+
+      let rightX = nodeWidth - margin - innerMargin - innerMargin;
+      ctx.textAlign = "center";
+      ctx.fillText(separate ? "Clip" : "Strength", rightX - NUMBER_WIDTH_TOTAL / 2, midY);
+      if (separate) {
+        rightX = rightX - NUMBER_WIDTH_TOTAL - innerMargin * 2;
+        ctx.fillText("Model", rightX - NUMBER_WIDTH_TOTAL / 2, midY);
+      }
+    }
+    ctx.restore();
+  }
+
+  mouse(event, pos, node) {
+    if (event.type === "pointerdown" && inArea(pos, this.hitAreas.toggle)) {
+      toggleAll(node);
+      return true;
+    }
+    return false;
+  }
+}
+
+class LoraRowWidget {
+  constructor(name, value = null) {
+    this.name = name;
+    this.type = "custom";
+    this.value = { ...DEFAULT_ROW, ...(value || {}) };
+    this.last_y = 0;
+    this.hitAreas = {};
+    this.showModelAndClip = null;
+    this.haveMouseMovedStrength = false;
+    this.activeStrengthKey = null;
+    this.loraInfo = null;
+    this.loraInfoPromise = null;
+    this.getLoraInfo();
+  }
+
+  computeSize(width) {
+    return [width, LiteGraph.NODE_WIDGET_HEIGHT];
+  }
+
+  serializeValue(node) {
+    const value = { ...this.value };
+    if (!showSeparateStrengths(node)) {
+      delete value.strengthTwo;
+    } else {
+      value.strengthTwo = value.strengthTwo ?? value.strength ?? 1;
+    }
+    return value;
+  }
+
+  setLora(lora) {
+    this.value.lora = lora;
+    this.loraInfo = null;
+    this.loraInfoPromise = null;
+    this.getLoraInfo(true);
+  }
+
+  setLoraInfo(info) {
+    this.loraInfo = info;
+    this.loraInfoPromise = Promise.resolve(info);
+  }
+
+  draw(ctx, node, width, posY, height) {
+    const nodeWidth = node.size?.[0] ?? width;
+    this.last_y = posY;
+    const currentShowModelAndClip = showSeparateStrengths(node);
+    if (this.showModelAndClip !== currentShowModelAndClip) {
+      const oldShowModelAndClip = this.showModelAndClip;
+      this.showModelAndClip = currentShowModelAndClip;
+      if (this.showModelAndClip) {
+        if (oldShowModelAndClip != null) {
+          this.value.strengthTwo = this.value.strength ?? 1;
+        }
+      } else {
+        this.value.strengthTwo = null;
+      }
+    }
+
+    const margin = 10;
+    const innerMargin = margin * 0.33;
+    const midY = posY + height / 2;
+    let posX = margin;
+
+    ctx.save();
+    drawRoundedRectangle(ctx, {
+      pos: [posX, posY],
+      size: [nodeWidth - margin * 2, height],
+      borderRadius: height * 0.5,
+    });
+    this.hitAreas.toggle = drawTogglePart(ctx, { posX, posY, height, value: this.value.on });
+    posX += this.hitAreas.toggle[2] + innerMargin;
+
+    if (isLowQuality()) {
+      ctx.restore();
+      return;
+    }
+
+    if (!this.value.on) {
+      ctx.globalAlpha = app.canvas.editor_alpha * 0.4;
+    }
+
+    let rightX = nodeWidth - margin - innerMargin - innerMargin;
+    const clipStrength = this.showModelAndClip ? this.value.strengthTwo ?? 1 : this.value.strength ?? 1;
+    const clipParts = drawNumberWidgetPart(ctx, {
+      posX: rightX,
+      posY,
+      height,
+      value: clipStrength,
+      direction: -1,
+      textColor: this.strengthTextColor(clipStrength),
+    });
+    this.hitAreas.strengthTwoDec = this.showModelAndClip ? clipParts[0] : null;
+    this.hitAreas.strengthTwoVal = this.showModelAndClip ? clipParts[1] : null;
+    this.hitAreas.strengthTwoInc = this.showModelAndClip ? clipParts[2] : null;
+    this.hitAreas.strengthTwoAny = this.showModelAndClip ? clipParts[3] : null;
+    this.hitAreas.strengthDec = this.showModelAndClip ? null : clipParts[0];
+    this.hitAreas.strengthVal = this.showModelAndClip ? null : clipParts[1];
+    this.hitAreas.strengthInc = this.showModelAndClip ? null : clipParts[2];
+    this.hitAreas.strengthAny = this.showModelAndClip ? null : clipParts[3];
+    rightX = clipParts[0][0] - innerMargin;
+
+    if (this.showModelAndClip) {
+      rightX -= innerMargin;
+      const modelStrength = this.value.strength ?? 1;
+      const modelParts = drawNumberWidgetPart(ctx, {
+        posX: rightX,
+        posY,
+        height,
+        value: modelStrength,
+        direction: -1,
+        textColor: this.strengthTextColor(modelStrength),
+      });
+      this.hitAreas.strengthDec = modelParts[0];
+      this.hitAreas.strengthVal = modelParts[1];
+      this.hitAreas.strengthInc = modelParts[2];
+      this.hitAreas.strengthAny = modelParts[3];
+      rightX = modelParts[0][0] - innerMargin;
+    }
+
+    const infoSize = height * 0.66;
+    const infoWidth = infoSize + innerMargin + innerMargin;
+    if (this.value.lora) {
+      rightX -= innerMargin;
+      drawInfoIcon(ctx, rightX - infoSize, posY + (height - infoSize) / 2, infoSize, this.infoTreatment());
+      this.hitAreas.info = [rightX - infoSize, posY, infoWidth, height];
+      rightX = rightX - infoSize - innerMargin;
+    } else {
+      this.hitAreas.info = null;
+    }
+
+    const loraWidth = rightX - posX;
+    this.hitAreas.lora = [posX, posY, loraWidth, height];
+    ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(fitString(ctx, this.value.lora || "None", loraWidth), posX, midY);
+    ctx.restore();
+  }
+
+  mouse(event, pos, node) {
+    if (event.type === "pointerdown") {
+      if (event.button === 2) {
+        this.showMenu(event, node);
+        return true;
+      }
+      if (inArea(pos, this.hitAreas.toggle)) {
+        this.value.on = !this.value.on;
+        node.setDirtyCanvas(true, true);
+        return true;
+      }
+      if (inArea(pos, this.hitAreas.info)) {
+        this.showLoraInfoDialog();
+        return true;
+      }
+      if (inArea(pos, this.hitAreas.lora)) {
+        showLoraChooser(event, node, (value) => this.setLora(value));
+        return true;
+      }
+      if (this.handleNumberPointerDown(event, pos, node)) {
+        return true;
+      }
+    }
+
+    if (event.type === "pointermove" && this.activeStrengthKey) {
+      const delta = event.deltaX ?? event.movementX ?? 0;
+      if (delta) {
+        this.haveMouseMovedStrength = true;
+        this.value[this.activeStrengthKey] = (this.value[this.activeStrengthKey] ?? 1) + delta * 0.05;
+        node.setDirtyCanvas(true, true);
+      }
+      return true;
+    }
+
+    if (event.type === "pointerup" && this.activeStrengthKey) {
+      if (!this.haveMouseMovedStrength) {
+        this.promptStrength(event, this.activeStrengthKey);
+      }
+      this.haveMouseMovedStrength = false;
+      this.activeStrengthKey = null;
+      return true;
+    }
+
+    return false;
+  }
+
+  handleNumberPointerDown(event, pos, node) {
+    const specs = [
+      ["strength", this.hitAreas.strengthDec, -1],
+      ["strength", this.hitAreas.strengthInc, 1],
+      ["strengthTwo", this.hitAreas.strengthTwoDec, -1],
+      ["strengthTwo", this.hitAreas.strengthTwoInc, 1],
+    ];
+    for (const [key, area, direction] of specs) {
+      if (inArea(pos, area)) {
+        this.stepStrength(key, direction);
+        node.setDirtyCanvas(true, true);
+        return true;
+      }
+    }
+
+    if (inArea(pos, this.hitAreas.strengthAny)) {
+      this.activeStrengthKey = "strength";
+      this.haveMouseMovedStrength = false;
+      return true;
+    }
+    if (inArea(pos, this.hitAreas.strengthTwoAny)) {
+      this.activeStrengthKey = "strengthTwo";
+      this.haveMouseMovedStrength = false;
+      return true;
+    }
+    return false;
+  }
+
+  stepStrength(key, direction) {
+    const current = this.value[key] ?? 1;
+    this.value[key] = Math.round((current + 0.05 * direction) * 100) / 100;
+  }
+
+  promptStrength(event, key) {
+    app.canvas.prompt(
+      "Value",
+      this.value[key] ?? 1,
+      (value) => {
+        const parsed = Number(value);
+        if (!Number.isNaN(parsed)) {
+          this.value[key] = parsed;
+        }
+      },
+      event,
+    );
+  }
+
+  strengthTextColor(value) {
+    if (this.loraInfo?.strengthMax != null && value > this.loraInfo.strengthMax) {
+      return "#c66";
+    }
+    if (this.loraInfo?.strengthMin != null && value < this.loraInfo.strengthMin) {
+      return "#c66";
+    }
+    return undefined;
+  }
+
+  infoTreatment() {
+    if (this.loraInfo?.raw?.civitai) {
+      return "FILLED";
+    }
+    if (this.loraInfo?.hasInfoFile) {
+      return "OUTLINED";
+    }
+    return "GRAYED";
+  }
+
+  async getLoraInfo(force = false) {
+    if (!this.value.lora || this.value.lora === "None") {
+      this.loraInfo = null;
+      return null;
+    }
+    if (!this.loraInfoPromise || force) {
+      this.loraInfoPromise = fetchLoraInfo(this.value.lora, { refresh: force, light: true })
+        .then((info) => (this.loraInfo = info))
+        .catch(() => null);
+    }
+    return this.loraInfoPromise;
+  }
+
+  async showLoraInfoDialog() {
+    if (!this.value.lora || this.value.lora === "None") {
+      return;
+    }
+    await showLoraInfoDialog(this.value.lora, this);
+  }
+
+  showMenu(event, node) {
+    new LiteGraph.ContextMenu(rowMenuItems(node, this), {
+      event,
+      title: "LoRA",
+      className: "dark",
+    });
+  }
+}
+
+function rowMenuItems(node, row) {
+  const rows = rowWidgets(node);
+  const index = rows.indexOf(row);
+  return [
+    { content: "Show Info", callback: () => row.showLoraInfoDialog() },
+    null,
+    {
+      content: row.value.on ? "Toggle Off" : "Toggle On",
+      callback: () => {
+        row.value.on = !row.value.on;
+        node.setDirtyCanvas(true, true);
+      },
+    },
+    {
+      content: "Move Up",
+      disabled: index <= 0,
+      callback: () => moveRow(node, row, -1),
+    },
+    {
+      content: "Move Down",
+      disabled: index < 0 || index >= rows.length - 1,
+      callback: () => moveRow(node, row, 1),
+    },
+    {
+      content: "Remove",
+      callback: () => removeRow(node, row),
+    },
+  ];
+}
+
+function allLorasState(node) {
+  const rows = rowWidgets(node);
+  if (!rows.length) {
+    return false;
+  }
+  const allOn = rows.every((row) => row.value.on === true);
+  const allOff = rows.every((row) => row.value.on === false);
+  if (!allOn && !allOff) {
+    return null;
+  }
+  return allOn;
+}
+
+function toggleAll(node) {
+  const rows = rowWidgets(node);
+  const toggledTo = !allLorasState(node);
+  for (const row of rows) {
+    row.value.on = toggledTo;
+  }
+  node.setDirtyCanvas(true, true);
+}
+
+function removeDynamicWidgets(node) {
+  node.widgets = (node.widgets || []).filter((widget) => !dynamicWidgets(node).includes(widget));
+}
+
+function addHeader(node) {
+  const header = new LoraHeaderWidget();
+  node.addCustomWidget(header);
+  return header;
+}
+
+function addControls(node) {
+  removeArrayItem(node.widgets, node.widgets.find((widget) => widget._aioLoraAddButton === true));
+  const button = node.addWidget("button", ADD_BUTTON_LABEL, null, async (...args) => {
+    const event = args.find((arg) => arg instanceof Event) || window.event;
+    await showLoraChooser(event, node, (value) => addRow(node, value));
+  });
+  button._aioLoraAddButton = true;
+}
+
+function addRow(node, lora = null, value = null) {
+  const widget = new LoraRowWidget(nextRowName(node), value);
+  if (lora) {
+    widget.setLora(lora);
+  }
+  const buttonIndex = node.widgets.findIndex((item) => item._aioLoraAddButton === true);
+  if (buttonIndex >= 0) {
+    node.widgets.splice(buttonIndex, 0, widget);
+  } else {
+    node.addCustomWidget(widget);
+  }
+  node.size[1] = Math.max(node.size[1], node.computeSize()[1]);
+  node.size[0] = Math.max(node.size[0], MIN_NODE_WIDTH);
+  node.setDirtyCanvas(true, true);
+  return widget;
+}
+
+function moveRow(node, row, direction) {
+  const rows = rowWidgets(node);
+  const rowIndex = rows.indexOf(row);
+  const sibling = rows[rowIndex + direction];
+  if (!sibling) {
+    return;
+  }
+  moveArrayItem(node.widgets, row, node.widgets.indexOf(sibling));
+  node.setDirtyCanvas(true, true);
+}
+
+function removeRow(node, row) {
+  removeArrayItem(node.widgets, row);
+  node.setDirtyCanvas(true, true);
+}
+
+function restoreRows(node, info) {
+  const values = (info?.widgets_values || []).filter((value) => value && typeof value.lora === "string");
+  removeDynamicWidgets(node);
+  addHeader(node);
+  for (const value of values) {
+    addRow(node, null, value);
+  }
+  addControls(node);
+  node.size[1] = Math.max(node.size[1], node.computeSize()[1]);
+  node.size[0] = Math.max(node.size[0], MIN_NODE_WIDTH);
+}
+
+function ensureLoraUi(node) {
+  if (!isAioLoraNode(node)) {
+    return;
+  }
+  node.serialize_widgets = true;
+  const hasHeader = node.widgets?.some((widget) => widget.name === HEADER_NAME);
+  const hasButton = node.widgets?.some((widget) => widget._aioLoraAddButton === true);
+  if (!hasHeader) {
+    addHeader(node);
+  }
+  if (!hasButton) {
+    addControls(node);
+  }
+  node.size = node.size || node.computeSize();
+  node.size[1] = Math.max(node.size[1], node.computeSize()[1]);
+  node.size[0] = Math.max(node.size[0], MIN_NODE_WIDTH);
+  node.setDirtyCanvas?.(true, true);
+}
+
+function patchLoraNodeType(nodeType) {
+  if (nodeType.prototype.__aioLoraConfigurationPatched) {
+    return;
+  }
+  nodeType.prototype.__aioLoraConfigurationPatched = true;
+
+  const originalCreated = nodeType.prototype.onNodeCreated;
+  nodeType.prototype.onNodeCreated = function () {
+    originalCreated?.apply(this, arguments);
+    this.serialize_widgets = true;
+    removeDynamicWidgets(this);
+    addHeader(this);
+    addControls(this);
+    this.size[1] = Math.max(this.size[1], this.computeSize()[1]);
+    this.size[0] = Math.max(this.size[0], MIN_NODE_WIDTH);
+    this.setDirtyCanvas(true, true);
+  };
+
+  const originalConfigure = nodeType.prototype.configure;
+  nodeType.prototype.configure = function (info) {
+    originalConfigure?.apply(this, arguments);
+    this.serialize_widgets = true;
+    restoreRows(this, info);
+  };
+
+  const originalRefreshCombo = nodeType.prototype.refreshComboInNode;
+  nodeType.prototype.refreshComboInNode = function () {
+    loraListPromise = null;
+    return originalRefreshCombo?.apply(this, arguments);
+  };
+
+  const originalMenu = nodeType.prototype.getExtraMenuOptions;
+  nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
+    originalMenu?.apply(this, arguments);
+    options.push({
+      content: "Toggle All LoRAs",
+      callback: () => toggleAll(this),
+    });
+    options.push({
+      content: "Refresh LoRA List",
+      callback: () => getLoras(true),
+    });
+  };
+
+  const originalGetSlot = nodeType.prototype.getSlotInPosition;
+  nodeType.prototype.getSlotInPosition = function (canvasX, canvasY) {
+    const slot = originalGetSlot?.apply(this, arguments);
+    if (slot) {
+      return slot;
+    }
+    const localY = canvasY - this.pos[1];
+    for (const widget of this.widgets || []) {
+      if (
+        String(widget.name).startsWith(ROW_PREFIX) &&
+        localY >= widget.last_y &&
+        localY <= widget.last_y + LiteGraph.NODE_WIDGET_HEIGHT
+      ) {
+        return { widget, output: { type: "AIO LORA ROW" } };
+      }
+    }
+    return undefined;
+  };
+
+  const originalSlotMenu = nodeType.prototype.getSlotMenuOptions;
+  nodeType.prototype.getSlotMenuOptions = function (slot) {
+    if (String(slot?.widget?.name || "").startsWith(ROW_PREFIX)) {
+      return rowMenuItems(this, slot.widget);
+    }
+    return originalSlotMenu?.apply(this, arguments);
+  };
+}
+
+app.registerExtension({
+  name: "aio.image.generate",
+  setup() {
+    requestAnimationFrame(() => {
+      for (const node of app.graph?._nodes || []) {
+        ensureLoraUi(node);
+      }
+    });
+  },
+  async beforeRegisterNodeDef(nodeType, nodeData) {
+    if (!isAioLoraNodeData(nodeData)) {
+      return;
+    }
+
+    patchLoraNodeType(nodeType);
+  },
+  nodeCreated(node) {
+    ensureLoraUi(node);
+  },
+  loadedGraphNode(node) {
+    ensureLoraUi(node);
+  },
+});

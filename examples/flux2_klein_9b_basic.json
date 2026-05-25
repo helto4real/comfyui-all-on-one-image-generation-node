@@ -1,0 +1,19 @@
+{
+  "description": "Minimal FLUX.2 Klein 9B text-to-image setup. Select local model files before running.",
+  "nodes": [
+    {
+      "type": "AIOFlux2Klein9BSettings",
+      "title": "FLUX.2 Klein 9B Settings"
+    },
+    {
+      "type": "AIOImageGenerate",
+      "title": "AIO Image Generate",
+      "inputs": {
+        "model_type": "flux2_klein_9b",
+        "positive_prompt": "A precise editorial product image on a clean tabletop",
+        "steps": 0,
+        "cfg": 0.0
+      }
+    }
+  ]
+}

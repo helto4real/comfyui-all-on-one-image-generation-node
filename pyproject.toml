@@ -1,0 +1,16 @@
+[project]
+name = "comfyui-helto-image-gen-all-in-one"
+version = "0.1.0"
+description = "Classic ComfyUI all-in-one image generation node scaffold."
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.comfy]
+PublisherId = "helto"
+DisplayName = "AIO Image Generate"
+Icon = ""
+web = "web"

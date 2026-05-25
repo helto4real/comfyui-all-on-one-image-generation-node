@@ -1,0 +1,19 @@
+{
+  "description": "Minimal Z-Image Turbo text-to-image setup. Select local model files before running.",
+  "nodes": [
+    {
+      "type": "AIOZImageTurboSettings",
+      "title": "Z-Image Turbo Settings"
+    },
+    {
+      "type": "AIOImageGenerate",
+      "title": "AIO Image Generate",
+      "inputs": {
+        "model_type": "z_image_turbo",
+        "positive_prompt": "A luminous studio portrait, crisp details, natural color, soft light",
+        "steps": 0,
+        "cfg": 0.0
+      }
+    }
+  ]
+}

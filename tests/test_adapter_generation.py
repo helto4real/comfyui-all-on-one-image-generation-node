@@ -1,0 +1,134 @@
+import json
+
+from adapters import flux2_klein_9b, z_image_turbo
+from adapters.flux2_klein_9b import Flux2Klein9BAdapter
+from adapters.z_image_turbo import ZImageTurboAdapter
+from nodes.aio_generate import AIOImageGenerate
+
+
+def test_z_image_adapter_calls_real_generation_pipeline(monkeypatch):
+    calls = {}
+
+    def fake_generate(**kwargs):
+        calls.update(kwargs)
+        return "image", {"samples": "latent"}
+
+    monkeypatch.setattr(z_image_turbo.pipeline, "generate_z_image_turbo_t2i", fake_generate)
+    adapter = ZImageTurboAdapter()
+    settings = adapter.resolve_settings(
+        model_settings={"family": "z_image_turbo", "force_steps": 8},
+        width=1024,
+        height=1024,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+    )
+
+    image, latent = adapter.generate(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="ignored",
+        width=1024,
+        height=1024,
+        seed=123,
+        settings=settings,
+        sampler="auto",
+        scheduler="auto",
+    )
+
+    assert image == "image"
+    assert latent == {"samples": "latent"}
+    assert calls["steps"] == 8
+    assert calls["positive_prompt"] == "prompt"
+
+
+def test_flux2_adapter_calls_real_generation_pipeline(monkeypatch):
+    calls = {}
+
+    def fake_generate(**kwargs):
+        calls.update(kwargs)
+        return "image", {"samples": "latent"}
+
+    monkeypatch.setattr(flux2_klein_9b.pipeline, "generate_flux2_klein_t2i", fake_generate)
+    adapter = Flux2Klein9BAdapter()
+    settings = adapter.resolve_settings(
+        model_settings={"family": "flux2_klein_9b", "variant": "distilled"},
+        width=1024,
+        height=1024,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+    )
+
+    image, latent = adapter.generate(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="negative",
+        width=1024,
+        height=1024,
+        seed=123,
+        settings=settings,
+        sampler="auto",
+        scheduler="auto",
+    )
+
+    assert image == "image"
+    assert latent == {"samples": "latent"}
+    assert calls["steps"] == 4
+    assert calls["negative_prompt"] == "negative"
+
+
+def test_z_image_negative_prompt_warning_is_in_run_info(monkeypatch):
+    def fake_generate(**kwargs):
+        return "image", {"samples": "latent"}
+
+    monkeypatch.setattr(z_image_turbo.pipeline, "generate_z_image_turbo_t2i", fake_generate)
+
+    image, latent, run_info = AIOImageGenerate().generate(
+        model_type="z_image_turbo",
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="should be ignored",
+        width=1024,
+        height=1024,
+        seed=123,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+        model_settings={
+            "family": "z_image_turbo",
+            "force_steps": 8,
+            "ignore_negative_prompt": True,
+        },
+    )
+
+    parsed = json.loads(run_info)
+    assert image == "image"
+    assert latent == {"samples": "latent"}
+    assert parsed["warnings"] == [
+        "Z-Image Turbo profile does not use negative prompts by default; "
+        "negative_prompt was ignored."
+    ]
+
+
+def test_flux2_distilled_defaults_to_four_steps():
+    settings = Flux2Klein9BAdapter().resolve_settings(
+        model_settings={"family": "flux2_klein_9b", "variant": "distilled"},
+        width=1024,
+        height=1024,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+    )
+
+    assert settings["steps"] == 4
