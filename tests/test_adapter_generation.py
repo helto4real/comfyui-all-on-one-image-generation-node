@@ -135,6 +135,24 @@ def test_flux2_single_reference_mode_requires_one_reference(monkeypatch):
     assert warnings == []
 
 
+def test_flux2_allows_exact_dimensions_when_multiple_value_is_none(monkeypatch):
+    adapter = Flux2Klein9BAdapter()
+    monkeypatch.setattr(flux2_klein_9b.gguf_backend, "is_available", lambda: True)
+
+    warnings = adapter.validate_inputs(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="negative",
+        width=1025,
+        height=1024,
+        settings={"edit_mode": "text_to_image", "multiple_value": "none"},
+    )
+
+    assert warnings == []
+
+
 def test_z_image_negative_prompt_warning_is_in_run_info(monkeypatch):
     def fake_generate(**kwargs):
         return "image", {"samples": "latent"}

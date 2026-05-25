@@ -51,7 +51,11 @@ class Flux2Klein9BAdapter(BaseImageAdapter):
         validation.validate_required_model_names(
             profile.required_components, diffusion_model, text_encoder, vae
         )
-        validation.validate_dimensions(width, height, self.dimension_multiple)
+        validation.validate_dimensions(
+            width,
+            height,
+            validation.dimension_multiple_from_settings(settings, self.dimension_multiple),
+        )
         if not positive_prompt.strip():
             raise ValueError("positive_prompt is required.")
         edit_mode = settings.get("edit_mode", "text_to_image")

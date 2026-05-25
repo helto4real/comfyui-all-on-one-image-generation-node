@@ -6,7 +6,12 @@ from typing import Any
 
 try:
     from ..adapters import Flux2Klein9BAdapter, ZImageTurboAdapter  # noqa: F401
-    from ..services.dimensions import ASPECT_RATIOS, SIZE_MODES, resolve_dimensions_from_controls
+    from ..services.dimensions import (
+        ASPECT_RATIOS,
+        MULTIPLE_VALUES,
+        SIZE_MODES,
+        resolve_dimensions_from_controls,
+    )
     from ..services.progress import ProgressReporter
     from ..services.registry import get_adapter, get_profile, list_model_types
     from ..services.model_resolution import infer_model_format
@@ -22,7 +27,12 @@ try:
     )
 except ImportError:  # pragma: no cover - direct test imports
     from adapters import Flux2Klein9BAdapter, ZImageTurboAdapter  # noqa: F401
-    from services.dimensions import ASPECT_RATIOS, SIZE_MODES, resolve_dimensions_from_controls
+    from services.dimensions import (
+        ASPECT_RATIOS,
+        MULTIPLE_VALUES,
+        SIZE_MODES,
+        resolve_dimensions_from_controls,
+    )
     from services.progress import ProgressReporter
     from services.registry import get_adapter, get_profile, list_model_types
     from services.model_resolution import infer_model_format
@@ -113,8 +123,9 @@ class AIOImageGenerate:
                     {"default": "", "multiline": True, "dynamicPrompts": True},
                 ),
                 "size mode": (list(SIZE_MODES),),
-                "max side": ("INT", {"default": 1024, "min": 256, "max": 4096, "step": 64}),
+                "max side": ("INT", {"default": 1024, "min": 256, "max": 4096, "step": 1}),
                 "aspect ratio": (list(ASPECT_RATIOS),),
+                "multiple value": (list(MULTIPLE_VALUES),),
                 "seed": (
                     "INT",
                     {"default": 0, "min": 0, "max": 2**63 - 1, "control_after_generate": True},
@@ -188,7 +199,7 @@ class AIOImageGenerate:
             legacy_height=height,
             default_width=profile.default_width,
             default_height=profile.default_height,
-            dimension_multiple=getattr(adapter, "dimension_multiple", 16),
+            multiple_value=reference_values.get("multiple value"),
         )
         settings = adapter.resolve_settings(
             model_settings=model_settings,
@@ -202,6 +213,7 @@ class AIOImageGenerate:
         settings["max_side"] = dimensions.max_side
         settings["aspect_ratio"] = dimensions.aspect_ratio
         settings["size_mode"] = dimensions.size_mode
+        settings["multiple_value"] = dimensions.multiple_value
         effective_width = int(settings["width"])
         effective_height = int(settings["height"])
         effective_steps = int(settings["steps"])

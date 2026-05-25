@@ -1,4 +1,5 @@
 import sys
+from types import ModuleType
 from types import SimpleNamespace
 
 import pytest
@@ -222,3 +223,93 @@ def test_flux2_pipeline_encodes_reference_images_before_sampling(monkeypatch):
     assert captured["negative"] == "negative+refs"
     assert events.index("scale:first") < events.index("apply_references")
     assert events.index("apply_references") < events.index("sample")
+
+
+def test_reference_scaling_calculates_target_dimensions(monkeypatch):
+    calls = {}
+
+    class FakeImage:
+        shape = (1, 768, 512, 3)
+
+        def movedim(self, *args):
+            calls["input_movedim"] = args
+            return FakeSamples()
+
+    class FakeSamples:
+        shape = (1, 3, 768, 512)
+
+    class FakeResized:
+        def movedim(self, *args):
+            calls["output_movedim"] = args
+            return "resized-image"
+
+    fake_comfy = ModuleType("comfy")
+    fake_utils = ModuleType("comfy.utils")
+
+    def fake_common_upscale(samples, width, height, upscale_method, crop):
+        calls["samples"] = samples
+        calls["width"] = width
+        calls["height"] = height
+        calls["upscale_method"] = upscale_method
+        calls["crop"] = crop
+        return FakeResized()
+
+    fake_utils.common_upscale = fake_common_upscale
+    fake_comfy.utils = fake_utils
+    monkeypatch.setitem(sys.modules, "comfy", fake_comfy)
+    monkeypatch.setitem(sys.modules, "comfy.utils", fake_utils)
+
+    image = pipeline.scale_image_to_total_pixels(
+        image=FakeImage(),
+        megapixels=1.0,
+        upscale_method="area",
+        resolution_steps=1,
+        multiple_value="16",
+    )
+
+    assert image == "resized-image"
+    assert calls["width"] == 832
+    assert calls["height"] == 1248
+    assert calls["upscale_method"] == "area"
+    assert calls["crop"] == "center"
+
+
+def test_reference_scaling_uses_exact_dimensions_for_none_multiple(monkeypatch):
+    calls = {}
+
+    class FakeImage:
+        shape = (1, 768, 512, 3)
+
+        def movedim(self, *args):
+            return FakeSamples()
+
+    class FakeSamples:
+        shape = (1, 3, 768, 512)
+
+    class FakeResized:
+        def movedim(self, *args):
+            return "resized-image"
+
+    fake_comfy = ModuleType("comfy")
+    fake_utils = ModuleType("comfy.utils")
+
+    def fake_common_upscale(samples, width, height, upscale_method, crop):
+        calls["width"] = width
+        calls["height"] = height
+        return FakeResized()
+
+    fake_utils.common_upscale = fake_common_upscale
+    fake_comfy.utils = fake_utils
+    monkeypatch.setitem(sys.modules, "comfy", fake_comfy)
+    monkeypatch.setitem(sys.modules, "comfy.utils", fake_utils)
+
+    pipeline.scale_image_to_total_pixels(
+        image=FakeImage(),
+        megapixels=1.0,
+        upscale_method="area",
+        resolution_steps=1,
+        multiple_value="none",
+    )
+
+    assert calls["width"] == 836
+    assert calls["height"] == 1254

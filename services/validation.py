@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from .dimensions import parse_multiple_value
 from .model_resolution import infer_model_format
 from .registry import list_model_types
 
@@ -27,9 +28,20 @@ def validate_settings_family(model_type: str, settings: Mapping[str, Any] | None
         )
 
 
-def validate_dimensions(width: int, height: int, multiple: int = 8) -> None:
+def dimension_multiple_from_settings(
+    settings: Mapping[str, Any],
+    default_multiple: int,
+) -> int | None:
+    if "multiple_value" not in settings:
+        return default_multiple
+    return parse_multiple_value(settings.get("multiple_value"))
+
+
+def validate_dimensions(width: int, height: int, multiple: int | None = 8) -> None:
     if width <= 0 or height <= 0:
         raise ValueError("width and height must be positive.")
+    if multiple is None:
+        return
     if width % multiple != 0 or height % multiple != 0:
         raise ValueError(
             f"width and height must be multiples of {multiple} for this adapter."

@@ -10,10 +10,12 @@ from typing import Any
 
 try:
     from ..loaders import gguf_backend, safetensors_backend
+    from .dimensions import parse_multiple_value, round_to_multiple
     from .lora_application import apply_lora_config
     from .model_resolution import infer_model_format, strip_category_prefix
 except ImportError:  # pragma: no cover - direct test imports
     from loaders import gguf_backend, safetensors_backend
+    from services.dimensions import parse_multiple_value, round_to_multiple
     from services.lora_application import apply_lora_config
     from services.model_resolution import infer_model_format, strip_category_prefix
 
@@ -135,17 +137,25 @@ def scale_image_to_total_pixels(
     megapixels: float = 1.0,
     upscale_method: str = "area",
     resolution_steps: int = 1,
+    multiple_value: str | int | None = "none",
 ):
-    from comfy_extras.nodes_post_processing import ImageScaleToTotalPixels  # type: ignore
+    import math
+    import comfy.utils  # type: ignore
 
-    return _node_output_first(
-        ImageScaleToTotalPixels.execute(
-            image=image,
-            upscale_method=upscale_method,
-            megapixels=megapixels,
-            resolution_steps=resolution_steps,
-        )
+    samples = image.movedim(-1, 1)
+    total = megapixels * 1024 * 1024
+    scale_by = math.sqrt(total / (samples.shape[3] * samples.shape[2]))
+    multiple = parse_multiple_value(multiple_value)
+    width = round_to_multiple(
+        round(samples.shape[3] * scale_by / resolution_steps) * resolution_steps,
+        multiple,
     )
+    height = round_to_multiple(
+        round(samples.shape[2] * scale_by / resolution_steps) * resolution_steps,
+        multiple,
+    )
+    resized = comfy.utils.common_upscale(samples, int(width), int(height), upscale_method, "center")
+    return resized.movedim(1, -1)
 
 
 def encode_image_to_latent(*, vae: Any, image: Any):
@@ -375,6 +385,7 @@ def generate_flux2_klein_t2i(
                 megapixels=float(settings.get("reference_megapixels", 1.0)),
                 upscale_method=str(settings.get("reference_upscale_method", "area")),
                 resolution_steps=int(settings.get("reference_resolution_steps", 1)),
+                multiple_value=settings.get("multiple_value", "none"),
             )
             reference_latents.append(encode_image_to_latent(vae=loaded_vae, image=scaled_image))
         positive, negative = apply_reference_latents_to_conditioning(

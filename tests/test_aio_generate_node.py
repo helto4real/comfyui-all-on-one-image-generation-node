@@ -18,7 +18,11 @@ def test_main_node_exposes_core_inputs():
     assert "negative_prompt" in required
     assert "size mode" in required
     assert "max side" in required
+    assert required["max side"][1]["step"] == 1
+    assert required["max side"][1]["min"] == 256
+    assert required["max side"][1]["max"] == 4096
     assert "aspect ratio" in required
+    assert required["multiple value"][0] == ["none", "8", "16", "32"]
     assert "width" not in required
     assert "height" not in required
     assert "model_settings" in optional
@@ -211,7 +215,12 @@ def test_main_node_resolves_aspect_ratio_output_size(monkeypatch):
         cfg=0.0,
         sampler="auto",
         scheduler="auto",
-        **{"size mode": "use aspect ratio", "max side": 1024, "aspect ratio": "16:9"},
+        **{
+            "size mode": "use aspect ratio",
+            "max side": 1024,
+            "aspect ratio": "16:9",
+            "multiple value": "16",
+        },
     )
 
     assert image == "image"
@@ -220,6 +229,7 @@ def test_main_node_resolves_aspect_ratio_output_size(monkeypatch):
     assert captured["validated"]["height"] == 576
     assert captured["generated"]["width"] == 1024
     assert captured["generated"]["height"] == 576
+    assert captured["generated"]["settings"]["multiple_value"] == "16"
     assert '"height": 576' in run_info
 
 
@@ -267,6 +277,7 @@ def test_main_node_can_use_image_1_size(monkeypatch):
             "size mode": "use image 1 size",
             "max side": 1024,
             "aspect ratio": "1:1",
+            "multiple value": "16",
             "image 1": FakeImage(),
         },
     )
@@ -276,6 +287,7 @@ def test_main_node_can_use_image_1_size(monkeypatch):
     assert captured["width"] == 512
     assert captured["height"] == 768
     assert '"size_mode": "use image 1 size"' in run_info
+    assert '"multiple_value": "16"' in run_info
 
 
 def test_main_node_keeps_legacy_width_height_compatibility(monkeypatch):

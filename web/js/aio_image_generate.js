@@ -3,10 +3,14 @@ import { api } from "/scripts/api.js";
 
 const NODE_NAME = "AIOLoraConfiguration";
 const NODE_DISPLAY_NAME = "AIO LoRA Configuration";
+const GENERATE_NODE_NAME = "AIOImageGenerate";
+const GENERATE_NODE_DISPLAY_NAME = "AIO Image Generate";
 const ROW_PREFIX = "lora_";
 const HEADER_NAME = "aio_lora_header";
 const ADD_BUTTON_LABEL = "+ Add LoRA";
 const MIN_NODE_WIDTH = 560;
+const MAX_SIDE_MIN = 256;
+const MAX_SIDE_MAX = 4096;
 
 const DEFAULT_ROW = {
   on: true,
@@ -24,8 +28,22 @@ function widgetValue(node, name, fallback = "") {
   return widget?.value ?? fallback;
 }
 
+function widgetByName(node, name) {
+  return node.widgets?.find((item) => item.name === name);
+}
+
 function isAioLoraNodeData(nodeData) {
   return nodeData?.name === NODE_NAME || nodeData?.display_name === NODE_DISPLAY_NAME;
+}
+
+function isAioGenerateNode(node) {
+  return (
+    node?.type === GENERATE_NODE_NAME ||
+    node?.comfyClass === GENERATE_NODE_NAME ||
+    node?.constructor?.type === GENERATE_NODE_NAME ||
+    node?.constructor?.comfyClass === GENERATE_NODE_NAME ||
+    node?.title === GENERATE_NODE_DISPLAY_NAME
+  );
 }
 
 function isAioLoraNode(node) {
@@ -36,6 +54,83 @@ function isAioLoraNode(node) {
     node?.constructor?.comfyClass === NODE_NAME ||
     node?.title === NODE_DISPLAY_NAME
   );
+}
+
+function multipleValueStep(value) {
+  const numeric = Number(value);
+  return [8, 16, 32].includes(numeric) ? numeric : 1;
+}
+
+function clampMaxSide(value) {
+  return Math.min(MAX_SIDE_MAX, Math.max(MAX_SIDE_MIN, value));
+}
+
+function snapMaxSide(value, step) {
+  const numeric = Number(value);
+  const rounded = Number.isFinite(numeric) ? Math.round(numeric) : 1024;
+  if (step <= 1) {
+    return clampMaxSide(rounded);
+  }
+  return clampMaxSide(Math.round(rounded / step) * step);
+}
+
+function markNodeDirty(node) {
+  if (typeof node?.setDirtyCanvas === "function") {
+    node.setDirtyCanvas(true, true);
+  } else {
+    app.graph?.setDirtyCanvas?.(true, true);
+  }
+}
+
+function patchWidgetCallback(widget, patchKey, callback) {
+  if (!widget || widget[patchKey]) {
+    return;
+  }
+  const originalCallback = widget.callback;
+  widget.callback = function () {
+    const result = originalCallback?.apply(this, arguments);
+    callback();
+    return result;
+  };
+  widget[patchKey] = true;
+}
+
+function updateAioMaxSideStep(node) {
+  const maxSideWidget = widgetByName(node, "max side");
+  const multipleWidget = widgetByName(node, "multiple value");
+  if (!maxSideWidget || !multipleWidget) {
+    return;
+  }
+
+  const step = multipleValueStep(multipleWidget.value);
+  maxSideWidget.options ||= {};
+  maxSideWidget.options.min = MAX_SIDE_MIN;
+  maxSideWidget.options.max = MAX_SIDE_MAX;
+  maxSideWidget.options.step = step * 10;
+  maxSideWidget.options.step2 = step;
+  maxSideWidget.options.precision = 0;
+
+  const snapped = snapMaxSide(maxSideWidget.value, step);
+  if (maxSideWidget.value !== snapped) {
+    maxSideWidget.value = snapped;
+    markNodeDirty(node);
+  }
+}
+
+function ensureAioGenerateSizingUi(node) {
+  if (!isAioGenerateNode(node)) {
+    return;
+  }
+
+  const maxSideWidget = widgetByName(node, "max side");
+  const multipleWidget = widgetByName(node, "multiple value");
+  if (!maxSideWidget || !multipleWidget) {
+    return;
+  }
+
+  patchWidgetCallback(multipleWidget, "_aioMultipleValueCallbackPatched", () => updateAioMaxSideStep(node));
+  patchWidgetCallback(maxSideWidget, "_aioMaxSideCallbackPatched", () => updateAioMaxSideStep(node));
+  updateAioMaxSideStep(node);
 }
 
 function showSeparateStrengths(node) {
@@ -1513,6 +1608,7 @@ app.registerExtension({
     requestAnimationFrame(() => {
       for (const node of app.graph?._nodes || []) {
         ensureLoraUi(node);
+        ensureAioGenerateSizingUi(node);
       }
     });
   },
@@ -1525,8 +1621,10 @@ app.registerExtension({
   },
   nodeCreated(node) {
     ensureLoraUi(node);
+    ensureAioGenerateSizingUi(node);
   },
   loadedGraphNode(node) {
     ensureLoraUi(node);
+    ensureAioGenerateSizingUi(node);
   },
 });
