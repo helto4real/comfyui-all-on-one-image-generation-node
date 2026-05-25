@@ -18,7 +18,7 @@ All nodes appear under `AIO/Image`.
 ## Supported Model Families
 
 - `z_image_turbo`: text-to-image generation, defaults to 8 steps and CFG 1.0. Negative prompts are ignored by default and reported in `run_info.warnings`.
-- `flux2_klein_9b`: text-to-image generation, distilled defaults to 4 steps and CFG 1.0. Reference editing settings are accepted by the settings node but are not implemented yet.
+- `flux2_klein_9b`: text-to-image and reference-image generation, distilled defaults to 4 steps and CFG 1.0. Reference mode is inferred from how many reference images are connected.
 
 ## Supported Formats
 
@@ -58,7 +58,7 @@ The node is not an output node, so it is safe for API-mode workflows.
 
 `Z-Image Turbo Settings` returns an `AIO_MODEL_SETTINGS` dict with speed preset, forced steps, prompt enhancement, negative-prompt policy, and precision policy.
 
-`FLUX.2 Klein 9B Settings` returns an `AIO_MODEL_SETTINGS` dict with distilled/base variant, guidance, edit mode, reference strength, precision policy, memory policy, and shift parameters.
+`FLUX.2 Klein 9B Settings` returns an `AIO_MODEL_SETTINGS` dict with distilled/base variant, guidance, reference strength, precision policy, memory policy, shift parameters, and reference scaling controls. FLUX.2 Klein edit mode is inferred from connected reference image sockets.
 
 The main node rejects mismatched settings, for example connecting FLUX settings while `model_type` is `z_image_turbo`.
 

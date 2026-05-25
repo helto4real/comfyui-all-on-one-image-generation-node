@@ -116,9 +116,10 @@ def test_flux2_adapter_passes_reference_inputs_to_pipeline(monkeypatch):
     assert calls["reference_inputs"] is reference_inputs
 
 
-def test_flux2_single_reference_mode_requires_one_reference(monkeypatch):
+def test_flux2_infers_single_reference_mode_from_one_reference(monkeypatch):
     adapter = Flux2Klein9BAdapter()
     monkeypatch.setattr(flux2_klein_9b.gguf_backend, "is_available", lambda: True)
+    settings = {}
 
     warnings = adapter.validate_inputs(
         diffusion_model="model.safetensors",
@@ -128,11 +129,55 @@ def test_flux2_single_reference_mode_requires_one_reference(monkeypatch):
         negative_prompt="negative",
         width=1024,
         height=1024,
-        settings={"edit_mode": "single_reference"},
+        settings=settings,
         reference_inputs=ReferenceInputs(images=("first",)),
     )
 
     assert warnings == []
+    assert settings["edit_mode"] == "single_reference"
+
+
+def test_flux2_infers_multi_reference_mode_from_multiple_references(monkeypatch):
+    adapter = Flux2Klein9BAdapter()
+    monkeypatch.setattr(flux2_klein_9b.gguf_backend, "is_available", lambda: True)
+    settings = {"edit_mode": "text_to_image"}
+
+    warnings = adapter.validate_inputs(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="negative",
+        width=1024,
+        height=1024,
+        settings=settings,
+        reference_inputs=ReferenceInputs(images=("first", "second")),
+    )
+
+    assert warnings == []
+    assert settings["edit_mode"] == "multi_reference"
+
+
+def test_flux2_rejects_more_than_four_references(monkeypatch):
+    adapter = Flux2Klein9BAdapter()
+    monkeypatch.setattr(flux2_klein_9b.gguf_backend, "is_available", lambda: True)
+
+    try:
+        adapter.validate_inputs(
+            diffusion_model="model.safetensors",
+            text_encoder="text.safetensors",
+            vae="vae.safetensors",
+            positive_prompt="prompt",
+            negative_prompt="negative",
+            width=1024,
+            height=1024,
+            settings={},
+            reference_inputs=ReferenceInputs(images=("1", "2", "3", "4", "5")),
+        )
+    except ValueError as error:
+        assert str(error) == "FLUX.2 Klein supports at most four connected reference images."
+    else:
+        raise AssertionError("Expected ValueError.")
 
 
 def test_flux2_allows_exact_dimensions_when_multiple_value_is_none(monkeypatch):
@@ -147,7 +192,7 @@ def test_flux2_allows_exact_dimensions_when_multiple_value_is_none(monkeypatch):
         negative_prompt="negative",
         width=1025,
         height=1024,
-        settings={"edit_mode": "text_to_image", "multiple_value": "none"},
+        settings={"multiple_value": "none"},
     )
 
     assert warnings == []

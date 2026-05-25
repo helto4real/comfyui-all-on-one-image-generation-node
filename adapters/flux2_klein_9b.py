@@ -18,6 +18,14 @@ except ImportError:  # pragma: no cover - direct test imports
     from adapters.base import BaseImageAdapter
 
 
+def infer_edit_mode(reference_count: int) -> str:
+    if reference_count <= 0:
+        return "text_to_image"
+    if reference_count == 1:
+        return "single_reference"
+    return "multi_reference"
+
+
 @register_adapter
 class Flux2Klein9BAdapter(BaseImageAdapter):
     model_type = "flux2_klein_9b"
@@ -58,19 +66,12 @@ class Flux2Klein9BAdapter(BaseImageAdapter):
         )
         if not positive_prompt.strip():
             raise ValueError("positive_prompt is required.")
-        edit_mode = settings.get("edit_mode", "text_to_image")
         reference_count = int(getattr(reference_inputs, "count", 0))
         if reference_image is not None:
             reference_count += 1
-        if edit_mode == "single_reference" and reference_count != 1:
-            raise ValueError(
-                "single_reference mode requires exactly one connected reference image."
-            )
-        if edit_mode == "multi_reference" and not 1 <= reference_count <= 4:
-            raise ValueError(
-                "multi_reference mode requires between one and four connected "
-                "reference images."
-            )
+        if reference_count > 4:
+            raise ValueError("FLUX.2 Klein supports at most four connected reference images.")
+        settings["edit_mode"] = infer_edit_mode(reference_count)
         validation.validate_reference_inputs(
             profile,
             reference_image=reference_image,
@@ -84,11 +85,6 @@ class Flux2Klein9BAdapter(BaseImageAdapter):
         active_mask = mask if mask is not None else getattr(reference_inputs, "mask", None)
         if active_mask is not None:
             warnings.append("mask is accepted for image 1, but inpaint behavior is not implemented yet.")
-        if edit_mode == "text_to_image" and reference_count:
-            warnings.append(
-                "reference images were connected with edit_mode='text_to_image'; "
-                "using the reference conditioning path."
-            )
         return warnings
 
     def generate(self, **kwargs):
