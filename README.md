@@ -96,6 +96,7 @@ API workflows can pass rgthree-style dynamic row payloads directly:
 - GGUF depends on an external compatible backend such as ComfyUI-GGUF.
 - Output size is controlled globally with `size mode`, `max side`, and `aspect ratio`.
 - FLUX.2 Klein supports up to four reference images through `image 1` to `image 4`.
+- FLUX.2 Klein settings expose reference image scaling controls, defaulting to 1.0 megapixel, `area`, and 1 resolution step.
 - FLUX.2 Klein accepts a mask with `image 1`, but inpaint behavior is staged for a later adapter pass.
 - Z-Image reference-image and mask paths are staged for a later adapter pass.
 

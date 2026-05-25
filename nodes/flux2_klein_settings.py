@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 
+REFERENCE_UPSCALE_METHODS = ["nearest-exact", "bilinear", "area", "bicubic", "lanczos"]
+
+
 class AIOFlux2Klein9BSettings:
     CATEGORY = "AIO/Image"
     RETURN_TYPES = ("AIO_MODEL_SETTINGS",)
@@ -32,6 +35,15 @@ class AIOFlux2Klein9BSettings:
                     "FLOAT",
                     {"default": 1.15, "min": 0.0, "max": 10.0, "step": 0.01},
                 ),
+                "reference_megapixels": (
+                    "FLOAT",
+                    {"default": 1.0, "min": 0.01, "max": 16.0, "step": 0.01},
+                ),
+                "reference_upscale_method": (REFERENCE_UPSCALE_METHODS,),
+                "reference_resolution_steps": (
+                    "INT",
+                    {"default": 1, "min": 1, "max": 256, "step": 1},
+                ),
             }
         }
 
@@ -45,6 +57,9 @@ class AIOFlux2Klein9BSettings:
         memory_policy: str,
         base_shift: float,
         max_shift: float,
+        reference_megapixels: float = 1.0,
+        reference_upscale_method: str = "area",
+        reference_resolution_steps: int = 1,
     ):
         return (
             {
@@ -57,5 +72,8 @@ class AIOFlux2Klein9BSettings:
                 "memory_policy": memory_policy,
                 "base_shift": base_shift,
                 "max_shift": max_shift,
+                "reference_megapixels": reference_megapixels,
+                "reference_upscale_method": reference_upscale_method,
+                "reference_resolution_steps": reference_resolution_steps,
             },
         )
