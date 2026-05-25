@@ -148,8 +148,6 @@ def test_z_image_negative_prompt_warning_is_in_run_info(monkeypatch):
         vae="vae.safetensors",
         positive_prompt="prompt",
         negative_prompt="should be ignored",
-        width=1024,
-        height=1024,
         seed=123,
         steps=0,
         cfg=0.0,
@@ -160,11 +158,14 @@ def test_z_image_negative_prompt_warning_is_in_run_info(monkeypatch):
             "force_steps": 8,
             "ignore_negative_prompt": True,
         },
+        **{"size mode": "use aspect ratio", "max side": 1024, "aspect ratio": "9:16"},
     )
 
     parsed = json.loads(run_info)
     assert image == "image"
     assert latent == {"samples": "latent"}
+    assert parsed["width"] == 576
+    assert parsed["height"] == 1024
     assert parsed["warnings"] == [
         "Z-Image Turbo profile does not use negative prompts by default; "
         "negative_prompt was ignored."

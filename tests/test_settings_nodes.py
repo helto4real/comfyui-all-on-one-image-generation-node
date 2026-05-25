@@ -18,3 +18,4 @@ def test_flux_settings_returns_family_dict():
 
     assert settings["family"] == "flux2_klein_9b"
     assert settings["variant"] == "distilled"
+    assert "output_size_mode" not in settings

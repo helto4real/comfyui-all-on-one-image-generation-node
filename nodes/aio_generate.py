@@ -6,6 +6,7 @@ from typing import Any
 
 try:
     from ..adapters import Flux2Klein9BAdapter, ZImageTurboAdapter  # noqa: F401
+    from ..services.dimensions import ASPECT_RATIOS, SIZE_MODES, resolve_dimensions_from_controls
     from ..services.progress import ProgressReporter
     from ..services.registry import get_adapter, get_profile, list_model_types
     from ..services.model_resolution import infer_model_format
@@ -21,6 +22,7 @@ try:
     )
 except ImportError:  # pragma: no cover - direct test imports
     from adapters import Flux2Klein9BAdapter, ZImageTurboAdapter  # noqa: F401
+    from services.dimensions import ASPECT_RATIOS, SIZE_MODES, resolve_dimensions_from_controls
     from services.progress import ProgressReporter
     from services.registry import get_adapter, get_profile, list_model_types
     from services.model_resolution import infer_model_format
@@ -110,8 +112,9 @@ class AIOImageGenerate:
                     "STRING",
                     {"default": "", "multiline": True, "dynamicPrompts": True},
                 ),
-                "width": ("INT", {"default": 1024, "min": 256, "max": 4096, "step": 64}),
-                "height": ("INT", {"default": 1024, "min": 256, "max": 4096, "step": 64}),
+                "size mode": (list(SIZE_MODES),),
+                "max side": ("INT", {"default": 1024, "min": 256, "max": 4096, "step": 64}),
+                "aspect ratio": (list(ASPECT_RATIOS),),
                 "seed": (
                     "INT",
                     {"default": 0, "min": 0, "max": 2**63 - 1, "control_after_generate": True},
@@ -145,13 +148,13 @@ class AIOImageGenerate:
         vae: str,
         positive_prompt: str,
         negative_prompt: str,
-        width: int,
-        height: int,
-        seed: int,
-        steps: int,
-        cfg: float,
-        sampler: str,
-        scheduler: str,
+        width: int | None = None,
+        height: int | None = None,
+        seed: int = 0,
+        steps: int = 0,
+        cfg: float = 0.0,
+        sampler: str = "auto",
+        scheduler: str = "auto",
         model_settings: dict[str, Any] | None = None,
         lora_config: dict[str, Any] | None = None,
         reference_image: Any = None,
@@ -176,15 +179,29 @@ class AIOImageGenerate:
         lora_summary = summarize_loras(normalized_lora_config)
 
         adapter = get_adapter(model_type)
+        dimensions = resolve_dimensions_from_controls(
+            size_mode=reference_values.get("size mode"),
+            max_side=reference_values.get("max side"),
+            aspect_ratio=reference_values.get("aspect ratio"),
+            reference_inputs=reference_inputs,
+            legacy_width=width,
+            legacy_height=height,
+            default_width=profile.default_width,
+            default_height=profile.default_height,
+            dimension_multiple=getattr(adapter, "dimension_multiple", 16),
+        )
         settings = adapter.resolve_settings(
             model_settings=model_settings,
-            width=width,
-            height=height,
+            width=dimensions.width,
+            height=dimensions.height,
             steps=steps,
             cfg=cfg,
             sampler=sampler,
             scheduler=scheduler,
         )
+        settings["max_side"] = dimensions.max_side
+        settings["aspect_ratio"] = dimensions.aspect_ratio
+        settings["size_mode"] = dimensions.size_mode
         effective_width = int(settings["width"])
         effective_height = int(settings["height"])
         effective_steps = int(settings["steps"])
