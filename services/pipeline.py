@@ -6,6 +6,7 @@ execution-time functions so importing this custom node pack remains lightweight.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 try:
@@ -131,6 +132,12 @@ def encode_flux2_prompt(*, clip: Any, prompt: str, guidance: float):
     return node_helpers.conditioning_set_values(conditioning, {"guidance": guidance})
 
 
+def zero_out_conditioning(conditioning: Any):
+    import nodes  # type: ignore
+
+    return nodes.ConditioningZeroOut().zero_out(conditioning)[0]
+
+
 def scale_image_to_total_pixels(
     *,
     image: Any,
@@ -139,7 +146,6 @@ def scale_image_to_total_pixels(
     resolution_steps: int = 1,
     multiple_value: str | int | None = "none",
 ):
-    import math
     import comfy.utils  # type: ignore
 
     samples = image.movedim(-1, 1)
@@ -373,8 +379,11 @@ def generate_flux2_klein_t2i(
     loaded_vae = load_vae(vae=vae)
     _phase(progress, "encoding prompts")
     guidance = float(settings.get("guidance", settings.get("cfg", 1.0)))
+    zero_negative_conditioning = math.isclose(float(cfg), 1.0)
     positive = encode_flux2_prompt(clip=clip, prompt=positive_prompt, guidance=guidance)
-    negative = encode_flux2_prompt(clip=clip, prompt=negative_prompt or "", guidance=guidance)
+    negative = None
+    if not zero_negative_conditioning:
+        negative = encode_flux2_prompt(clip=clip, prompt=negative_prompt or "", guidance=guidance)
     reference_images = tuple(getattr(reference_inputs, "images", ()) or ())
     if reference_images:
         _phase(progress, "encoding reference images")
@@ -388,11 +397,20 @@ def generate_flux2_klein_t2i(
                 multiple_value=settings.get("multiple_value", "none"),
             )
             reference_latents.append(encode_image_to_latent(vae=loaded_vae, image=scaled_image))
-        positive, negative = apply_reference_latents_to_conditioning(
-            positive=positive,
-            negative=negative,
-            reference_latents=reference_latents,
-        )
+        if zero_negative_conditioning:
+            positive, _ = apply_reference_latents_to_conditioning(
+                positive=positive,
+                negative=positive,
+                reference_latents=reference_latents,
+            )
+        else:
+            positive, negative = apply_reference_latents_to_conditioning(
+                positive=positive,
+                negative=negative,
+                reference_latents=reference_latents,
+            )
+    if zero_negative_conditioning:
+        negative = zero_out_conditioning(positive)
     latent = make_empty_flux2_latent(width=width, height=height)
     _phase(progress, "sampling")
     if scheduler == "auto":
