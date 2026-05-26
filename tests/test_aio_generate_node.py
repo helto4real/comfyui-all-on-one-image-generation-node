@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from nodes.aio_generate import AIOImageGenerate
@@ -288,6 +290,67 @@ def test_main_node_can_use_image_1_size(monkeypatch):
     assert captured["height"] == 768
     assert '"size_mode": "use image 1 size"' in run_info
     assert '"multiple_value": "16"' in run_info
+
+
+@pytest.mark.parametrize("model_type", ["z_image_turbo", "flux2_klein_9b"])
+def test_main_node_uses_text_to_image_when_image_1_size_has_no_image(monkeypatch, model_type):
+    from nodes import aio_generate
+
+    captured = {}
+
+    class FakeAdapter:
+        version = "test"
+        dimension_multiple = 16
+
+        def resolve_settings(self, **kwargs):
+            return {
+                "width": kwargs["width"],
+                "height": kwargs["height"],
+                "steps": 8,
+                "cfg": 1.0,
+                "sampler": "auto",
+                "scheduler": "auto",
+            }
+
+        def validate_inputs(self, **kwargs):
+            captured["validated"] = kwargs
+            return []
+
+        def generate(self, **kwargs):
+            captured["generated"] = kwargs
+            return "image", {"samples": "latent"}
+
+    monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
+
+    image, latent, run_info = AIOImageGenerate().generate(
+        model_type=model_type,
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="",
+        seed=0,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+        **{
+            "size mode": "use image 1 size",
+            "max side": 1024,
+            "aspect ratio": "16:9",
+            "multiple value": "16",
+        },
+    )
+
+    parsed = json.loads(run_info)
+    assert image == "image"
+    assert latent == {"samples": "latent"}
+    assert captured["validated"]["reference_inputs"].count == 0
+    assert captured["generated"]["reference_inputs"].count == 0
+    assert captured["generated"]["width"] == 1024
+    assert captured["generated"]["height"] == 576
+    assert captured["generated"]["settings"]["size_mode"] == "use aspect ratio"
+    assert parsed["settings"]["size_mode"] == "use aspect ratio"
 
 
 def test_main_node_keeps_legacy_width_height_compatibility(monkeypatch):

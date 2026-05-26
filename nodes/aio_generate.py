@@ -9,6 +9,8 @@ try:
     from ..services.dimensions import (
         ASPECT_RATIOS,
         MULTIPLE_VALUES,
+        SIZE_MODE_ASPECT_RATIO,
+        SIZE_MODE_IMAGE_1,
         SIZE_MODES,
         resolve_dimensions_from_controls,
     )
@@ -30,6 +32,8 @@ except ImportError:  # pragma: no cover - direct test imports
     from services.dimensions import (
         ASPECT_RATIOS,
         MULTIPLE_VALUES,
+        SIZE_MODE_ASPECT_RATIO,
+        SIZE_MODE_IMAGE_1,
         SIZE_MODES,
         resolve_dimensions_from_controls,
     )
@@ -270,8 +274,11 @@ class AIOImageGenerate:
         lora_summary = summarize_loras(normalized_lora_config)
 
         adapter = get_adapter(model_type)
+        size_mode = reference_values.get("size mode")
+        if size_mode == SIZE_MODE_IMAGE_1 and reference_inputs.count == 0:
+            size_mode = SIZE_MODE_ASPECT_RATIO
         dimensions = resolve_dimensions_from_controls(
-            size_mode=reference_values.get("size mode"),
+            size_mode=size_mode,
             max_side=reference_values.get("max side"),
             aspect_ratio=reference_values.get("aspect ratio"),
             reference_inputs=reference_inputs,
