@@ -7,6 +7,7 @@ try:
     from .nodes import (
         AIOFlux2Klein9BSettings,
         AIOImageGenerate,
+        AIOLoadPipelineModels,
         AIOLoraConfiguration,
         AIOZImageTurboSettings,
     )
@@ -15,6 +16,7 @@ except ImportError:  # pragma: no cover - direct pytest/importlib collection
     from nodes import (
         AIOFlux2Klein9BSettings,
         AIOImageGenerate,
+        AIOLoadPipelineModels,
         AIOLoraConfiguration,
         AIOZImageTurboSettings,
     )
@@ -26,6 +28,7 @@ NODE_CLASS_MAPPINGS = {
     "AIOZImageTurboSettings": AIOZImageTurboSettings,
     "AIOFlux2Klein9BSettings": AIOFlux2Klein9BSettings,
     "AIOLoraConfiguration": AIOLoraConfiguration,
+    "AIOLoadPipelineModels": AIOLoadPipelineModels,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -33,6 +36,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "AIOZImageTurboSettings": "Z-Image Turbo Settings",
     "AIOFlux2Klein9BSettings": "FLUX.2 Klein 9B Settings",
     "AIOLoraConfiguration": "AIO LoRA Configuration",
+    "AIOLoadPipelineModels": "AIO Load Pipeline Models",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]

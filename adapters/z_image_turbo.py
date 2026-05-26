@@ -91,5 +91,7 @@ class ZImageTurboAdapter(BaseImageAdapter):
             scheduler=kwargs["scheduler"],
             settings=kwargs["settings"],
             lora_config=kwargs.get("lora_config"),
+            loaded_model=kwargs.get("loaded_model"),
+            loaded_clip=kwargs.get("loaded_clip"),
             progress=progress,
         )

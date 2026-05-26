@@ -29,6 +29,8 @@ def test_main_node_exposes_core_inputs():
     assert "height" not in required
     assert "model_settings" in optional
     assert "lora_config" in optional
+    assert "model" in optional
+    assert "clip" in optional
     assert "image 1" in optional
     assert "image 2" in optional
     assert "image 3" in optional
@@ -115,11 +117,15 @@ def test_main_node_passes_lora_config_to_adapter(monkeypatch):
         sampler="auto",
         scheduler="auto",
         lora_config={"lora_1": {"on": True, "lora": "style", "strength": 0.8}},
+        model="patched_model",
+        clip="patched_clip",
     )
 
     assert image == "image"
     assert latent == {"samples": "latent"}
     assert captured["lora_config"]["loras"][0]["name"] == "style"
+    assert captured["loaded_model"] == "patched_model"
+    assert captured["loaded_clip"] == "patched_clip"
     assert '"loras": [{"enabled": true, "name": "style"' in run_info
 
 

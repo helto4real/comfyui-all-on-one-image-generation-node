@@ -28,6 +28,7 @@ def test_custom_node_package_imports_without_torch_or_gguf_dependency():
         "AIOZImageTurboSettings",
         "AIOFlux2Klein9BSettings",
         "AIOLoraConfiguration",
+        "AIOLoadPipelineModels",
     }
     assert "torch" not in sys.modules
     assert "gguf" not in sys.modules

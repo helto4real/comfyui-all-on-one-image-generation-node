@@ -38,12 +38,16 @@ def test_z_image_adapter_calls_real_generation_pipeline(monkeypatch):
         settings=settings,
         sampler="auto",
         scheduler="auto",
+        loaded_model="patched_model",
+        loaded_clip="patched_clip",
     )
 
     assert image == "image"
     assert latent == {"samples": "latent"}
     assert calls["steps"] == 8
     assert calls["positive_prompt"] == "prompt"
+    assert calls["loaded_model"] == "patched_model"
+    assert calls["loaded_clip"] == "patched_clip"
 
 
 def test_flux2_adapter_calls_real_generation_pipeline(monkeypatch):
@@ -77,12 +81,16 @@ def test_flux2_adapter_calls_real_generation_pipeline(monkeypatch):
         settings=settings,
         sampler="auto",
         scheduler="auto",
+        loaded_model="patched_model",
+        loaded_clip="patched_clip",
     )
 
     assert image == "image"
     assert latent == {"samples": "latent"}
     assert calls["steps"] == 4
     assert calls["negative_prompt"] == "negative"
+    assert calls["loaded_model"] == "patched_model"
+    assert calls["loaded_clip"] == "patched_clip"
 
 
 def test_flux2_adapter_passes_reference_inputs_to_pipeline(monkeypatch):

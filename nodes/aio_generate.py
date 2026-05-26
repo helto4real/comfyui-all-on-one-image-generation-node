@@ -222,6 +222,14 @@ class AIOImageGenerate:
                     "AIO_LORA_CONFIG",
                     {"tooltip": "Optional LoRA stack from the AIO LoRA Configuration node."},
                 ),
+                "model": (
+                    "MODEL",
+                    {"tooltip": "Optional externally loaded or patched post-LoRA model. Connect with clip to skip internal model loading and LoRA application."},
+                ),
+                "clip": (
+                    "CLIP",
+                    {"tooltip": "Optional externally loaded or patched post-LoRA CLIP. Connect with model to skip internal text encoder loading and LoRA application."},
+                ),
                 **{name: ("IMAGE", {"tooltip": tooltip}) for name, tooltip in reference_tooltips.items()},
                 "mask": (
                     "MASK",
@@ -252,6 +260,8 @@ class AIOImageGenerate:
         scheduler: str = "auto",
         model_settings: dict[str, Any] | None = None,
         lora_config: dict[str, Any] | None = None,
+        model: Any = None,
+        clip: Any = None,
         reference_image: Any = None,
         mask: Any = None,
         unique_id: str | None = None,
@@ -335,6 +345,8 @@ class AIOImageGenerate:
             sampler=effective_sampler,
             scheduler=effective_scheduler,
             lora_config=normalized_lora_config,
+            loaded_model=model,
+            loaded_clip=clip,
             reference_inputs=reference_inputs,
             progress=progress,
         )

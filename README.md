@@ -12,6 +12,7 @@ Clone or copy this folder into `ComfyUI/custom_nodes`, then restart ComfyUI. The
 - `Z-Image Turbo Settings`
 - `FLUX.2 Klein 9B Settings`
 - `AIO LoRA Configuration`
+- `AIO Load Pipeline Models`
 
 All nodes appear under `AIO/Image`.
 
@@ -50,7 +51,8 @@ The dropdown may prefix values with their category when multiple folders are sea
 4. Enter a positive prompt.
 5. Optionally attach the matching model-specific settings node.
 6. Optionally attach `AIO LoRA Configuration` to apply one or more LoRAs.
-7. Connect `IMAGE` to Preview Image or Save Image.
+7. Optionally use `AIO Load Pipeline Models` and external `MODEL`/`CLIP` patch nodes after the LoRA phase.
+8. Connect `IMAGE` to Preview Image or Save Image.
 
 The node is not an output node, so it is safe for API-mode workflows.
 
@@ -90,6 +92,12 @@ API workflows can pass rgthree-style dynamic row payloads directly:
 ```
 
 `run_info.loras` records the enabled, non-zero LoRAs that were applied.
+
+## External Model Patching
+
+`AIO Load Pipeline Models` loads the same diffusion model and text encoder pair as the main node, applies an optional `AIO_LORA_CONFIG`, then outputs standard ComfyUI `MODEL` and `CLIP` values. Connect those outputs through any compatible external model/CLIP patch nodes, then connect the patched results to the optional `model` and `clip` inputs on `AIO Image Generate`.
+
+When both `model` and `clip` are connected, the main node treats them as already post-LoRA and skips internal model/CLIP loading and LoRA application. This supports external model modifications after AIO LoRAs while keeping the one-node generation path available for simple workflows. If your patch node only modifies `MODEL`, route the loader's `CLIP` output directly into the main node's `clip` input.
 
 ## Known Limitations
 

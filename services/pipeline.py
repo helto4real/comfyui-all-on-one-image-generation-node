@@ -107,6 +107,12 @@ def load_text_encoder(
     )
 
 
+def text_encoder_clip_type(model_type: str) -> str:
+    if model_type == "flux2_klein_9b":
+        return "flux2"
+    return "stable_diffusion"
+
+
 def load_vae(*, vae: str):
     _, vae_name = strip_category_prefix(vae)
     if infer_model_format(vae) == "gguf":
@@ -307,20 +313,28 @@ def generate_z_image_turbo_t2i(
     scheduler: str,
     settings: dict[str, Any],
     lora_config: dict[str, Any] | None = None,
+    loaded_model: Any = None,
+    loaded_clip: Any = None,
     progress: Any = None,
 ):
-    _phase(progress, "loading diffusion model")
-    model = load_diffusion_model(
-        diffusion_model=diffusion_model,
-        precision_policy=settings.get("precision_policy"),
-    )
-    _phase(progress, "loading text encoder")
-    clip = load_text_encoder(
-        text_encoder=text_encoder,
-        clip_type="stable_diffusion",
-    )
-    _phase(progress, "applying loras")
-    model, clip, _ = apply_lora_config(model=model, clip=clip, lora_config=lora_config)
+    using_connected_model_pair = loaded_model is not None and loaded_clip is not None
+    model = loaded_model
+    if model is None:
+        _phase(progress, "loading diffusion model")
+        model = load_diffusion_model(
+            diffusion_model=diffusion_model,
+            precision_policy=settings.get("precision_policy"),
+        )
+    clip = loaded_clip
+    if clip is None:
+        _phase(progress, "loading text encoder")
+        clip = load_text_encoder(
+            text_encoder=text_encoder,
+            clip_type=text_encoder_clip_type("z_image_turbo"),
+        )
+    if not using_connected_model_pair:
+        _phase(progress, "applying loras")
+        model, clip, _ = apply_lora_config(model=model, clip=clip, lora_config=lora_config)
     _phase(progress, "loading vae")
     loaded_vae = load_vae(vae=vae)
     _phase(progress, "encoding prompts")
@@ -360,21 +374,29 @@ def generate_flux2_klein_t2i(
     scheduler: str,
     settings: dict[str, Any],
     lora_config: dict[str, Any] | None = None,
+    loaded_model: Any = None,
+    loaded_clip: Any = None,
     reference_inputs: Any = None,
     progress: Any = None,
 ):
-    _phase(progress, "loading diffusion model")
-    model = load_diffusion_model(
-        diffusion_model=diffusion_model,
-        precision_policy=settings.get("precision_policy"),
-    )
-    _phase(progress, "loading text encoder")
-    clip = load_text_encoder(
-        text_encoder=text_encoder,
-        clip_type="flux2",
-    )
-    _phase(progress, "applying loras")
-    model, clip, _ = apply_lora_config(model=model, clip=clip, lora_config=lora_config)
+    using_connected_model_pair = loaded_model is not None and loaded_clip is not None
+    model = loaded_model
+    if model is None:
+        _phase(progress, "loading diffusion model")
+        model = load_diffusion_model(
+            diffusion_model=diffusion_model,
+            precision_policy=settings.get("precision_policy"),
+        )
+    clip = loaded_clip
+    if clip is None:
+        _phase(progress, "loading text encoder")
+        clip = load_text_encoder(
+            text_encoder=text_encoder,
+            clip_type=text_encoder_clip_type("flux2_klein_9b"),
+        )
+    if not using_connected_model_pair:
+        _phase(progress, "applying loras")
+        model, clip, _ = apply_lora_config(model=model, clip=clip, lora_config=lora_config)
     _phase(progress, "loading vae")
     loaded_vae = load_vae(vae=vae)
     _phase(progress, "encoding prompts")

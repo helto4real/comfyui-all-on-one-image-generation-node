@@ -81,6 +81,8 @@ class BaseImageAdapter(ABC):
         reference_inputs: Any = None,
         mask: Any = None,
         lora_config: dict[str, Any] | None = None,
+        loaded_model: Any = None,
+        loaded_clip: Any = None,
         progress: Any = None,
     ):
         """Generate and return (image, latent)."""

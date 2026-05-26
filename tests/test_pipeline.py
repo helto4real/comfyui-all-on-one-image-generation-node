@@ -134,6 +134,198 @@ def test_pipeline_applies_loras_before_prompt_encoding(monkeypatch):
     ]
 
 
+def test_z_image_pipeline_uses_connected_post_lora_model_and_clip(monkeypatch):
+    events = []
+    captured = {}
+
+    monkeypatch.setattr(
+        pipeline,
+        "load_diffusion_model",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("model should be connected")),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "load_text_encoder",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("clip should be connected")),
+    )
+
+    def fake_apply_loras(**kwargs):
+        raise AssertionError("loras should already be applied to connected model and clip")
+
+    def fake_encode_prompt(**kwargs):
+        events.append(f"encode_prompt:{kwargs['clip']}")
+        return "conditioning"
+
+    def fake_sample(**kwargs):
+        captured["sample_model"] = kwargs["model"]
+        return {"samples": "sampled"}
+
+    monkeypatch.setattr(pipeline, "apply_lora_config", fake_apply_loras)
+    monkeypatch.setattr(
+        pipeline,
+        "load_vae",
+        lambda **kwargs: events.append("load_vae") or "vae",
+    )
+    monkeypatch.setattr(pipeline, "encode_z_image_prompt", fake_encode_prompt)
+    monkeypatch.setattr(pipeline, "make_empty_z_image_latent", lambda **kwargs: {"samples": "empty"})
+    monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", fake_sample)
+    monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: "image")
+
+    image, latent = pipeline.generate_z_image_turbo_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        width=1024,
+        height=1024,
+        seed=0,
+        steps=8,
+        cfg=1.0,
+        sampler="auto",
+        scheduler="auto",
+        settings={},
+        lora_config={"loras": [{"enabled": True, "name": "style"}]},
+        loaded_model="post_lora_patched_model",
+        loaded_clip="post_lora_clip",
+    )
+
+    assert image == "image"
+    assert latent == {"samples": "sampled"}
+    assert events[:2] == [
+        "load_vae",
+        "encode_prompt:post_lora_clip",
+    ]
+    assert captured["sample_model"] == "post_lora_patched_model"
+
+
+def test_flux2_pipeline_uses_connected_post_lora_model_and_clip(monkeypatch):
+    events = []
+    captured = {}
+
+    monkeypatch.setattr(
+        pipeline,
+        "load_diffusion_model",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("model should be connected")),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "load_text_encoder",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("clip should be connected")),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "apply_lora_config",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("loras should already be applied")),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "load_vae",
+        lambda **kwargs: events.append("load_vae") or "vae",
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "encode_flux2_prompt",
+        lambda **kwargs: events.append(f"encode:{kwargs['clip']}") or "conditioning",
+    )
+    monkeypatch.setattr(pipeline, "make_empty_flux2_latent", lambda **kwargs: {"samples": "empty"})
+    monkeypatch.setattr(pipeline, "flux2_sigmas", lambda **kwargs: "sigmas")
+    def fake_sample_with_sigmas(**kwargs):
+        captured["model"] = kwargs["model"]
+        return {"samples": "sampled"}
+
+    monkeypatch.setattr(pipeline, "sample_with_sigmas", fake_sample_with_sigmas)
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "zeroed")
+    monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: "image")
+
+    image, latent = pipeline.generate_flux2_klein_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="negative",
+        width=1024,
+        height=1024,
+        seed=0,
+        steps=4,
+        cfg=1.0,
+        sampler="auto",
+        scheduler="auto",
+        settings={},
+        loaded_model="post_lora_patched_model",
+        loaded_clip="post_lora_clip",
+    )
+
+    assert image == "image"
+    assert latent == {"samples": "sampled"}
+    assert events[:2] == [
+        "load_vae",
+        "encode:post_lora_clip",
+    ]
+    assert captured["model"] == "post_lora_patched_model"
+
+
+def test_pipeline_applies_loras_when_only_model_is_connected(monkeypatch):
+    events = []
+    captured = {}
+
+    monkeypatch.setattr(
+        pipeline,
+        "load_diffusion_model",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("model should be connected")),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "load_text_encoder",
+        lambda **kwargs: events.append("load_clip") or "clip",
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "apply_lora_config",
+        lambda **kwargs: events.append(f"apply_loras:{kwargs['model']}:{kwargs['clip']}") or ("model+lora", "clip+lora", []),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "load_vae",
+        lambda **kwargs: events.append("load_vae") or "vae",
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "encode_z_image_prompt",
+        lambda **kwargs: events.append(f"encode:{kwargs['clip']}") or "conditioning",
+    )
+    monkeypatch.setattr(pipeline, "make_empty_z_image_latent", lambda **kwargs: {"samples": "empty"})
+    def fake_sample(**kwargs):
+        captured["model"] = kwargs["model"]
+        return {"samples": "sampled"}
+
+    monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", fake_sample)
+    monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: "image")
+
+    pipeline.generate_z_image_turbo_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        width=1024,
+        height=1024,
+        seed=0,
+        steps=8,
+        cfg=1.0,
+        sampler="auto",
+        scheduler="auto",
+        settings={},
+        lora_config={"loras": [{"enabled": True, "name": "style"}]},
+        loaded_model="patched_model",
+    )
+
+    assert events[:3] == [
+        "load_clip",
+        "apply_loras:patched_model:clip",
+        "load_vae",
+    ]
+    assert captured["model"] == "model+lora"
+
+
 def test_flux2_pipeline_zeroes_negative_conditioning_after_references_when_cfg_one(monkeypatch):
     events = []
     captured = {}
