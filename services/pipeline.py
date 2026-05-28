@@ -7,6 +7,7 @@ execution-time functions so importing this custom node pack remains lightweight.
 from __future__ import annotations
 
 import math
+import re
 from typing import Any
 
 try:
@@ -289,6 +290,196 @@ def decode_latent(*, vae: Any, latent: dict[str, Any]):
     import nodes  # type: ignore
 
     return nodes.VAEDecode().decode(vae, latent)[0]
+
+
+def resolve_pid_target_dimensions(
+    *,
+    pid_diffusion_model: str,
+    source_width: int,
+    source_height: int,
+) -> dict[str, int]:
+    _, model_name = strip_category_prefix(pid_diffusion_model)
+    match = re.search(r"(?P<input>\d+)_to_(?P<output>\d+)", model_name)
+    if match is None:
+        raise ValueError(
+            "PID diffusion model name must include an input/output size pattern "
+            "like '512_to_2048' or '1024_to_4096'."
+        )
+
+    input_size = int(match.group("input"))
+    output_size = int(round_to_multiple(int(match.group("output")), 16))
+    if source_width <= 0 or source_height <= 0:
+        raise ValueError("PID source dimensions must be positive.")
+
+    if source_width >= source_height:
+        target_width = output_size
+        target_height = int(round_to_multiple(round(output_size * source_height / source_width), 16))
+    else:
+        target_height = output_size
+        target_width = int(round_to_multiple(round(output_size * source_width / source_height), 16))
+
+    return {
+        "input_size": input_size,
+        "output_size": output_size,
+        "width": max(16, target_width),
+        "height": max(16, target_height),
+    }
+
+
+def purge_vram_and_cache() -> None:
+    import comfy.model_management  # type: ignore
+
+    comfy.model_management.unload_all_models()
+    comfy.model_management.soft_empty_cache()
+
+
+def encode_pid_prompt(*, clip: Any, prompt: str):
+    tokens = clip.tokenize(prompt)
+    return clip.encode_from_tokens_scheduled(tokens)
+
+
+def apply_pid_conditioning(
+    *,
+    positive: Any,
+    latent: dict[str, Any],
+    latent_format: str,
+    degrade_sigma: float = 0.0,
+):
+    from comfy_extras.nodes_pid import PiDConditioning  # type: ignore
+
+    return _node_output_first(
+        PiDConditioning.execute(
+            positive=positive,
+            latent=latent,
+            latent_format=latent_format,
+            degrade_sigma=degrade_sigma,
+        )
+    )
+
+
+def make_empty_chroma_radiance_latent(*, width: int, height: int):
+    from comfy_extras.nodes_chroma_radiance import EmptyChromaRadianceLatentImage  # type: ignore
+
+    return _node_output_first(
+        EmptyChromaRadianceLatentImage.execute(width=width, height=height, batch_size=1)
+    )
+
+
+def pid_sampler(*, sampler_name: str = "lcm"):
+    from comfy_extras.nodes_custom_sampler import KSamplerSelect  # type: ignore
+
+    return _node_output_first(KSamplerSelect.execute(sampler_name=sampler_name))
+
+
+def pid_sigmas(*, model: Any, scheduler: str = "simple", steps: int = 4, denoise: float = 1.0):
+    from comfy_extras.nodes_custom_sampler import BasicScheduler  # type: ignore
+
+    return _node_output_first(
+        BasicScheduler.execute(model=model, scheduler=scheduler, steps=steps, denoise=denoise)
+    )
+
+
+def sample_pid_custom(
+    *,
+    model: Any,
+    seed: int,
+    positive: Any,
+    negative: Any,
+    sampler: Any,
+    sigmas: Any,
+    latent: dict[str, Any],
+    cfg: float = 1.0,
+):
+    from comfy_extras.nodes_custom_sampler import SamplerCustom  # type: ignore
+
+    return _node_output_first(
+        SamplerCustom.execute(
+            model=model,
+            add_noise=True,
+            noise_seed=seed,
+            cfg=cfg,
+            positive=positive,
+            negative=negative,
+            sampler=sampler,
+            sigmas=sigmas,
+            latent_image=latent,
+        )
+    )
+
+
+def generate_pid_upscale(
+    *,
+    pid_diffusion_model: str,
+    pid_text_encoder: str,
+    pid_vae: str,
+    positive_prompt: str,
+    source_latent: dict[str, Any],
+    source_width: int,
+    source_height: int,
+    seed: int,
+    latent_format: str = "flux",
+    save_vram: bool = False,
+    progress: Any = None,
+):
+    target = resolve_pid_target_dimensions(
+        pid_diffusion_model=pid_diffusion_model,
+        source_width=source_width,
+        source_height=source_height,
+    )
+
+    if save_vram:
+        _phase(progress, "purging vram before pid")
+        purge_vram_and_cache()
+
+    try:
+        _phase(progress, "loading pid diffusion model")
+        model = load_diffusion_model(diffusion_model=pid_diffusion_model)
+        _phase(progress, "loading pid text encoder")
+        clip = load_text_encoder(text_encoder=pid_text_encoder, clip_type="pixeldit")
+        _phase(progress, "encoding pid prompt")
+        positive = encode_pid_prompt(clip=clip, prompt=positive_prompt)
+        _phase(progress, "conditioning pid latent")
+        positive = apply_pid_conditioning(
+            positive=positive,
+            latent=source_latent,
+            latent_format=latent_format,
+            degrade_sigma=0.0,
+        )
+        negative = zero_out_conditioning(positive)
+        _phase(progress, "preparing pid latent")
+        target_latent = make_empty_chroma_radiance_latent(
+            width=target["width"],
+            height=target["height"],
+        )
+        sampler = pid_sampler(sampler_name="lcm")
+        sigmas = pid_sigmas(model=model, scheduler="simple", steps=4, denoise=1.0)
+        _phase(progress, "sampling pid")
+        pid_latent = sample_pid_custom(
+            model=model,
+            seed=seed,
+            positive=positive,
+            negative=negative,
+            sampler=sampler,
+            sigmas=sigmas,
+            latent=target_latent,
+            cfg=1.0,
+        )
+        _phase(progress, "loading pid vae")
+        vae = load_vae(vae=pid_vae)
+        _phase(progress, "decoding pid")
+        image = decode_latent(vae=vae, latent=pid_latent)
+        return image, {
+            "input_size": target["input_size"],
+            "output_size": target["output_size"],
+            "source_width": source_width,
+            "source_height": source_height,
+            "target_width": target["width"],
+            "target_height": target["height"],
+        }
+    finally:
+        if save_vram:
+            _phase(progress, "purging vram after pid")
+            purge_vram_and_cache()
 
 
 def flux2_sigmas(*, steps: int, width: int, height: int):

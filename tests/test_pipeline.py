@@ -848,3 +848,116 @@ def test_reference_scaling_uses_exact_dimensions_for_none_multiple(monkeypatch):
 
     assert calls["width"] == 836
     assert calls["height"] == 1254
+
+
+def test_pid_target_dimensions_parse_model_name_and_preserve_aspect_ratio():
+    square = pipeline.resolve_pid_target_dimensions(
+        pid_diffusion_model="diffusion_models/pid/pid_flux1_1024_to_4096_4step_bf16.safetensors",
+        source_width=1024,
+        source_height=1024,
+    )
+    portrait = pipeline.resolve_pid_target_dimensions(
+        pid_diffusion_model="pid/pid_flux1_512_to_2048_4step_bf16.safetensors",
+        source_width=768,
+        source_height=1024,
+    )
+
+    assert square == {
+        "input_size": 1024,
+        "output_size": 4096,
+        "width": 4096,
+        "height": 4096,
+    }
+    assert portrait == {
+        "input_size": 512,
+        "output_size": 2048,
+        "width": 1536,
+        "height": 2048,
+    }
+
+
+def test_pid_target_dimensions_requires_size_pattern():
+    with pytest.raises(ValueError, match="512_to_2048"):
+        pipeline.resolve_pid_target_dimensions(
+            pid_diffusion_model="pid/model_without_size.safetensors",
+            source_width=1024,
+            source_height=1024,
+        )
+
+
+def test_generate_pid_upscale_uses_prompt_latent_and_vram_purge(monkeypatch):
+    events = []
+    captured = {}
+
+    monkeypatch.setattr(
+        pipeline,
+        "purge_vram_and_cache",
+        lambda: events.append("purge"),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "load_diffusion_model",
+        lambda **kwargs: events.append(f"load_model:{kwargs['diffusion_model']}") or "pid_model",
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "load_text_encoder",
+        lambda **kwargs: events.append(f"load_clip:{kwargs['clip_type']}") or "pid_clip",
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "encode_pid_prompt",
+        lambda **kwargs: captured.update({"prompt": kwargs["prompt"]}) or "pid_positive",
+    )
+
+    def fake_apply_pid_conditioning(**kwargs):
+        captured["source_latent"] = kwargs["latent"]
+        captured["latent_format"] = kwargs["latent_format"]
+        return "pid_conditioning"
+
+    def fake_make_latent(**kwargs):
+        captured["target_width"] = kwargs["width"]
+        captured["target_height"] = kwargs["height"]
+        return {"samples": "target"}
+
+    monkeypatch.setattr(pipeline, "apply_pid_conditioning", fake_apply_pid_conditioning)
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: f"zeroed:{conditioning}")
+    monkeypatch.setattr(pipeline, "make_empty_chroma_radiance_latent", fake_make_latent)
+    monkeypatch.setattr(pipeline, "pid_sampler", lambda **kwargs: events.append("sampler") or "sampler")
+    monkeypatch.setattr(pipeline, "pid_sigmas", lambda **kwargs: events.append("sigmas") or "sigmas")
+
+    def fake_sample(**kwargs):
+        captured["seed"] = kwargs["seed"]
+        captured["negative"] = kwargs["negative"]
+        return {"samples": "pid_latent"}
+
+    monkeypatch.setattr(pipeline, "sample_pid_custom", fake_sample)
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: events.append(f"load_vae:{kwargs['vae']}") or "pid_vae")
+    monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: "pid_image")
+
+    image, metadata = pipeline.generate_pid_upscale(
+        pid_diffusion_model="pid/pid_flux1_1024_to_4096_4step_bf16.safetensors",
+        pid_text_encoder="pid/gemma_2_2b_it_elm_bf16.safetensors",
+        pid_vae="pixel_space",
+        positive_prompt="same prompt",
+        source_latent={"samples": "generated"},
+        source_width=1024,
+        source_height=576,
+        seed=123,
+        latent_format="flux",
+        save_vram=True,
+    )
+
+    assert image == "pid_image"
+    assert events[0] == "purge"
+    assert events[-1] == "purge"
+    assert "load_clip:pixeldit" in events
+    assert captured["prompt"] == "same prompt"
+    assert captured["source_latent"] == {"samples": "generated"}
+    assert captured["latent_format"] == "flux"
+    assert captured["target_width"] == 4096
+    assert captured["target_height"] == 2304
+    assert captured["seed"] == 123
+    assert captured["negative"] == "zeroed:pid_conditioning"
+    assert metadata["target_width"] == 4096
+    assert metadata["target_height"] == 2304
