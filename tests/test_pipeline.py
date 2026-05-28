@@ -107,7 +107,7 @@ def test_pipeline_applies_loras_before_prompt_encoding(monkeypatch):
     monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", lambda **kwargs: {"samples": "sampled"})
     monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: "image")
 
-    image, latent = pipeline.generate_z_image_turbo_t2i(
+    image, latent, positive, negative, loaded_vae = pipeline.generate_z_image_turbo_t2i(
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
         vae="vae.safetensors",
@@ -125,11 +125,13 @@ def test_pipeline_applies_loras_before_prompt_encoding(monkeypatch):
 
     assert image == "image"
     assert latent == {"samples": "sampled"}
-    assert events[:5] == [
+    assert positive == "conditioning"
+    assert negative == "conditioning"
+    assert loaded_vae == "vae"
+    assert events[:4] == [
         "load_model",
         "load_clip",
         "apply_loras",
-        "load_vae",
         "encode_prompt",
     ]
 
@@ -171,7 +173,7 @@ def test_z_image_pipeline_uses_connected_post_lora_model_and_clip(monkeypatch):
     monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", fake_sample)
     monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: "image")
 
-    image, latent = pipeline.generate_z_image_turbo_t2i(
+    image, latent, positive, negative, loaded_vae = pipeline.generate_z_image_turbo_t2i(
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
         vae="vae.safetensors",
@@ -191,11 +193,100 @@ def test_z_image_pipeline_uses_connected_post_lora_model_and_clip(monkeypatch):
 
     assert image == "image"
     assert latent == {"samples": "sampled"}
-    assert events[:2] == [
-        "load_vae",
+    assert positive == "conditioning"
+    assert negative == "conditioning"
+    assert loaded_vae == "vae"
+    assert events[:3] == [
         "encode_prompt:post_lora_clip",
+        "encode_prompt:post_lora_clip",
+        "load_vae",
     ]
     assert captured["sample_model"] == "post_lora_patched_model"
+
+
+def test_z_image_pipeline_skips_vae_when_image_decode_disabled(monkeypatch):
+    events = []
+
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model", "clip", []))
+    monkeypatch.setattr(
+        pipeline,
+        "load_vae",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("vae should not load")),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "encode_z_image_prompt",
+        lambda **kwargs: events.append(f"encode:{kwargs['prompt']}") or f"conditioning:{kwargs['prompt']}",
+    )
+    monkeypatch.setattr(pipeline, "make_empty_z_image_latent", lambda **kwargs: {"samples": "empty"})
+    monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", lambda **kwargs: {"samples": "sampled"})
+    monkeypatch.setattr(
+        pipeline,
+        "decode_latent",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("latent should not decode")),
+    )
+
+    image, latent, positive, negative, loaded_vae = pipeline.generate_z_image_turbo_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        width=1024,
+        height=1024,
+        seed=0,
+        steps=8,
+        cfg=1.0,
+        sampler="auto",
+        scheduler="auto",
+        settings={},
+        decode_image=False,
+    )
+
+    assert image is None
+    assert latent == {"samples": "sampled"}
+    assert positive == "conditioning:prompt"
+    assert negative == "conditioning:"
+    assert loaded_vae is None
+
+
+def test_z_image_pipeline_returns_vae_without_decoding_when_requested(monkeypatch):
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model", "clip", []))
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
+    monkeypatch.setattr(pipeline, "encode_z_image_prompt", lambda **kwargs: f"conditioning:{kwargs['prompt']}")
+    monkeypatch.setattr(pipeline, "make_empty_z_image_latent", lambda **kwargs: {"samples": "empty"})
+    monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", lambda **kwargs: {"samples": "sampled"})
+    monkeypatch.setattr(
+        pipeline,
+        "decode_latent",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("latent should not decode")),
+    )
+
+    image, latent, positive, negative, loaded_vae = pipeline.generate_z_image_turbo_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        width=1024,
+        height=1024,
+        seed=0,
+        steps=8,
+        cfg=1.0,
+        sampler="auto",
+        scheduler="auto",
+        settings={},
+        decode_image=False,
+        return_vae=True,
+    )
+
+    assert image is None
+    assert latent == {"samples": "sampled"}
+    assert positive == "conditioning:prompt"
+    assert negative == "conditioning:"
+    assert loaded_vae == "vae"
 
 
 def test_flux2_pipeline_uses_connected_post_lora_model_and_clip(monkeypatch):
@@ -237,7 +328,7 @@ def test_flux2_pipeline_uses_connected_post_lora_model_and_clip(monkeypatch):
     monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "zeroed")
     monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: "image")
 
-    image, latent = pipeline.generate_flux2_klein_t2i(
+    image, latent, positive, negative, loaded_vae = pipeline.generate_flux2_klein_t2i(
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
         vae="vae.safetensors",
@@ -257,11 +348,156 @@ def test_flux2_pipeline_uses_connected_post_lora_model_and_clip(monkeypatch):
 
     assert image == "image"
     assert latent == {"samples": "sampled"}
+    assert positive == "conditioning"
+    assert negative == "zeroed"
+    assert loaded_vae == "vae"
     assert events[:2] == [
-        "load_vae",
         "encode:post_lora_clip",
+        "load_vae",
     ]
     assert captured["model"] == "post_lora_patched_model"
+
+
+def test_flux2_pipeline_skips_vae_when_image_decode_disabled_without_references(monkeypatch):
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model", "clip", []))
+    monkeypatch.setattr(
+        pipeline,
+        "load_vae",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("vae should not load")),
+    )
+    monkeypatch.setattr(pipeline, "encode_flux2_prompt", lambda **kwargs: kwargs["prompt"])
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: f"zeroed:{conditioning}")
+    monkeypatch.setattr(pipeline, "make_empty_flux2_latent", lambda **kwargs: {"samples": "empty"})
+    monkeypatch.setattr(pipeline, "flux2_sigmas", lambda **kwargs: "sigmas")
+    monkeypatch.setattr(pipeline, "sample_with_sigmas", lambda **kwargs: {"samples": "sampled"})
+    monkeypatch.setattr(
+        pipeline,
+        "decode_latent",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("latent should not decode")),
+    )
+
+    image, latent, positive, negative, loaded_vae = pipeline.generate_flux2_klein_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="negative",
+        width=1024,
+        height=1024,
+        seed=0,
+        steps=4,
+        cfg=1.0,
+        sampler="auto",
+        scheduler="auto",
+        settings={},
+        decode_image=False,
+    )
+
+    assert image is None
+    assert latent == {"samples": "sampled"}
+    assert positive == "prompt"
+    assert negative == "zeroed:prompt"
+    assert loaded_vae is None
+
+
+def test_flux2_pipeline_returns_vae_without_decoding_when_requested(monkeypatch):
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model", "clip", []))
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
+    monkeypatch.setattr(pipeline, "encode_flux2_prompt", lambda **kwargs: kwargs["prompt"])
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: f"zeroed:{conditioning}")
+    monkeypatch.setattr(pipeline, "make_empty_flux2_latent", lambda **kwargs: {"samples": "empty"})
+    monkeypatch.setattr(pipeline, "flux2_sigmas", lambda **kwargs: "sigmas")
+    monkeypatch.setattr(pipeline, "sample_with_sigmas", lambda **kwargs: {"samples": "sampled"})
+    monkeypatch.setattr(
+        pipeline,
+        "decode_latent",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("latent should not decode")),
+    )
+
+    image, latent, positive, negative, loaded_vae = pipeline.generate_flux2_klein_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="negative",
+        width=1024,
+        height=1024,
+        seed=0,
+        steps=4,
+        cfg=1.0,
+        sampler="auto",
+        scheduler="auto",
+        settings={},
+        decode_image=False,
+        return_vae=True,
+    )
+
+    assert image is None
+    assert latent == {"samples": "sampled"}
+    assert positive == "prompt"
+    assert negative == "zeroed:prompt"
+    assert loaded_vae == "vae"
+
+
+def test_flux2_pipeline_loads_vae_for_references_when_image_decode_disabled(monkeypatch):
+    events = []
+
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model", "clip", []))
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: events.append("load_vae") or "vae")
+    monkeypatch.setattr(pipeline, "encode_flux2_prompt", lambda **kwargs: kwargs["prompt"])
+    monkeypatch.setattr(
+        pipeline,
+        "scale_image_to_total_pixels",
+        lambda **kwargs: events.append(f"scale:{kwargs['image']}") or f"scaled:{kwargs['image']}",
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "encode_image_to_latent",
+        lambda **kwargs: events.append(f"vae:{kwargs['vae']}:{kwargs['image']}") or {"samples": "ref"},
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "apply_reference_latents_to_conditioning",
+        lambda **kwargs: ("positive+refs", "negative+refs"),
+    )
+    monkeypatch.setattr(pipeline, "make_empty_flux2_latent", lambda **kwargs: {"samples": "empty"})
+    monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", lambda **kwargs: {"samples": "sampled"})
+    monkeypatch.setattr(
+        pipeline,
+        "decode_latent",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("latent should not decode")),
+    )
+
+    image, latent, positive, negative, loaded_vae = pipeline.generate_flux2_klein_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="negative",
+        width=1024,
+        height=1024,
+        seed=0,
+        steps=4,
+        cfg=1.5,
+        sampler="auto",
+        scheduler="normal",
+        settings={},
+        reference_inputs=SimpleNamespace(images=("first",)),
+        decode_image=False,
+    )
+
+    assert image is None
+    assert latent == {"samples": "sampled"}
+    assert positive == "positive+refs"
+    assert negative == "negative+refs"
+    assert loaded_vae == "vae"
+    assert events == ["load_vae", "scale:first", "vae:vae:scaled:first"]
 
 
 def test_pipeline_applies_loras_when_only_model_is_connected(monkeypatch):
@@ -321,7 +557,7 @@ def test_pipeline_applies_loras_when_only_model_is_connected(monkeypatch):
     assert events[:3] == [
         "load_clip",
         "apply_loras:patched_model:clip",
-        "load_vae",
+        "encode:clip+lora",
     ]
     assert captured["model"] == "model+lora"
 
@@ -394,7 +630,7 @@ def test_flux2_pipeline_zeroes_negative_conditioning_after_references_when_cfg_o
     )
 
     reference_inputs = SimpleNamespace(images=("first", "second"))
-    image, latent = pipeline.generate_flux2_klein_t2i(
+    image, latent, positive, negative, loaded_vae = pipeline.generate_flux2_klein_t2i(
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
         vae="vae.safetensors",
@@ -413,6 +649,8 @@ def test_flux2_pipeline_zeroes_negative_conditioning_after_references_when_cfg_o
 
     assert image == "image"
     assert latent == {"samples": "sampled"}
+    assert positive == "positive+refs"
+    assert negative == "zeroed:positive+refs"
     assert captured["reference_latents"] == [
         {"samples": "latent:scaled:first"},
         {"samples": "latent:scaled:second"},
@@ -492,7 +730,7 @@ def test_flux2_pipeline_keeps_negative_prompt_conditioning_when_cfg_not_one(monk
     )
 
     reference_inputs = SimpleNamespace(images=("first",))
-    image, latent = pipeline.generate_flux2_klein_t2i(
+    image, latent, positive, negative, loaded_vae = pipeline.generate_flux2_klein_t2i(
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
         vae="vae.safetensors",
@@ -511,6 +749,8 @@ def test_flux2_pipeline_keeps_negative_prompt_conditioning_when_cfg_not_one(monk
 
     assert image == "image"
     assert latent == {"samples": "sampled"}
+    assert positive == "positive+refs"
+    assert negative == "negative+refs"
     assert captured["reference_latents"] == [{"samples": "latent:scaled:first"}]
     assert captured["reference_negative_input"] == "negative"
     assert captured["positive"] == "positive+refs"

@@ -12,7 +12,7 @@ def test_z_image_adapter_calls_real_generation_pipeline(monkeypatch):
 
     def fake_generate(**kwargs):
         calls.update(kwargs)
-        return "image", {"samples": "latent"}
+        return "image", {"samples": "latent"}, "positive", "negative", "vae"
 
     monkeypatch.setattr(z_image_turbo.pipeline, "generate_z_image_turbo_t2i", fake_generate)
     adapter = ZImageTurboAdapter()
@@ -26,7 +26,7 @@ def test_z_image_adapter_calls_real_generation_pipeline(monkeypatch):
         scheduler="auto",
     )
 
-    image, latent = adapter.generate(
+    image, latent, positive, negative, loaded_vae = adapter.generate(
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
         vae="vae.safetensors",
@@ -44,10 +44,14 @@ def test_z_image_adapter_calls_real_generation_pipeline(monkeypatch):
 
     assert image == "image"
     assert latent == {"samples": "latent"}
+    assert positive == "positive"
+    assert negative == "negative"
     assert calls["steps"] == 8
     assert calls["positive_prompt"] == "prompt"
     assert calls["loaded_model"] == "patched_model"
     assert calls["loaded_clip"] == "patched_clip"
+    assert calls["decode_image"] is True
+    assert calls["return_vae"] is False
 
 
 def test_flux2_adapter_calls_real_generation_pipeline(monkeypatch):
@@ -55,7 +59,7 @@ def test_flux2_adapter_calls_real_generation_pipeline(monkeypatch):
 
     def fake_generate(**kwargs):
         calls.update(kwargs)
-        return "image", {"samples": "latent"}
+        return "image", {"samples": "latent"}, "positive", "negative", "vae"
 
     monkeypatch.setattr(flux2_klein_9b.pipeline, "generate_flux2_klein_t2i", fake_generate)
     adapter = Flux2Klein9BAdapter()
@@ -69,7 +73,7 @@ def test_flux2_adapter_calls_real_generation_pipeline(monkeypatch):
         scheduler="auto",
     )
 
-    image, latent = adapter.generate(
+    image, latent, positive, negative, loaded_vae = adapter.generate(
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
         vae="vae.safetensors",
@@ -87,10 +91,14 @@ def test_flux2_adapter_calls_real_generation_pipeline(monkeypatch):
 
     assert image == "image"
     assert latent == {"samples": "latent"}
+    assert positive == "positive"
+    assert negative == "negative"
     assert calls["steps"] == 4
     assert calls["negative_prompt"] == "negative"
     assert calls["loaded_model"] == "patched_model"
     assert calls["loaded_clip"] == "patched_clip"
+    assert calls["decode_image"] is True
+    assert calls["return_vae"] is False
 
 
 def test_flux2_adapter_passes_reference_inputs_to_pipeline(monkeypatch):
@@ -98,13 +106,13 @@ def test_flux2_adapter_passes_reference_inputs_to_pipeline(monkeypatch):
 
     def fake_generate(**kwargs):
         calls.update(kwargs)
-        return "image", {"samples": "latent"}
+        return "image", {"samples": "latent"}, "positive", "negative", "vae"
 
     monkeypatch.setattr(flux2_klein_9b.pipeline, "generate_flux2_klein_t2i", fake_generate)
     adapter = Flux2Klein9BAdapter()
     reference_inputs = ReferenceInputs(images=("first", "second"))
 
-    image, latent = adapter.generate(
+    image, latent, positive, negative, loaded_vae = adapter.generate(
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
         vae="vae.safetensors",
@@ -121,7 +129,39 @@ def test_flux2_adapter_passes_reference_inputs_to_pipeline(monkeypatch):
 
     assert image == "image"
     assert latent == {"samples": "latent"}
+    assert positive == "positive"
+    assert negative == "negative"
     assert calls["reference_inputs"] is reference_inputs
+
+
+def test_adapters_pass_decode_image_and_return_vae_to_pipeline(monkeypatch):
+    calls = {}
+
+    def fake_generate(**kwargs):
+        calls.update(kwargs)
+        return None, {"samples": "latent"}, "positive", "negative", "vae"
+
+    monkeypatch.setattr(z_image_turbo.pipeline, "generate_z_image_turbo_t2i", fake_generate)
+
+    adapter = ZImageTurboAdapter()
+    adapter.generate(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="ignored",
+        width=1024,
+        height=1024,
+        seed=123,
+        settings={"steps": 8, "cfg": 1.0},
+        sampler="auto",
+        scheduler="auto",
+        decode_image=False,
+        return_vae=True,
+    )
+
+    assert calls["decode_image"] is False
+    assert calls["return_vae"] is True
 
 
 def test_flux2_infers_single_reference_mode_from_one_reference(monkeypatch):
@@ -208,11 +248,11 @@ def test_flux2_allows_exact_dimensions_when_multiple_value_is_none(monkeypatch):
 
 def test_z_image_negative_prompt_warning_is_in_run_info(monkeypatch):
     def fake_generate(**kwargs):
-        return "image", {"samples": "latent"}
+        return "image", {"samples": "latent"}, "positive", "negative", "vae"
 
     monkeypatch.setattr(z_image_turbo.pipeline, "generate_z_image_turbo_t2i", fake_generate)
 
-    image, latent, run_info = AIOImageGenerate().generate(
+    image, latent, run_info, positive, negative, loaded_vae = AIOImageGenerate().generate(
         model_type="z_image_turbo",
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
@@ -235,6 +275,8 @@ def test_z_image_negative_prompt_warning_is_in_run_info(monkeypatch):
     parsed = json.loads(run_info)
     assert image == "image"
     assert latent == {"samples": "latent"}
+    assert positive == "positive"
+    assert negative == "negative"
     assert parsed["width"] == 576
     assert parsed["height"] == 1024
     assert parsed["warnings"] == [

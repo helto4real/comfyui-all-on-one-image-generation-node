@@ -83,6 +83,8 @@ class BaseImageAdapter(ABC):
         lora_config: dict[str, Any] | None = None,
         loaded_model: Any = None,
         loaded_clip: Any = None,
+        decode_image: bool = True,
+        return_vae: bool = False,
         progress: Any = None,
     ):
-        """Generate and return (image, latent)."""
+        """Generate and return (image, latent, positive, negative, vae)."""

@@ -1474,7 +1474,39 @@ function addControls(node) {
   button.options.tooltip = ADD_LORA_TOOLTIP;
 }
 
-function addRow(node, lora = null, value = null) {
+function applyLoraNodeSize(node, mode = "restore", savedSize = null) {
+  const currentSize = node.size || node.computeSize();
+  const nextSize = [Math.max(Number(currentSize[0]) || 0, MIN_NODE_WIDTH), Number(currentSize[1]) || 0];
+
+  if (Array.isArray(savedSize) && Number.isFinite(Number(savedSize[0]))) {
+    nextSize[0] = Math.max(Number(savedSize[0]), MIN_NODE_WIDTH);
+  }
+  if (mode === "interactive") {
+    nextSize[1] = Math.max(nextSize[1], node.computeSize()[1]);
+  } else if (Array.isArray(savedSize) && Number.isFinite(Number(savedSize[1]))) {
+    nextSize[1] = Number(savedSize[1]);
+  }
+
+  if (typeof node.setSize === "function") {
+    node.setSize(nextSize);
+  } else {
+    node.size = nextSize;
+  }
+}
+
+function scheduleLoraNodeSizeRestore(node, savedSize) {
+  if (!Array.isArray(savedSize)) {
+    return;
+  }
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      applyLoraNodeSize(node, "restore", savedSize);
+      node.setDirtyCanvas?.(true, true);
+    });
+  });
+}
+
+function addRow(node, lora = null, value = null, { resize = true, dirty = true } = {}) {
   const widget = new LoraRowWidget(nextRowName(node), value);
   if (lora) {
     widget.setLora(lora);
@@ -1485,9 +1517,10 @@ function addRow(node, lora = null, value = null) {
   } else {
     node.addCustomWidget(widget);
   }
-  node.size[1] = Math.max(node.size[1], node.computeSize()[1]);
-  node.size[0] = Math.max(node.size[0], MIN_NODE_WIDTH);
-  node.setDirtyCanvas(true, true);
+  applyLoraNodeSize(node, resize ? "interactive" : "restore");
+  if (dirty) {
+    node.setDirtyCanvas(true, true);
+  }
   return widget;
 }
 
@@ -1512,11 +1545,11 @@ function restoreRows(node, info) {
   removeDynamicWidgets(node);
   addHeader(node);
   for (const value of values) {
-    addRow(node, null, value);
+    addRow(node, null, value, { resize: false, dirty: false });
   }
   addControls(node);
-  node.size[1] = Math.max(node.size[1], node.computeSize()[1]);
-  node.size[0] = Math.max(node.size[0], MIN_NODE_WIDTH);
+  applyLoraNodeSize(node, "restore", info?.size);
+  scheduleLoraNodeSizeRestore(node, info?.size);
 }
 
 function ensureLoraUi(node) {
@@ -1532,9 +1565,7 @@ function ensureLoraUi(node) {
   if (!hasButton) {
     addControls(node);
   }
-  node.size = node.size || node.computeSize();
-  node.size[1] = Math.max(node.size[1], node.computeSize()[1]);
-  node.size[0] = Math.max(node.size[0], MIN_NODE_WIDTH);
+  applyLoraNodeSize(node, "restore");
   node.setDirtyCanvas?.(true, true);
 }
 
@@ -1551,8 +1582,7 @@ function patchLoraNodeType(nodeType) {
     removeDynamicWidgets(this);
     addHeader(this);
     addControls(this);
-    this.size[1] = Math.max(this.size[1], this.computeSize()[1]);
-    this.size[0] = Math.max(this.size[0], MIN_NODE_WIDTH);
+    applyLoraNodeSize(this, "interactive");
     this.setDirtyCanvas(true, true);
   };
 

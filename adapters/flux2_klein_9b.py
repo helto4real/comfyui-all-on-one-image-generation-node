@@ -109,5 +109,7 @@ class Flux2Klein9BAdapter(BaseImageAdapter):
             loaded_model=kwargs.get("loaded_model"),
             loaded_clip=kwargs.get("loaded_clip"),
             reference_inputs=kwargs.get("reference_inputs"),
+            decode_image=kwargs.get("decode_image", True),
+            return_vae=kwargs.get("return_vae", False),
             progress=progress,
         )

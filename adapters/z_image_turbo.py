@@ -93,5 +93,7 @@ class ZImageTurboAdapter(BaseImageAdapter):
             lora_config=kwargs.get("lora_config"),
             loaded_model=kwargs.get("loaded_model"),
             loaded_clip=kwargs.get("loaded_clip"),
+            decode_image=kwargs.get("decode_image", True),
+            return_vae=kwargs.get("return_vae", False),
             progress=progress,
         )

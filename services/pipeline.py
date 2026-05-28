@@ -315,6 +315,8 @@ def generate_z_image_turbo_t2i(
     lora_config: dict[str, Any] | None = None,
     loaded_model: Any = None,
     loaded_clip: Any = None,
+    decode_image: bool = True,
+    return_vae: bool = False,
     progress: Any = None,
 ):
     using_connected_model_pair = loaded_model is not None and loaded_clip is not None
@@ -335,8 +337,6 @@ def generate_z_image_turbo_t2i(
     if not using_connected_model_pair:
         _phase(progress, "applying loras")
         model, clip, _ = apply_lora_config(model=model, clip=clip, lora_config=lora_config)
-    _phase(progress, "loading vae")
-    loaded_vae = load_vae(vae=vae)
     _phase(progress, "encoding prompts")
     positive = encode_z_image_prompt(clip=clip, prompt=positive_prompt)
     negative = encode_z_image_prompt(clip=clip, prompt="")
@@ -353,9 +353,15 @@ def generate_z_image_turbo_t2i(
         negative=negative,
         latent=latent,
     )
-    _phase(progress, "decoding")
-    image = decode_latent(vae=loaded_vae, latent=sampled_latent)
-    return image, sampled_latent
+    image = None
+    loaded_vae = None
+    if decode_image or return_vae:
+        _phase(progress, "loading vae")
+        loaded_vae = load_vae(vae=vae)
+    if decode_image:
+        _phase(progress, "decoding")
+        image = decode_latent(vae=loaded_vae, latent=sampled_latent)
+    return image, sampled_latent, positive, negative, loaded_vae
 
 
 def generate_flux2_klein_t2i(
@@ -377,6 +383,8 @@ def generate_flux2_klein_t2i(
     loaded_model: Any = None,
     loaded_clip: Any = None,
     reference_inputs: Any = None,
+    decode_image: bool = True,
+    return_vae: bool = False,
     progress: Any = None,
 ):
     using_connected_model_pair = loaded_model is not None and loaded_clip is not None
@@ -397,8 +405,6 @@ def generate_flux2_klein_t2i(
     if not using_connected_model_pair:
         _phase(progress, "applying loras")
         model, clip, _ = apply_lora_config(model=model, clip=clip, lora_config=lora_config)
-    _phase(progress, "loading vae")
-    loaded_vae = load_vae(vae=vae)
     _phase(progress, "encoding prompts")
     guidance = float(settings.get("guidance", settings.get("cfg", 1.0)))
     zero_negative_conditioning = math.isclose(float(cfg), 1.0)
@@ -407,7 +413,10 @@ def generate_flux2_klein_t2i(
     if not zero_negative_conditioning:
         negative = encode_flux2_prompt(clip=clip, prompt=negative_prompt or "", guidance=guidance)
     reference_images = tuple(getattr(reference_inputs, "images", ()) or ())
+    loaded_vae = None
     if reference_images:
+        _phase(progress, "loading vae")
+        loaded_vae = load_vae(vae=vae)
         _phase(progress, "encoding reference images")
         reference_latents = []
         for reference_image in reference_images:
@@ -460,6 +469,11 @@ def generate_flux2_klein_t2i(
             negative=negative,
             latent=latent,
         )
-    _phase(progress, "decoding")
-    image = decode_latent(vae=loaded_vae, latent=sampled_latent)
-    return image, sampled_latent
+    image = None
+    if (decode_image or return_vae) and loaded_vae is None:
+        _phase(progress, "loading vae")
+        loaded_vae = load_vae(vae=vae)
+    if decode_image:
+        _phase(progress, "decoding")
+        image = decode_latent(vae=loaded_vae, latent=sampled_latent)
+    return image, sampled_latent, positive, negative, loaded_vae

@@ -94,11 +94,136 @@ def _schedulers() -> list[str]:
         return ["auto"]
 
 
+def _is_link(value: Any) -> bool:
+    return (
+        isinstance(value, (list, tuple))
+        and len(value) == 2
+        and isinstance(value[1], int)
+    )
+
+
+def _class_is_output_node(class_type: str) -> bool:
+    try:
+        import nodes as comfy_nodes  # type: ignore
+
+        class_def = getattr(comfy_nodes, "NODE_CLASS_MAPPINGS", {}).get(class_type)
+    except Exception:
+        class_def = None
+    if class_def is not None:
+        return bool(getattr(class_def, "OUTPUT_NODE", False))
+    return class_type in {"PreviewImage", "SaveImage"}
+
+
+def output_is_reachable(
+    prompt: Any,
+    unique_id: str | None,
+    socket_index: int,
+    *,
+    default: bool = False,
+) -> bool:
+    if not isinstance(prompt, dict) or unique_id is None:
+        return default
+
+    target_id = str(unique_id)
+    consumers: dict[tuple[str, int], set[str]] = {}
+    consumers_by_node: dict[str, set[str]] = {}
+    output_nodes: list[str] = []
+    for raw_node_id, node_data in prompt.items():
+        node_id = str(raw_node_id)
+        if not isinstance(node_data, dict):
+            continue
+        class_type = node_data.get("class_type")
+        if isinstance(class_type, str) and _class_is_output_node(class_type):
+            output_nodes.append(node_id)
+        inputs = node_data.get("inputs", {})
+        if not isinstance(inputs, dict):
+            continue
+        for value in inputs.values():
+            if not _is_link(value):
+                continue
+            from_node_id, from_socket = str(value[0]), int(value[1])
+            consumers.setdefault((from_node_id, from_socket), set()).add(node_id)
+            consumers_by_node.setdefault(from_node_id, set()).add(node_id)
+
+    if not output_nodes:
+        return default
+
+    nodes_to_visit = list(consumers.get((target_id, socket_index), set()))
+    visited: set[str] = set()
+    output_node_ids = set(output_nodes)
+    while nodes_to_visit:
+        node_id = nodes_to_visit.pop()
+        if node_id in visited:
+            continue
+        visited.add(node_id)
+        if node_id in output_node_ids:
+            return True
+        nodes_to_visit.extend(consumers_by_node.get(node_id, ()))
+    return False
+
+
+def image_output_is_required(prompt: Any, unique_id: str | None) -> bool:
+    return output_is_reachable(prompt, unique_id, 0, default=True)
+
+
+def workflow_output_has_link(extra_pnginfo: Any, unique_id: str | None, socket_index: int) -> bool:
+    if unique_id is None or not isinstance(extra_pnginfo, dict):
+        return False
+
+    workflow = extra_pnginfo.get("workflow")
+    if not isinstance(workflow, dict):
+        return False
+
+    target_id = str(unique_id)
+    for link in workflow.get("links", []) or []:
+        if (
+            isinstance(link, (list, tuple))
+            and len(link) >= 3
+            and str(link[1]) == target_id
+            and link[2] == socket_index
+        ):
+            return True
+
+    for node in workflow.get("nodes", []) or []:
+        if not isinstance(node, dict) or str(node.get("id")) != target_id:
+            continue
+        outputs = node.get("outputs", [])
+        if not isinstance(outputs, list) or socket_index >= len(outputs):
+            return False
+        output = outputs[socket_index]
+        if not isinstance(output, dict):
+            return False
+        links = output.get("links")
+        return bool(links)
+    return False
+
+
+def output_is_connected(
+    prompt: Any,
+    extra_pnginfo: Any,
+    unique_id: str | None,
+    socket_index: int,
+    *,
+    default: bool = False,
+) -> bool:
+    return workflow_output_has_link(extra_pnginfo, unique_id, socket_index) or output_is_reachable(
+        prompt,
+        unique_id,
+        socket_index,
+        default=default,
+    )
+
+
 class AIOImageGenerate:
     CATEGORY = "AIO/Image"
-    RETURN_TYPES = ("IMAGE", "LATENT", "STRING")
-    RETURN_NAMES = ("image", "latent", "run_info")
+    RETURN_TYPES = ("IMAGE", "LATENT", "STRING", "CONDITIONING", "CONDITIONING", "VAE")
+    RETURN_NAMES = ("image", "latent", "run_info", "positive", "negative", "vae")
     FUNCTION = "generate"
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        del kwargs
+        return float("NaN")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -270,7 +395,10 @@ class AIOImageGenerate:
         weight_format: str | None = None,
         **reference_values: Any,
     ):
-        del prompt, extra_pnginfo, weight_format
+        del weight_format
+        image_connected = output_is_connected(prompt, extra_pnginfo, unique_id, 0, default=True)
+        vae_connected = output_is_connected(prompt, extra_pnginfo, unique_id, 5)
+        decode_image = image_connected
         reference_inputs = normalize_reference_inputs(
             reference_values,
             reference_image=reference_image,
@@ -332,7 +460,7 @@ class AIOImageGenerate:
 
         progress = ProgressReporter(total_steps=effective_steps, node_id=unique_id)
         progress.phase("resolving models")
-        image, latent = adapter.generate(
+        image, latent, positive, negative, loaded_vae = adapter.generate(
             diffusion_model=diffusion_model,
             text_encoder=text_encoder,
             vae=vae,
@@ -348,6 +476,8 @@ class AIOImageGenerate:
             loaded_model=model,
             loaded_clip=clip,
             reference_inputs=reference_inputs,
+            decode_image=decode_image,
+            return_vae=vae_connected,
             progress=progress,
         )
         progress.done()
@@ -373,4 +503,4 @@ class AIOImageGenerate:
             adapter_version=adapter.version,
             loras=lora_summary,
         )
-        return image, latent, to_json(run_info)
+        return image, latent, to_json(run_info), positive, negative, loaded_vae
