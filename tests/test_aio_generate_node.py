@@ -483,6 +483,11 @@ def test_main_node_pid_enabled_connected_uses_generated_latent_and_prompt(monkey
             "output_size": 4096,
             "target_width": 4096,
             "target_height": 4096,
+            "pid_backbone": "flux1",
+            "source_latent_channels": 16,
+            "expected_latent_channels": 16,
+            "selected_model_compatible": True,
+            "validation": "passed",
         }
 
     prompt = {
@@ -528,6 +533,9 @@ def test_main_node_pid_enabled_connected_uses_generated_latent_and_prompt(monkey
     assert parsed["pid"]["ran"] is True
     assert parsed["pid"]["target_width"] == 4096
     assert parsed["pid"]["target_height"] == 4096
+    assert parsed["pid"]["pid_backbone"] == "flux1"
+    assert parsed["pid"]["source_latent_channels"] == 16
+    assert parsed["pid"]["validation"] == "passed"
 
 
 def test_main_node_returns_vae_for_valid_latent_only_vae_prompt(monkeypatch):

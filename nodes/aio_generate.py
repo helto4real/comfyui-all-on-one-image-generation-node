@@ -531,6 +531,13 @@ class AIOImageGenerate:
             settings=settings,
             reference_inputs=reference_inputs,
         )
+        if pid_connected and pid_enabled:
+            warnings.extend(
+                pipeline.pid_backbone_warnings(
+                    model_type=model_type,
+                    pid_diffusion_model=pid_diffusion_model,
+                )
+            )
 
         progress = ProgressReporter(total_steps=effective_steps, node_id=unique_id)
         progress.phase("resolving models")
@@ -556,6 +563,7 @@ class AIOImageGenerate:
         )
 
         image_pid = None
+        pid_backbone = pipeline.detect_pid_backbone(pid_diffusion_model)
         pid_info = {
             "enabled": bool(pid_enabled),
             "connected": bool(pid_connected),
@@ -563,8 +571,13 @@ class AIOImageGenerate:
             "diffusion_model": pid_diffusion_model,
             "text_encoder": pid_text_encoder,
             "vae": pid_vae,
+            "pid_backbone": pid_backbone,
             "source_width": effective_width,
             "source_height": effective_height,
+            "source_latent_channels": pipeline.pid_source_latent_channels(latent),
+            "expected_latent_channels": None,
+            "selected_model_compatible": None,
+            "validation": "not_run",
             "target_width": None,
             "target_height": None,
             "latent_format": pid_latent_format,
@@ -592,6 +605,11 @@ class AIOImageGenerate:
                         "output_size": pid_dimensions["output_size"],
                         "target_width": pid_dimensions["target_width"],
                         "target_height": pid_dimensions["target_height"],
+                        "pid_backbone": pid_dimensions["pid_backbone"],
+                        "source_latent_channels": pid_dimensions["source_latent_channels"],
+                        "expected_latent_channels": pid_dimensions["expected_latent_channels"],
+                        "selected_model_compatible": pid_dimensions["selected_model_compatible"],
+                        "validation": pid_dimensions["validation"],
                     }
                 )
             else:

@@ -326,6 +326,87 @@ def resolve_pid_target_dimensions(
     }
 
 
+def detect_pid_backbone(pid_diffusion_model: str) -> str:
+    _, model_name = strip_category_prefix(pid_diffusion_model)
+    normalized = model_name.lower()
+    if "pid_flux2" in normalized:
+        return "flux2"
+    if "pid_flux1" in normalized or "pid_flux" in normalized:
+        return "flux1"
+    if "pid_sd3" in normalized:
+        return "sd3"
+    return "unknown"
+
+
+def pid_source_latent_channels(source_latent: dict[str, Any]) -> int | None:
+    samples = source_latent.get("samples")
+    shape = getattr(samples, "shape", None)
+    if shape is None or len(shape) < 2:
+        return None
+    return int(shape[1])
+
+
+def validate_pid_backbone_compatibility(
+    *,
+    pid_diffusion_model: str,
+    source_latent: dict[str, Any],
+    latent_format: str,
+) -> dict[str, Any]:
+    backbone = detect_pid_backbone(pid_diffusion_model)
+    source_channels = pid_source_latent_channels(source_latent)
+    expected_channels = {
+        "flux1": 16,
+        "flux2": 128,
+        "sd3": 16,
+    }.get(backbone)
+
+    if expected_channels is not None and source_channels is None:
+        raise ValueError(
+            "PID source latent must include samples with a channel dimension for "
+            f"{backbone} compatibility validation."
+        )
+    if expected_channels is not None and source_channels != expected_channels:
+        raise ValueError(
+            f"Selected PID diffusion model appears to be {backbone}, which expects "
+            f"{expected_channels} latent channels, but the generated latent has "
+            f"{source_channels} channels. Select a PID model matching the base model."
+        )
+    if backbone == "sd3" and latent_format != "sd3":
+        raise ValueError(
+            "Selected PID diffusion model appears to be sd3, so pid_latent_format "
+            "must be set to 'sd3'."
+        )
+
+    return {
+        "pid_backbone": backbone,
+        "source_latent_channels": source_channels,
+        "expected_latent_channels": expected_channels,
+        "selected_model_compatible": None if expected_channels is None else True,
+        "validation": "passed" if expected_channels is not None else "unknown",
+    }
+
+
+def pid_backbone_warnings(*, model_type: str, pid_diffusion_model: str) -> list[str]:
+    backbone = detect_pid_backbone(pid_diffusion_model)
+    if model_type == "flux2_klein_9b" and backbone not in ("flux2", "unknown"):
+        return [
+            "PID diffusion model appears to be Flux1/SD3-compatible, but the base "
+            "model is Flux2. Use a pid_flux2 checkpoint to avoid latent/checkpoint "
+            "mismatches."
+        ]
+    if model_type.startswith("z_image") and backbone == "flux2":
+        return [
+            "PID diffusion model appears to be Flux2-compatible, but Z-Image uses "
+            "the Flux1-compatible PID checkpoint path."
+        ]
+    if model_type.startswith("z_image") and backbone == "sd3":
+        return [
+            "PID diffusion model appears to be SD3-compatible, but Z-Image uses "
+            "the Flux1-compatible PID checkpoint path."
+        ]
+    return []
+
+
 def purge_vram_and_cache() -> None:
     import comfy.model_management  # type: ignore
 
@@ -426,6 +507,11 @@ def generate_pid_upscale(
         source_width=source_width,
         source_height=source_height,
     )
+    compatibility = validate_pid_backbone_compatibility(
+        pid_diffusion_model=pid_diffusion_model,
+        source_latent=source_latent,
+        latent_format=latent_format,
+    )
 
     if save_vram:
         _phase(progress, "purging vram before pid")
@@ -437,15 +523,15 @@ def generate_pid_upscale(
         _phase(progress, "loading pid text encoder")
         clip = load_text_encoder(text_encoder=pid_text_encoder, clip_type="pixeldit")
         _phase(progress, "encoding pid prompt")
-        positive = encode_pid_prompt(clip=clip, prompt=positive_prompt)
+        pid_text_positive = encode_pid_prompt(clip=clip, prompt=positive_prompt)
         _phase(progress, "conditioning pid latent")
         positive = apply_pid_conditioning(
-            positive=positive,
+            positive=pid_text_positive,
             latent=source_latent,
             latent_format=latent_format,
             degrade_sigma=0.0,
         )
-        negative = zero_out_conditioning(positive)
+        negative = zero_out_conditioning(pid_text_positive)
         _phase(progress, "preparing pid latent")
         target_latent = make_empty_chroma_radiance_latent(
             width=target["width"],
@@ -475,6 +561,7 @@ def generate_pid_upscale(
             "source_height": source_height,
             "target_width": target["width"],
             "target_height": target["height"],
+            **compatibility,
         }
     finally:
         if save_vram:
