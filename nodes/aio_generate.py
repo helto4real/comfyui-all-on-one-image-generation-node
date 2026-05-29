@@ -55,10 +55,8 @@ except ImportError:  # pragma: no cover - direct test imports
 
 
 DEFAULT_PROMPT = "A luminous studio portrait, crisp details, natural color, soft light"
-DEFAULT_PID_DIFFUSION_MODEL = "pid/pid_flux1_1024_to_4096_4step_bf16.safetensors"
-DEFAULT_PID_TEXT_ENCODER = "pid/gemma_2_2b_it_elm_bf16.safetensors"
-DEFAULT_PID_VAE = "pixel_space"
-PID_OUTPUT_INDEX = 6
+PID_LATENT_OUTPUT_INDEX = 6
+PID_SIGMA_OUTPUT_INDEX = 7
 
 
 def _filename_list(category: str) -> list[str]:
@@ -80,43 +78,6 @@ def _combined_filenames(categories: tuple[str, ...]) -> list[str]:
                 seen.add(value)
                 values.append(value)
     return values or [""]
-
-
-def _prefer_filename(values: list[str], preferred: str) -> list[str]:
-    if not values:
-        return [preferred]
-    for value in values:
-        if value == preferred or value.endswith(f"/{preferred}"):
-            return [value, *[item for item in values if item != value]]
-    return values
-
-
-def _pid_diffusion_models() -> list[str]:
-    return _prefer_filename(
-        _combined_filenames(
-            (
-                "diffusion_models",
-                "unet",
-                "checkpoints",
-                "unet_gguf",
-                "model_gguf",
-            )
-        ),
-        DEFAULT_PID_DIFFUSION_MODEL,
-    )
-
-
-def _pid_text_encoders() -> list[str]:
-    return _prefer_filename(
-        _combined_filenames(("text_encoders", "clip", "clip_gguf")),
-        DEFAULT_PID_TEXT_ENCODER,
-    )
-
-
-def _pid_vaes() -> list[str]:
-    values = _combined_filenames(("vae", "vae_gguf"))
-    values = [value for value in values if value != DEFAULT_PID_VAE]
-    return [DEFAULT_PID_VAE, *values]
 
 
 def _samplers() -> list[str]:
@@ -259,8 +220,30 @@ def output_is_connected(
 
 class AIOImageGenerate:
     CATEGORY = "AIO/Image"
-    RETURN_TYPES = ("IMAGE", "LATENT", "STRING", "CONDITIONING", "CONDITIONING", "VAE", "IMAGE")
-    RETURN_NAMES = ("image", "latent", "run_info", "positive", "negative", "vae", "image_pid")
+    RETURN_TYPES = (
+        "IMAGE",
+        "LATENT",
+        "STRING",
+        "CONDITIONING",
+        "CONDITIONING",
+        "VAE",
+        "LATENT",
+        "FLOAT",
+        "INT",
+        "INT",
+    )
+    RETURN_NAMES = (
+        "image",
+        "latent",
+        "run_info",
+        "positive",
+        "negative",
+        "vae",
+        "pid_latent",
+        "pid_sigma",
+        "width",
+        "height",
+    )
     FUNCTION = "generate"
 
     @classmethod
@@ -380,29 +363,15 @@ class AIOImageGenerate:
                     _schedulers(),
                     {"tooltip": "Noise schedule used during sampling. Auto lets the selected model profile choose a default."},
                 ),
-                "pid_enabled": (
-                    "BOOLEAN",
-                    {"default": False, "tooltip": "Enable NVIDIA PiD upscale processing when the image_pid output is connected."},
-                ),
-                "pid_save_vram": (
-                    "BOOLEAN",
-                    {"default": False, "tooltip": "When PID runs, unload models and clear cache before and after PID processing."},
-                ),
-                "pid_diffusion_model": (
-                    _pid_diffusion_models(),
-                    {"tooltip": "PiD diffusion model. Model names should include an input/output pattern such as 1024_to_4096."},
-                ),
-                "pid_text_encoder": (
-                    _pid_text_encoders(),
-                    {"tooltip": "PiD text encoder loaded as ComfyUI CLIP type pixeldit."},
-                ),
-                "pid_vae": (
-                    _pid_vaes(),
-                    {"tooltip": "VAE used to decode the PID latent. pixel_space matches the NVIDIA PiD workflow."},
-                ),
-                "pid_latent_format": (
-                    ["flux", "sd3"],
-                    {"default": "flux", "advanced": True, "tooltip": "Latent format passed to PiD Conditioning. Use sd3 only for SD3 latents."},
+                "pid_capture_step": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 4096,
+                        "step": 1,
+                        "tooltip": "Main sampler step to capture for PID. Use 0 to auto-select a step near the end.",
+                    },
                 ),
             },
             "optional": {
@@ -450,12 +419,7 @@ class AIOImageGenerate:
         cfg: float = 0.0,
         sampler: str = "auto",
         scheduler: str = "auto",
-        pid_enabled: bool = False,
-        pid_save_vram: bool = False,
-        pid_diffusion_model: str = DEFAULT_PID_DIFFUSION_MODEL,
-        pid_text_encoder: str = DEFAULT_PID_TEXT_ENCODER,
-        pid_vae: str = DEFAULT_PID_VAE,
-        pid_latent_format: str = "flux",
+        pid_capture_step: int = 0,
         model_settings: dict[str, Any] | None = None,
         lora_config: dict[str, Any] | None = None,
         model: Any = None,
@@ -471,8 +435,10 @@ class AIOImageGenerate:
         del weight_format
         image_connected = output_is_connected(prompt, extra_pnginfo, unique_id, 0, default=True)
         vae_connected = output_is_connected(prompt, extra_pnginfo, unique_id, 5)
-        pid_connected = output_is_connected(prompt, extra_pnginfo, unique_id, PID_OUTPUT_INDEX)
-        decode_image = image_connected or (pid_connected and not pid_enabled)
+        pid_latent_connected = output_is_connected(prompt, extra_pnginfo, unique_id, PID_LATENT_OUTPUT_INDEX)
+        pid_sigma_connected = output_is_connected(prompt, extra_pnginfo, unique_id, PID_SIGMA_OUTPUT_INDEX)
+        pid_capture_connected = pid_latent_connected or pid_sigma_connected
+        decode_image = image_connected
         reference_inputs = normalize_reference_inputs(
             reference_values,
             reference_image=reference_image,
@@ -531,16 +497,12 @@ class AIOImageGenerate:
             settings=settings,
             reference_inputs=reference_inputs,
         )
-        if pid_connected and pid_enabled:
-            warnings.extend(
-                pipeline.pid_backbone_warnings(
-                    model_type=model_type,
-                    pid_diffusion_model=pid_diffusion_model,
-                )
-            )
-
         progress = ProgressReporter(total_steps=effective_steps, node_id=unique_id)
         progress.phase("resolving models")
+        resolved_pid_capture_step = pipeline.resolve_pid_capture_step(
+            pid_capture_step,
+            effective_steps,
+        ) if pid_capture_connected else None
         image, latent, positive, negative, loaded_vae = adapter.generate(
             diffusion_model=diffusion_model,
             text_encoder=text_encoder,
@@ -559,61 +521,13 @@ class AIOImageGenerate:
             reference_inputs=reference_inputs,
             decode_image=decode_image,
             return_vae=vae_connected,
+            pid_capture_step=resolved_pid_capture_step,
             progress=progress,
         )
 
-        image_pid = None
-        pid_backbone = pipeline.detect_pid_backbone(pid_diffusion_model)
-        pid_info = {
-            "enabled": bool(pid_enabled),
-            "connected": bool(pid_connected),
-            "ran": False,
-            "diffusion_model": pid_diffusion_model,
-            "text_encoder": pid_text_encoder,
-            "vae": pid_vae,
-            "pid_backbone": pid_backbone,
-            "source_width": effective_width,
-            "source_height": effective_height,
-            "source_latent_channels": pipeline.pid_source_latent_channels(latent),
-            "expected_latent_channels": None,
-            "selected_model_compatible": None,
-            "validation": "not_run",
-            "target_width": None,
-            "target_height": None,
-            "latent_format": pid_latent_format,
-            "save_vram": bool(pid_save_vram),
-        }
-        if pid_connected:
-            if pid_enabled:
-                image_pid, pid_dimensions = pipeline.generate_pid_upscale(
-                    pid_diffusion_model=pid_diffusion_model,
-                    pid_text_encoder=pid_text_encoder,
-                    pid_vae=pid_vae,
-                    positive_prompt=positive_prompt,
-                    source_latent=latent,
-                    source_width=effective_width,
-                    source_height=effective_height,
-                    seed=seed,
-                    latent_format=pid_latent_format,
-                    save_vram=bool(pid_save_vram),
-                    progress=progress,
-                )
-                pid_info.update(
-                    {
-                        "ran": True,
-                        "input_size": pid_dimensions["input_size"],
-                        "output_size": pid_dimensions["output_size"],
-                        "target_width": pid_dimensions["target_width"],
-                        "target_height": pid_dimensions["target_height"],
-                        "pid_backbone": pid_dimensions["pid_backbone"],
-                        "source_latent_channels": pid_dimensions["source_latent_channels"],
-                        "expected_latent_channels": pid_dimensions["expected_latent_channels"],
-                        "selected_model_compatible": pid_dimensions["selected_model_compatible"],
-                        "validation": pid_dimensions["validation"],
-                    }
-                )
-            else:
-                image_pid = image
+        pid_capture = latent.get(pipeline.PID_CAPTURE_KEY) if isinstance(latent, dict) else None
+        pid_latent = pid_capture["latent"] if pid_capture_connected and pid_capture else None
+        pid_sigma = float(pid_capture["sigma"]) if pid_capture_connected and pid_capture else 0.0
         progress.done()
 
         run_info = build_run_info(
@@ -636,6 +550,16 @@ class AIOImageGenerate:
             warnings=warnings,
             adapter_version=adapter.version,
             loras=lora_summary,
-            pid=pid_info,
         )
-        return image, latent, to_json(run_info), positive, negative, loaded_vae, image_pid
+        return (
+            image,
+            latent,
+            to_json(run_info),
+            positive,
+            negative,
+            loaded_vae,
+            pid_latent,
+            pid_sigma,
+            effective_width,
+            effective_height,
+        )

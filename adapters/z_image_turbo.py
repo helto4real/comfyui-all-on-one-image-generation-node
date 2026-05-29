@@ -95,5 +95,6 @@ class ZImageTurboAdapter(BaseImageAdapter):
             loaded_clip=kwargs.get("loaded_clip"),
             decode_image=kwargs.get("decode_image", True),
             return_vae=kwargs.get("return_vae", False),
+            pid_capture_step=kwargs.get("pid_capture_step"),
             progress=progress,
         )

@@ -850,196 +850,32 @@ def test_reference_scaling_uses_exact_dimensions_for_none_multiple(monkeypatch):
     assert calls["height"] == 1254
 
 
-def test_pid_target_dimensions_parse_model_name_and_preserve_aspect_ratio():
-    square = pipeline.resolve_pid_target_dimensions(
-        pid_diffusion_model="diffusion_models/pid/pid_flux1_1024_to_4096_4step_bf16.safetensors",
-        source_width=1024,
-        source_height=1024,
-    )
-    portrait = pipeline.resolve_pid_target_dimensions(
-        pid_diffusion_model="pid/pid_flux1_512_to_2048_4step_bf16.safetensors",
-        source_width=768,
-        source_height=1024,
+def test_pid_capture_step_defaults_near_end_and_clamps():
+    assert pipeline.resolve_pid_capture_step(None, 50) is None
+    assert pipeline.resolve_pid_capture_step(0, 50) == 46
+    assert pipeline.resolve_pid_capture_step(0, 4) == 4
+    assert pipeline.resolve_pid_capture_step(99, 8) == 8
+
+
+def test_pid_capture_sidecar_attaches_latent_sigma_and_step():
+    source = {"samples": "source", "downscale_ratio_spacial": 16}
+    final = {"samples": "final"}
+    captured = {"samples": "captured", "sigma": 0.342}
+
+    out = pipeline._attach_pid_capture(
+        latent=final,
+        source_latent=source,
+        captured=captured,
+        fallback_samples="fallback",
+        target_step=46,
     )
 
-    assert square == {
-        "input_size": 1024,
-        "output_size": 4096,
-        "width": 4096,
-        "height": 4096,
+    pid = out[pipeline.PID_CAPTURE_KEY]
+    assert out["samples"] == "final"
+    assert pid["sigma"] == 0.342
+    assert pid["step"] == 46
+    assert pid["latent"] == {
+        "samples": "captured",
+        "pid_sigma": 0.342,
+        "pid_capture_step": 46,
     }
-    assert portrait == {
-        "input_size": 512,
-        "output_size": 2048,
-        "width": 1536,
-        "height": 2048,
-    }
-
-
-def test_pid_target_dimensions_requires_size_pattern():
-    with pytest.raises(ValueError, match="512_to_2048"):
-        pipeline.resolve_pid_target_dimensions(
-            pid_diffusion_model="pid/model_without_size.safetensors",
-            source_width=1024,
-            source_height=1024,
-        )
-
-
-def test_pid_backbone_detection_from_model_filename():
-    assert pipeline.detect_pid_backbone("pid/pid_flux2_1024_to_4096_4step_bf16.safetensors") == "flux2"
-    assert pipeline.detect_pid_backbone("pid/pid_flux1_1024_to_4096_4step_bf16.safetensors") == "flux1"
-    assert pipeline.detect_pid_backbone("pid/pid_flux_512_to_2048_4step_bf16.safetensors") == "flux1"
-    assert pipeline.detect_pid_backbone("pid/pid_sd3_1024_to_4096_4step_bf16.safetensors") == "sd3"
-    assert pipeline.detect_pid_backbone("pid/custom_1024_to_4096.safetensors") == "unknown"
-
-
-def _fake_latent_with_channels(channels):
-    class FakeSamples:
-        shape = (1, channels, 64, 64)
-
-    return {"samples": FakeSamples()}
-
-
-def test_pid_validation_rejects_flux2_model_for_non_flux2_latent():
-    with pytest.raises(ValueError, match="expects 128 latent channels"):
-        pipeline.validate_pid_backbone_compatibility(
-            pid_diffusion_model="pid/pid_flux2_1024_to_4096_4step_bf16.safetensors",
-            source_latent=_fake_latent_with_channels(16),
-            latent_format="flux",
-        )
-
-
-def test_pid_validation_rejects_flux1_model_for_flux2_latent():
-    with pytest.raises(ValueError, match="expects 16 latent channels"):
-        pipeline.validate_pid_backbone_compatibility(
-            pid_diffusion_model="pid/pid_flux1_1024_to_4096_4step_bf16.safetensors",
-            source_latent=_fake_latent_with_channels(128),
-            latent_format="flux",
-        )
-
-
-def test_pid_validation_requires_sd3_latent_format_for_sd3_model():
-    with pytest.raises(ValueError, match="pid_latent_format"):
-        pipeline.validate_pid_backbone_compatibility(
-            pid_diffusion_model="pid/pid_sd3_1024_to_4096_4step_bf16.safetensors",
-            source_latent=_fake_latent_with_channels(16),
-            latent_format="flux",
-        )
-
-
-def test_pid_validation_returns_metadata_for_compatible_model():
-    metadata = pipeline.validate_pid_backbone_compatibility(
-        pid_diffusion_model="pid/pid_flux2_1024_to_4096_4step_bf16.safetensors",
-        source_latent=_fake_latent_with_channels(128),
-        latent_format="flux",
-    )
-
-    assert metadata == {
-        "pid_backbone": "flux2",
-        "source_latent_channels": 128,
-        "expected_latent_channels": 128,
-        "selected_model_compatible": True,
-        "validation": "passed",
-    }
-
-
-def test_pid_backbone_warnings_flag_likely_model_mismatches():
-    flux2_warnings = pipeline.pid_backbone_warnings(
-        model_type="flux2_klein_9b",
-        pid_diffusion_model="pid/pid_flux1_1024_to_4096_4step_bf16.safetensors",
-    )
-    z_image_warnings = pipeline.pid_backbone_warnings(
-        model_type="z_image_turbo",
-        pid_diffusion_model="pid/pid_flux2_1024_to_4096_4step_bf16.safetensors",
-    )
-
-    assert "Flux2" in flux2_warnings[0]
-    assert "Z-Image" in z_image_warnings[0]
-
-
-def test_generate_pid_upscale_uses_prompt_latent_and_vram_purge(monkeypatch):
-    events = []
-    captured = {}
-
-    monkeypatch.setattr(
-        pipeline,
-        "purge_vram_and_cache",
-        lambda: events.append("purge"),
-    )
-    monkeypatch.setattr(
-        pipeline,
-        "load_diffusion_model",
-        lambda **kwargs: events.append(f"load_model:{kwargs['diffusion_model']}") or "pid_model",
-    )
-    monkeypatch.setattr(
-        pipeline,
-        "load_text_encoder",
-        lambda **kwargs: events.append(f"load_clip:{kwargs['clip_type']}") or "pid_clip",
-    )
-    monkeypatch.setattr(
-        pipeline,
-        "encode_pid_prompt",
-        lambda **kwargs: captured.update({"prompt": kwargs["prompt"]}) or "pid_positive",
-    )
-
-    def fake_apply_pid_conditioning(**kwargs):
-        captured["source_latent"] = kwargs["latent"]
-        captured["latent_format"] = kwargs["latent_format"]
-        captured["conditioning_positive"] = kwargs["positive"]
-        return "pid_conditioning"
-
-    def fake_make_latent(**kwargs):
-        captured["target_width"] = kwargs["width"]
-        captured["target_height"] = kwargs["height"]
-        return {"samples": "target"}
-
-    monkeypatch.setattr(pipeline, "apply_pid_conditioning", fake_apply_pid_conditioning)
-    def fake_zero_out_conditioning(conditioning):
-        captured["zeroed_conditioning"] = conditioning
-        return f"zeroed:{conditioning}"
-
-    monkeypatch.setattr(pipeline, "zero_out_conditioning", fake_zero_out_conditioning)
-    monkeypatch.setattr(pipeline, "make_empty_chroma_radiance_latent", fake_make_latent)
-    monkeypatch.setattr(pipeline, "pid_sampler", lambda **kwargs: events.append("sampler") or "sampler")
-    monkeypatch.setattr(pipeline, "pid_sigmas", lambda **kwargs: events.append("sigmas") or "sigmas")
-
-    def fake_sample(**kwargs):
-        captured["seed"] = kwargs["seed"]
-        captured["negative"] = kwargs["negative"]
-        return {"samples": "pid_latent"}
-
-    monkeypatch.setattr(pipeline, "sample_pid_custom", fake_sample)
-    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: events.append(f"load_vae:{kwargs['vae']}") or "pid_vae")
-    monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: "pid_image")
-
-    image, metadata = pipeline.generate_pid_upscale(
-        pid_diffusion_model="pid/pid_flux1_1024_to_4096_4step_bf16.safetensors",
-        pid_text_encoder="pid/gemma_2_2b_it_elm_bf16.safetensors",
-        pid_vae="pixel_space",
-        positive_prompt="same prompt",
-        source_latent=_fake_latent_with_channels(16),
-        source_width=1024,
-        source_height=576,
-        seed=123,
-        latent_format="flux",
-        save_vram=True,
-    )
-
-    assert image == "pid_image"
-    assert events[0] == "purge"
-    assert events[-1] == "purge"
-    assert "load_clip:pixeldit" in events
-    assert captured["prompt"] == "same prompt"
-    assert captured["conditioning_positive"] == "pid_positive"
-    assert captured["zeroed_conditioning"] == "pid_positive"
-    assert pipeline.pid_source_latent_channels(captured["source_latent"]) == 16
-    assert captured["latent_format"] == "flux"
-    assert captured["target_width"] == 4096
-    assert captured["target_height"] == 2304
-    assert captured["seed"] == 123
-    assert captured["negative"] == "zeroed:pid_positive"
-    assert metadata["target_width"] == 4096
-    assert metadata["target_height"] == 2304
-    assert metadata["pid_backbone"] == "flux1"
-    assert metadata["source_latent_channels"] == 16
-    assert metadata["selected_model_compatible"] is True

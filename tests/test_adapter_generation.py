@@ -252,7 +252,7 @@ def test_z_image_negative_prompt_warning_is_in_run_info(monkeypatch):
 
     monkeypatch.setattr(z_image_turbo.pipeline, "generate_z_image_turbo_t2i", fake_generate)
 
-    image, latent, run_info, positive, negative, loaded_vae, image_pid = AIOImageGenerate().generate(
+    image, latent, run_info, positive, negative, loaded_vae, pid_latent, pid_sigma, output_width, output_height = AIOImageGenerate().generate(
         model_type="z_image_turbo",
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
@@ -279,6 +279,7 @@ def test_z_image_negative_prompt_warning_is_in_run_info(monkeypatch):
     assert negative == "negative"
     assert parsed["width"] == 576
     assert parsed["height"] == 1024
+    assert (output_width, output_height) == (576, 1024)
     assert parsed["warnings"] == [
         "Z-Image Turbo profile does not use negative prompts by default; "
         "negative_prompt was ignored."

@@ -7,7 +7,6 @@ execution-time functions so importing this custom node pack remains lightweight.
 from __future__ import annotations
 
 import math
-import re
 from typing import Any
 
 try:
@@ -20,6 +19,9 @@ except ImportError:  # pragma: no cover - direct test imports
     from services.dimensions import parse_multiple_value, round_to_multiple
     from services.lora_application import apply_lora_config
     from services.model_resolution import infer_model_format, strip_category_prefix
+
+
+PID_CAPTURE_KEY = "pid_capture"
 
 
 def _filename_only(filename: str) -> str:
@@ -209,6 +211,66 @@ def make_empty_flux2_latent(*, width: int, height: int):
     return {"samples": latent}
 
 
+def resolve_pid_capture_step(capture_step: int | None, steps: int) -> int | None:
+    if capture_step is None:
+        return None
+    effective_steps = max(1, int(steps))
+    step = int(capture_step)
+    if step <= 0:
+        step = effective_steps if effective_steps <= 4 else effective_steps - 4
+    return min(max(1, step), effective_steps)
+
+
+def _copy_pid_capture_latent(latent: dict[str, Any], samples: Any, sigma: float, step: int) -> dict[str, Any]:
+    out = latent.copy()
+    out.pop("downscale_ratio_spacial", None)
+    out.pop("downscale_ratio_temporal", None)
+    out["samples"] = samples
+    out["pid_sigma"] = float(sigma)
+    out["pid_capture_step"] = int(step)
+    return out
+
+
+def _attach_pid_capture(
+    *,
+    latent: dict[str, Any],
+    source_latent: dict[str, Any],
+    captured: dict[str, Any],
+    fallback_samples: Any,
+    target_step: int | None,
+) -> dict[str, Any]:
+    if target_step is None:
+        return latent
+    samples = captured.get("samples")
+    sigma = captured.get("sigma")
+    if samples is None:
+        samples = fallback_samples
+        sigma = 0.0
+    capture_latent = _copy_pid_capture_latent(
+        source_latent,
+        samples,
+        float(sigma if sigma is not None else 0.0),
+        target_step,
+    )
+    out = latent.copy()
+    out[PID_CAPTURE_KEY] = {
+        "latent": capture_latent,
+        "sigma": float(sigma if sigma is not None else 0.0),
+        "step": int(target_step),
+    }
+    return out
+
+
+def _capture_sigma_at(sigmas: Any, step_index: int) -> float:
+    try:
+        return float(sigmas[int(step_index)].detach().float().cpu().item())
+    except Exception:
+        try:
+            return float(sigmas[int(step_index)])
+        except Exception:
+            return 0.0
+
+
 def sample_with_comfy_ksampler(
     *,
     model: Any,
@@ -220,20 +282,110 @@ def sample_with_comfy_ksampler(
     positive: Any,
     negative: Any,
     latent: dict[str, Any],
+    pid_capture_step: int | None = None,
 ):
-    import nodes  # type: ignore
+    if pid_capture_step is None:
+        import nodes  # type: ignore
 
-    return nodes.common_ksampler(
+        return nodes.common_ksampler(
+            model,
+            seed,
+            steps,
+            cfg,
+            sampler,
+            scheduler,
+            positive,
+            negative,
+            latent,
+        )[0]
+
+    import comfy.sample  # type: ignore
+    import comfy.samplers  # type: ignore
+    import comfy.utils  # type: ignore
+    import latent_preview  # type: ignore
+
+    latent_image = latent["samples"]
+    latent_image = comfy.sample.fix_empty_latent_channels(
         model,
-        seed,
+        latent_image,
+        latent.get("downscale_ratio_spacial", None),
+        latent.get("downscale_ratio_temporal", None),
+    )
+    batch_inds = latent["batch_index"] if "batch_index" in latent else None
+    noise = comfy.sample.prepare_noise(latent_image, seed, batch_inds)
+    noise_mask = latent.get("noise_mask")
+    sampler_obj = comfy.samplers.KSampler(
+        model,
+        steps=steps,
+        device=model.load_device,
+        sampler=sampler,
+        scheduler=scheduler,
+        denoise=1.0,
+        model_options=model.model_options,
+    )
+    sigmas = sampler_obj.sigmas
+    effective_steps = max(0, int(sigmas.shape[0]) - 1)
+    target_step = resolve_pid_capture_step(pid_capture_step, effective_steps)
+    captured: dict[str, Any] = {}
+    preview_callback = latent_preview.prepare_callback(model, effective_steps)
+
+    def callback(step, x0, x, total_steps):
+        preview_callback(step, x0, x, total_steps)
+        if target_step is not None and int(step) + 1 == target_step:
+            captured["samples"] = x.detach().to("cpu").contiguous()
+            captured["sigma"] = _capture_sigma_at(sigmas, int(step))
+
+    disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
+    samples = comfy.sample.sample(
+        model,
+        noise,
         steps,
         cfg,
         sampler,
         scheduler,
         positive,
         negative,
-        latent,
-    )[0]
+        latent_image,
+        denoise=1.0,
+        disable_noise=False,
+        noise_mask=noise_mask,
+        callback=callback,
+        disable_pbar=disable_pbar,
+        seed=seed,
+    )
+    out = latent.copy()
+    out.pop("downscale_ratio_spacial", None)
+    out.pop("downscale_ratio_temporal", None)
+    out["samples"] = samples
+    return _attach_pid_capture(
+        latent=out,
+        source_latent=latent,
+        captured=captured,
+        fallback_samples=samples,
+        target_step=target_step,
+    )
+
+
+def _pid_capture_callback_from_sigmas(
+    *,
+    model: Any,
+    sigmas: Any,
+    pid_capture_step: int | None,
+):
+    import latent_preview  # type: ignore
+
+    effective_steps = max(0, int(sigmas.shape[-1]) - 1)
+    target_step = resolve_pid_capture_step(pid_capture_step, effective_steps)
+    captured: dict[str, Any] = {}
+    preview_callback = latent_preview.prepare_callback(model, effective_steps)
+
+    def callback(step, x0, x, total_steps):
+        preview_callback(step, x0, x, total_steps)
+        if target_step is not None and int(step) + 1 == target_step:
+            captured["samples"] = x.detach().to("cpu").contiguous()
+            captured["sigma"] = _capture_sigma_at(sigmas, int(step))
+
+    return callback, captured, target_step
 
 
 def sample_with_sigmas(
@@ -248,10 +400,10 @@ def sample_with_sigmas(
     negative: Any,
     latent: dict[str, Any],
     sigmas: Any,
+    pid_capture_step: int | None = None,
 ):
     import comfy.sample  # type: ignore
     import comfy.utils  # type: ignore
-    import latent_preview  # type: ignore
 
     latent_image = latent["samples"]
     latent_image = comfy.sample.fix_empty_latent_channels(
@@ -262,7 +414,11 @@ def sample_with_sigmas(
     )
     batch_inds = latent["batch_index"] if "batch_index" in latent else None
     noise = comfy.sample.prepare_noise(latent_image, seed, batch_inds)
-    callback = latent_preview.prepare_callback(model, steps)
+    callback, captured, target_step = _pid_capture_callback_from_sigmas(
+        model=model,
+        sigmas=sigmas,
+        pid_capture_step=pid_capture_step,
+    )
     disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
     samples = comfy.sample.sample(
         model,
@@ -283,290 +439,19 @@ def sample_with_sigmas(
     out.pop("downscale_ratio_spacial", None)
     out.pop("downscale_ratio_temporal", None)
     out["samples"] = samples
-    return out
+    return _attach_pid_capture(
+        latent=out,
+        source_latent=latent,
+        captured=captured,
+        fallback_samples=samples,
+        target_step=target_step,
+    )
 
 
 def decode_latent(*, vae: Any, latent: dict[str, Any]):
     import nodes  # type: ignore
 
     return nodes.VAEDecode().decode(vae, latent)[0]
-
-
-def resolve_pid_target_dimensions(
-    *,
-    pid_diffusion_model: str,
-    source_width: int,
-    source_height: int,
-) -> dict[str, int]:
-    _, model_name = strip_category_prefix(pid_diffusion_model)
-    match = re.search(r"(?P<input>\d+)_to_(?P<output>\d+)", model_name)
-    if match is None:
-        raise ValueError(
-            "PID diffusion model name must include an input/output size pattern "
-            "like '512_to_2048' or '1024_to_4096'."
-        )
-
-    input_size = int(match.group("input"))
-    output_size = int(round_to_multiple(int(match.group("output")), 16))
-    if source_width <= 0 or source_height <= 0:
-        raise ValueError("PID source dimensions must be positive.")
-
-    if source_width >= source_height:
-        target_width = output_size
-        target_height = int(round_to_multiple(round(output_size * source_height / source_width), 16))
-    else:
-        target_height = output_size
-        target_width = int(round_to_multiple(round(output_size * source_width / source_height), 16))
-
-    return {
-        "input_size": input_size,
-        "output_size": output_size,
-        "width": max(16, target_width),
-        "height": max(16, target_height),
-    }
-
-
-def detect_pid_backbone(pid_diffusion_model: str) -> str:
-    _, model_name = strip_category_prefix(pid_diffusion_model)
-    normalized = model_name.lower()
-    if "pid_flux2" in normalized:
-        return "flux2"
-    if "pid_flux1" in normalized or "pid_flux" in normalized:
-        return "flux1"
-    if "pid_sd3" in normalized:
-        return "sd3"
-    return "unknown"
-
-
-def pid_source_latent_channels(source_latent: dict[str, Any]) -> int | None:
-    samples = source_latent.get("samples")
-    shape = getattr(samples, "shape", None)
-    if shape is None or len(shape) < 2:
-        return None
-    return int(shape[1])
-
-
-def validate_pid_backbone_compatibility(
-    *,
-    pid_diffusion_model: str,
-    source_latent: dict[str, Any],
-    latent_format: str,
-) -> dict[str, Any]:
-    backbone = detect_pid_backbone(pid_diffusion_model)
-    source_channels = pid_source_latent_channels(source_latent)
-    expected_channels = {
-        "flux1": 16,
-        "flux2": 128,
-        "sd3": 16,
-    }.get(backbone)
-
-    if expected_channels is not None and source_channels is None:
-        raise ValueError(
-            "PID source latent must include samples with a channel dimension for "
-            f"{backbone} compatibility validation."
-        )
-    if expected_channels is not None and source_channels != expected_channels:
-        raise ValueError(
-            f"Selected PID diffusion model appears to be {backbone}, which expects "
-            f"{expected_channels} latent channels, but the generated latent has "
-            f"{source_channels} channels. Select a PID model matching the base model."
-        )
-    if backbone == "sd3" and latent_format != "sd3":
-        raise ValueError(
-            "Selected PID diffusion model appears to be sd3, so pid_latent_format "
-            "must be set to 'sd3'."
-        )
-
-    return {
-        "pid_backbone": backbone,
-        "source_latent_channels": source_channels,
-        "expected_latent_channels": expected_channels,
-        "selected_model_compatible": None if expected_channels is None else True,
-        "validation": "passed" if expected_channels is not None else "unknown",
-    }
-
-
-def pid_backbone_warnings(*, model_type: str, pid_diffusion_model: str) -> list[str]:
-    backbone = detect_pid_backbone(pid_diffusion_model)
-    if model_type == "flux2_klein_9b" and backbone not in ("flux2", "unknown"):
-        return [
-            "PID diffusion model appears to be Flux1/SD3-compatible, but the base "
-            "model is Flux2. Use a pid_flux2 checkpoint to avoid latent/checkpoint "
-            "mismatches."
-        ]
-    if model_type.startswith("z_image") and backbone == "flux2":
-        return [
-            "PID diffusion model appears to be Flux2-compatible, but Z-Image uses "
-            "the Flux1-compatible PID checkpoint path."
-        ]
-    if model_type.startswith("z_image") and backbone == "sd3":
-        return [
-            "PID diffusion model appears to be SD3-compatible, but Z-Image uses "
-            "the Flux1-compatible PID checkpoint path."
-        ]
-    return []
-
-
-def purge_vram_and_cache() -> None:
-    import comfy.model_management  # type: ignore
-
-    comfy.model_management.unload_all_models()
-    comfy.model_management.soft_empty_cache()
-
-
-def encode_pid_prompt(*, clip: Any, prompt: str):
-    tokens = clip.tokenize(prompt)
-    return clip.encode_from_tokens_scheduled(tokens)
-
-
-def apply_pid_conditioning(
-    *,
-    positive: Any,
-    latent: dict[str, Any],
-    latent_format: str,
-    degrade_sigma: float = 0.0,
-):
-    from comfy_extras.nodes_pid import PiDConditioning  # type: ignore
-
-    return _node_output_first(
-        PiDConditioning.execute(
-            positive=positive,
-            latent=latent,
-            latent_format=latent_format,
-            degrade_sigma=degrade_sigma,
-        )
-    )
-
-
-def make_empty_chroma_radiance_latent(*, width: int, height: int):
-    from comfy_extras.nodes_chroma_radiance import EmptyChromaRadianceLatentImage  # type: ignore
-
-    return _node_output_first(
-        EmptyChromaRadianceLatentImage.execute(width=width, height=height, batch_size=1)
-    )
-
-
-def pid_sampler(*, sampler_name: str = "lcm"):
-    from comfy_extras.nodes_custom_sampler import KSamplerSelect  # type: ignore
-
-    return _node_output_first(KSamplerSelect.execute(sampler_name=sampler_name))
-
-
-def pid_sigmas(*, model: Any, scheduler: str = "simple", steps: int = 4, denoise: float = 1.0):
-    from comfy_extras.nodes_custom_sampler import BasicScheduler  # type: ignore
-
-    return _node_output_first(
-        BasicScheduler.execute(model=model, scheduler=scheduler, steps=steps, denoise=denoise)
-    )
-
-
-def sample_pid_custom(
-    *,
-    model: Any,
-    seed: int,
-    positive: Any,
-    negative: Any,
-    sampler: Any,
-    sigmas: Any,
-    latent: dict[str, Any],
-    cfg: float = 1.0,
-):
-    from comfy_extras.nodes_custom_sampler import SamplerCustom  # type: ignore
-
-    return _node_output_first(
-        SamplerCustom.execute(
-            model=model,
-            add_noise=True,
-            noise_seed=seed,
-            cfg=cfg,
-            positive=positive,
-            negative=negative,
-            sampler=sampler,
-            sigmas=sigmas,
-            latent_image=latent,
-        )
-    )
-
-
-def generate_pid_upscale(
-    *,
-    pid_diffusion_model: str,
-    pid_text_encoder: str,
-    pid_vae: str,
-    positive_prompt: str,
-    source_latent: dict[str, Any],
-    source_width: int,
-    source_height: int,
-    seed: int,
-    latent_format: str = "flux",
-    save_vram: bool = False,
-    progress: Any = None,
-):
-    target = resolve_pid_target_dimensions(
-        pid_diffusion_model=pid_diffusion_model,
-        source_width=source_width,
-        source_height=source_height,
-    )
-    compatibility = validate_pid_backbone_compatibility(
-        pid_diffusion_model=pid_diffusion_model,
-        source_latent=source_latent,
-        latent_format=latent_format,
-    )
-
-    if save_vram:
-        _phase(progress, "purging vram before pid")
-        purge_vram_and_cache()
-
-    try:
-        _phase(progress, "loading pid diffusion model")
-        model = load_diffusion_model(diffusion_model=pid_diffusion_model)
-        _phase(progress, "loading pid text encoder")
-        clip = load_text_encoder(text_encoder=pid_text_encoder, clip_type="pixeldit")
-        _phase(progress, "encoding pid prompt")
-        pid_text_positive = encode_pid_prompt(clip=clip, prompt=positive_prompt)
-        _phase(progress, "conditioning pid latent")
-        positive = apply_pid_conditioning(
-            positive=pid_text_positive,
-            latent=source_latent,
-            latent_format=latent_format,
-            degrade_sigma=0.0,
-        )
-        negative = zero_out_conditioning(pid_text_positive)
-        _phase(progress, "preparing pid latent")
-        target_latent = make_empty_chroma_radiance_latent(
-            width=target["width"],
-            height=target["height"],
-        )
-        sampler = pid_sampler(sampler_name="lcm")
-        sigmas = pid_sigmas(model=model, scheduler="simple", steps=4, denoise=1.0)
-        _phase(progress, "sampling pid")
-        pid_latent = sample_pid_custom(
-            model=model,
-            seed=seed,
-            positive=positive,
-            negative=negative,
-            sampler=sampler,
-            sigmas=sigmas,
-            latent=target_latent,
-            cfg=1.0,
-        )
-        _phase(progress, "loading pid vae")
-        vae = load_vae(vae=pid_vae)
-        _phase(progress, "decoding pid")
-        image = decode_latent(vae=vae, latent=pid_latent)
-        return image, {
-            "input_size": target["input_size"],
-            "output_size": target["output_size"],
-            "source_width": source_width,
-            "source_height": source_height,
-            "target_width": target["width"],
-            "target_height": target["height"],
-            **compatibility,
-        }
-    finally:
-        if save_vram:
-            _phase(progress, "purging vram after pid")
-            purge_vram_and_cache()
 
 
 def flux2_sigmas(*, steps: int, width: int, height: int):
@@ -595,6 +480,7 @@ def generate_z_image_turbo_t2i(
     loaded_clip: Any = None,
     decode_image: bool = True,
     return_vae: bool = False,
+    pid_capture_step: int | None = None,
     progress: Any = None,
 ):
     using_connected_model_pair = loaded_model is not None and loaded_clip is not None
@@ -630,6 +516,7 @@ def generate_z_image_turbo_t2i(
         positive=positive,
         negative=negative,
         latent=latent,
+        pid_capture_step=pid_capture_step,
     )
     image = None
     loaded_vae = None
@@ -663,6 +550,7 @@ def generate_flux2_klein_t2i(
     reference_inputs: Any = None,
     decode_image: bool = True,
     return_vae: bool = False,
+    pid_capture_step: int | None = None,
     progress: Any = None,
 ):
     using_connected_model_pair = loaded_model is not None and loaded_clip is not None
@@ -734,6 +622,7 @@ def generate_flux2_klein_t2i(
             negative=negative,
             latent=latent,
             sigmas=flux2_sigmas(steps=steps, width=width, height=height),
+            pid_capture_step=pid_capture_step,
         )
     else:
         sampled_latent = sample_with_comfy_ksampler(
@@ -746,6 +635,7 @@ def generate_flux2_klein_t2i(
             positive=positive,
             negative=negative,
             latent=latent,
+            pid_capture_step=pid_capture_step,
         )
     image = None
     if (decode_image or return_vae) and loaded_vae is None:

@@ -27,7 +27,6 @@ def build_run_info(
     warnings: list[str],
     adapter_version: str,
     loras: list[dict[str, Any]] | None = None,
-    pid: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "model_type": model_type,
@@ -49,7 +48,6 @@ def build_run_info(
         "warnings": warnings,
         "adapter_version": adapter_version,
         "loras": loras or [],
-        "pid": pid or {},
     }
 
 
