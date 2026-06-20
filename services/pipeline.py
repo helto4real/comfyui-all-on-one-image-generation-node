@@ -13,12 +13,16 @@ try:
     from ..loaders import gguf_backend, safetensors_backend
     from .dimensions import parse_multiple_value, round_to_multiple
     from .lora_application import apply_lora_config
+    from .lora_config import normalize_lora_config
     from .model_resolution import infer_model_format, strip_category_prefix
+    from .performance import apply_performance_settings, normalize_performance_apply_timing, performance_settings_present
 except ImportError:  # pragma: no cover - direct test imports
     from loaders import gguf_backend, safetensors_backend
     from services.dimensions import parse_multiple_value, round_to_multiple
     from services.lora_application import apply_lora_config
+    from services.lora_config import normalize_lora_config
     from services.model_resolution import infer_model_format, strip_category_prefix
+    from services.performance import apply_performance_settings, normalize_performance_apply_timing, performance_settings_present
 
 
 PID_CAPTURE_KEY = "pid_capture"
@@ -42,6 +46,37 @@ def _node_output_first(value: Any) -> Any:
 def _phase(progress: Any, message: str) -> None:
     if progress is not None:
         progress.phase(message)
+
+
+def _has_reference_attention_context(reference_inputs: Any = None) -> bool:
+    if reference_inputs is None:
+        return False
+    return bool(getattr(reference_inputs, "mask", None) is not None or getattr(reference_inputs, "images", ()))
+
+
+def apply_model_performance(
+    *,
+    model: Any,
+    settings: dict[str, Any],
+    reference_inputs: Any = None,
+) -> Any:
+    return apply_performance_settings(
+        model=model,
+        settings=settings,
+        has_mask_or_reference=_has_reference_attention_context(reference_inputs),
+    )
+
+
+def _apply_model_performance_if_configured(
+    *,
+    model: Any,
+    settings: dict[str, Any],
+    reference_inputs: Any = None,
+    progress: Any = None,
+) -> Any:
+    if performance_settings_present(settings):
+        _phase(progress, "applying performance settings")
+    return apply_model_performance(model=model, settings=settings, reference_inputs=reference_inputs)
 
 
 def _clip_type(name: str):
@@ -111,6 +146,8 @@ def load_text_encoder(
 
 
 def text_encoder_clip_type(model_type: str) -> str:
+    if model_type == "ideogram4":
+        return "ideogram4"
     if model_type == "flux2_klein_9b":
         return "flux2"
     return "stable_diffusion"
@@ -139,6 +176,12 @@ def encode_flux2_prompt(*, clip: Any, prompt: str, guidance: float):
     tokens = clip.tokenize(prompt)
     conditioning = clip.encode_from_tokens_scheduled(tokens)
     return node_helpers.conditioning_set_values(conditioning, {"guidance": guidance})
+
+
+def encode_ideogram4_prompt(*, clip: Any, prompt: str):
+    import nodes  # type: ignore
+
+    return nodes.CLIPTextEncode().encode(clip, prompt)[0]
 
 
 def zero_out_conditioning(conditioning: Any):
@@ -209,6 +252,12 @@ def make_empty_flux2_latent(*, width: int, height: int):
         device=comfy.model_management.intermediate_device(),
     )
     return {"samples": latent}
+
+
+def make_empty_ideogram4_latent(*, width: int, height: int):
+    from comfy_extras.nodes_flux import EmptyFlux2LatentImage  # type: ignore
+
+    return _node_output_first(EmptyFlux2LatentImage.execute(width=width, height=height, batch_size=1))
 
 
 def resolve_pid_capture_step(capture_step: int | None, steps: int) -> int | None:
@@ -454,11 +503,242 @@ def decode_latent(*, vae: Any, latent: dict[str, Any]):
     return nodes.VAEDecode().decode(vae, latent)[0]
 
 
+def apply_lora_config_model_only(
+    *,
+    model: Any,
+    lora_config: dict[str, Any] | None,
+) -> tuple[Any, list[dict[str, Any]]]:
+    normalized = normalize_lora_config(lora_config)
+    loras = normalized["loras"]
+    if not loras:
+        return model, []
+
+    import nodes  # type: ignore
+
+    loader = nodes.LoraLoaderModelOnly()
+    applied: list[dict[str, Any]] = []
+    for lora in loras:
+        model = loader.load_lora_model_only(
+            model,
+            lora["name"],
+            lora["strength_model"],
+        )[0]
+        applied.append(dict(lora))
+    return model, applied
+
+
+def apply_model_sampling_aura(*, model: Any, shift: float):
+    from comfy_extras.nodes_model_advanced import ModelSamplingAuraFlow  # type: ignore
+
+    return ModelSamplingAuraFlow().patch_aura(model, shift)[0]
+
+
+def apply_cfg_override(
+    *,
+    model: Any,
+    cfg: float,
+    start_percent: float,
+    end_percent: float,
+):
+    from comfy_extras.nodes_custom_sampler import CFGOverride  # type: ignore
+
+    return _node_output_first(
+        CFGOverride.execute(
+            model=model,
+            cfg=cfg,
+            start_percent=start_percent,
+            end_percent=end_percent,
+        )
+    )
+
+
+def build_dual_model_guider(
+    *,
+    model: Any,
+    model_negative: Any,
+    positive: Any,
+    negative: Any,
+    cfg: float,
+):
+    from comfy_extras.nodes_custom_sampler import DualModelGuider  # type: ignore
+
+    return _node_output_first(
+        DualModelGuider.execute(
+            model=model,
+            positive=positive,
+            cfg=cfg,
+            model_negative=model_negative,
+            negative=negative,
+        )
+    )
+
+
+def ideogram4_sigmas(*, steps: int, width: int, height: int, mu: float, std: float):
+    from comfy_extras.nodes_ideogram4 import ideogram4_sigmas as make_sigmas  # type: ignore
+
+    return make_sigmas(steps, width, height, mu, std)
+
+
+def basic_sigmas(*, model: Any, scheduler: str, steps: int):
+    from comfy_extras.nodes_custom_sampler import BasicScheduler  # type: ignore
+
+    return _node_output_first(
+        BasicScheduler.execute(
+            model=model,
+            scheduler=scheduler,
+            steps=steps,
+            denoise=1.0,
+        )
+    )
+
+
+def sample_with_custom_guider(
+    *,
+    guider: Any,
+    seed: int,
+    sampler: str,
+    sigmas: Any,
+    latent: dict[str, Any],
+    pid_capture_step: int | None = None,
+):
+    from comfy_extras.nodes_custom_sampler import KSamplerSelect, RandomNoise, SamplerCustomAdvanced  # type: ignore
+
+    noise = _node_output_first(RandomNoise.execute(noise_seed=seed))
+    sampler_obj = _node_output_first(KSamplerSelect.execute(sampler_name=sampler))
+    sampled = _node_output_first(
+        SamplerCustomAdvanced.execute(
+            noise=noise,
+            guider=guider,
+            sampler=sampler_obj,
+            sigmas=sigmas,
+            latent_image=latent,
+        )
+    )
+    target_step = resolve_pid_capture_step(pid_capture_step, max(1, int(getattr(sigmas, "shape", [1])[-1]) - 1))
+    if target_step is None:
+        return sampled
+    return _attach_pid_capture(
+        latent=sampled,
+        source_latent=latent,
+        captured={},
+        fallback_samples=sampled["samples"],
+        target_step=target_step,
+    )
+
+
 def flux2_sigmas(*, steps: int, width: int, height: int):
     from comfy_extras import nodes_flux  # type: ignore
 
     seq_len = width * height / (16 * 16)
     return nodes_flux.get_schedule(steps, round(seq_len))
+
+
+def generate_ideogram4_t2i(
+    *,
+    diffusion_model: str,
+    unconditional_model: str,
+    text_encoder: str,
+    vae: str,
+    positive_prompt: str,
+    width: int,
+    height: int,
+    seed: int,
+    steps: int,
+    sampler: str,
+    scheduler: str,
+    settings: dict[str, Any],
+    lora_config: dict[str, Any] | None = None,
+    loaded_model: Any = None,
+    loaded_clip: Any = None,
+    decode_image: bool = True,
+    return_vae: bool = False,
+    pid_capture_step: int | None = None,
+    progress: Any = None,
+):
+    using_connected_model_pair = loaded_model is not None and loaded_clip is not None
+    model = loaded_model
+    if model is None:
+        _phase(progress, "loading diffusion model")
+        model = load_diffusion_model(
+            diffusion_model=diffusion_model,
+            precision_policy=settings.get("precision_policy"),
+        )
+    _phase(progress, "loading unconditional diffusion model")
+    model_negative = load_diffusion_model(
+        diffusion_model=unconditional_model,
+        precision_policy=settings.get("precision_policy"),
+    )
+    clip = loaded_clip
+    if clip is None:
+        _phase(progress, "loading text encoder")
+        clip = load_text_encoder(
+            text_encoder=text_encoder,
+            clip_type=text_encoder_clip_type("ideogram4"),
+        )
+    _phase(progress, "applying model sampling")
+    model = apply_model_sampling_aura(
+        model=model,
+        shift=float(settings.get("sampling_shift", 5.0)),
+    )
+    scheduler_model = model
+    apply_timing = normalize_performance_apply_timing(settings)
+    if apply_timing == "before_loras":
+        model = _apply_model_performance_if_configured(model=model, settings=settings, progress=progress)
+        model_negative = _apply_model_performance_if_configured(model=model_negative, settings=settings, progress=progress)
+    if not using_connected_model_pair:
+        _phase(progress, "applying loras")
+        model, _ = apply_lora_config_model_only(model=model, lora_config=lora_config)
+    if apply_timing == "after_loras":
+        model = _apply_model_performance_if_configured(model=model, settings=settings, progress=progress)
+        model_negative = _apply_model_performance_if_configured(model=model_negative, settings=settings, progress=progress)
+    if settings.get("cfg_override_enabled", True):
+        _phase(progress, "applying cfg override")
+        model = apply_cfg_override(
+            model=model,
+            cfg=float(settings.get("cfg_override", 3.0)),
+            start_percent=float(settings.get("cfg_override_start_percent", 0.7)),
+            end_percent=float(settings.get("cfg_override_end_percent", 1.0)),
+        )
+    _phase(progress, "encoding prompts")
+    positive = encode_ideogram4_prompt(clip=clip, prompt=positive_prompt)
+    negative = zero_out_conditioning(positive)
+    latent = make_empty_ideogram4_latent(width=width, height=height)
+    _phase(progress, "preparing guider")
+    guider = build_dual_model_guider(
+        model=model,
+        model_negative=model_negative,
+        positive=positive,
+        negative=negative,
+        cfg=float(settings.get("dual_cfg", settings.get("cfg", 7.0))),
+    )
+    _phase(progress, "sampling")
+    if settings.get("schedule_mode") == "basic":
+        sigmas = basic_sigmas(model=scheduler_model, scheduler=scheduler, steps=steps)
+    else:
+        sigmas = ideogram4_sigmas(
+            steps=steps,
+            width=width,
+            height=height,
+            mu=float(settings.get("mu", 0.0)),
+            std=float(settings.get("std", 1.75)),
+        )
+    sampled_latent = sample_with_custom_guider(
+        guider=guider,
+        seed=seed,
+        sampler=sampler,
+        sigmas=sigmas,
+        latent=latent,
+        pid_capture_step=pid_capture_step,
+    )
+    image = None
+    loaded_vae = None
+    if decode_image or return_vae:
+        _phase(progress, "loading vae")
+        loaded_vae = load_vae(vae=vae)
+    if decode_image:
+        _phase(progress, "decoding")
+        image = decode_latent(vae=loaded_vae, latent=sampled_latent)
+    return image, sampled_latent, positive, negative, loaded_vae
 
 
 def generate_z_image_turbo_t2i(
@@ -498,9 +778,14 @@ def generate_z_image_turbo_t2i(
             text_encoder=text_encoder,
             clip_type=text_encoder_clip_type("z_image_turbo"),
         )
+    apply_timing = normalize_performance_apply_timing(settings)
+    if apply_timing == "before_loras":
+        model = _apply_model_performance_if_configured(model=model, settings=settings, progress=progress)
     if not using_connected_model_pair:
         _phase(progress, "applying loras")
         model, clip, _ = apply_lora_config(model=model, clip=clip, lora_config=lora_config)
+    if apply_timing == "after_loras":
+        model = _apply_model_performance_if_configured(model=model, settings=settings, progress=progress)
     _phase(progress, "encoding prompts")
     positive = encode_z_image_prompt(clip=clip, prompt=positive_prompt)
     negative = encode_z_image_prompt(clip=clip, prompt="")
@@ -568,9 +853,24 @@ def generate_flux2_klein_t2i(
             text_encoder=text_encoder,
             clip_type=text_encoder_clip_type("flux2_klein_9b"),
         )
+    apply_timing = normalize_performance_apply_timing(settings)
+    if apply_timing == "before_loras":
+        model = _apply_model_performance_if_configured(
+            model=model,
+            settings=settings,
+            reference_inputs=reference_inputs,
+            progress=progress,
+        )
     if not using_connected_model_pair:
         _phase(progress, "applying loras")
         model, clip, _ = apply_lora_config(model=model, clip=clip, lora_config=lora_config)
+    if apply_timing == "after_loras":
+        model = _apply_model_performance_if_configured(
+            model=model,
+            settings=settings,
+            reference_inputs=reference_inputs,
+            progress=progress,
+        )
     _phase(progress, "encoding prompts")
     guidance = float(settings.get("guidance", settings.get("cfg", 1.0)))
     zero_negative_conditioning = math.isclose(float(cfg), 1.0)

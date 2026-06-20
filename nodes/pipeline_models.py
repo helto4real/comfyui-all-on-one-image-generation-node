@@ -5,14 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 try:
-    from ..adapters import Flux2Klein9BAdapter, ZImageTurboAdapter  # noqa: F401
+    from ..adapters import Flux2Klein9BAdapter, Ideogram4Adapter, ZImageTurboAdapter  # noqa: F401
     from ..services import pipeline
     from ..services.lora_config import normalize_lora_config
     from ..services.registry import list_model_types
     from ..services.validation import validate_model_type, validate_settings_family
     from .aio_generate import _combined_filenames
 except ImportError:  # pragma: no cover - direct test imports
-    from adapters import Flux2Klein9BAdapter, ZImageTurboAdapter  # noqa: F401
+    from adapters import Flux2Klein9BAdapter, Ideogram4Adapter, ZImageTurboAdapter  # noqa: F401
     from services import pipeline
     from services.lora_config import normalize_lora_config
     from services.registry import list_model_types
@@ -84,9 +84,20 @@ class AIOLoadPipelineModels:
             text_encoder=text_encoder,
             clip_type=pipeline.text_encoder_clip_type(model_type),
         )
-        model, clip, _ = pipeline.apply_lora_config(
-            model=model,
-            clip=clip,
-            lora_config=normalized_lora_config,
-        )
+        apply_timing = pipeline.normalize_performance_apply_timing(settings)
+        if apply_timing == "before_loras":
+            model = pipeline.apply_model_performance(model=model, settings=settings)
+        if model_type == "ideogram4":
+            model, _ = pipeline.apply_lora_config_model_only(
+                model=model,
+                lora_config=normalized_lora_config,
+            )
+        else:
+            model, clip, _ = pipeline.apply_lora_config(
+                model=model,
+                clip=clip,
+                lora_config=normalized_lora_config,
+            )
+        if apply_timing == "after_loras":
+            model = pipeline.apply_model_performance(model=model, settings=settings)
         return model, clip

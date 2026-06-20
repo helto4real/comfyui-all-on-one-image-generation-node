@@ -2,6 +2,21 @@
 
 from __future__ import annotations
 
+try:
+    from ..services.performance import (
+        ATTENTION_MODES,
+        PERFORMANCE_APPLY_TIMINGS,
+        TORCH_COMPILE_BACKENDS,
+        TORCH_COMPILE_MODES,
+    )
+except ImportError:  # pragma: no cover - direct test imports
+    from services.performance import (
+        ATTENTION_MODES,
+        PERFORMANCE_APPLY_TIMINGS,
+        TORCH_COMPILE_BACKENDS,
+        TORCH_COMPILE_MODES,
+    )
+
 
 REFERENCE_UPSCALE_METHODS = ["nearest-exact", "bilinear", "area", "bicubic", "lanczos"]
 
@@ -81,6 +96,22 @@ class AIOFlux2Klein9BSettings:
                         "tooltip": "Resolution bucket step for reference image preprocessing.",
                     },
                 ),
+                "attention_mode": (
+                    ATTENTION_MODES,
+                    {"default": "auto", "tooltip": "Attention backend preference. Auto selects the best installed option."},
+                ),
+                "torch_compile_mode": (
+                    TORCH_COMPILE_MODES,
+                    {"default": "off", "tooltip": "Torch compile behavior for the diffusion model."},
+                ),
+                "torch_compile_backend": (
+                    TORCH_COMPILE_BACKENDS,
+                    {"default": "inductor", "tooltip": "Torch compile backend. Inductor is the Triton-backed path."},
+                ),
+                "performance_apply_timing": (
+                    PERFORMANCE_APPLY_TIMINGS,
+                    {"default": "after_loras", "tooltip": "Apply attention and compile settings before or after AIO LoRAs."},
+                ),
             }
         }
 
@@ -95,16 +126,31 @@ class AIOFlux2Klein9BSettings:
         reference_megapixels: float | str = 1.0,
         reference_upscale_method: str | float = "area",
         reference_resolution_steps: int | str = 1,
+        attention_mode: str | int = "auto",
+        torch_compile_mode: str | int = "off",
+        torch_compile_backend: str = "inductor",
+        performance_apply_timing: str = "after_loras",
         *legacy_values,
     ):
+        shifted_tail = [
+            attention_mode,
+            torch_compile_mode,
+            torch_compile_backend,
+            performance_apply_timing,
+            *legacy_values,
+        ]
         if precision_policy in {"text_to_image", "single_reference", "multi_reference"}:
             precision_policy = base_shift
             memory_policy = max_shift
             base_shift = reference_megapixels
             max_shift = reference_upscale_method
             reference_megapixels = reference_resolution_steps
-            reference_upscale_method = legacy_values[0] if legacy_values else "area"
-            reference_resolution_steps = legacy_values[1] if len(legacy_values) > 1 else 1
+            reference_upscale_method = shifted_tail[0] if shifted_tail else "area"
+            reference_resolution_steps = shifted_tail[1] if len(shifted_tail) > 1 else 1
+            attention_mode = "auto"
+            torch_compile_mode = "off"
+            torch_compile_backend = "inductor"
+            performance_apply_timing = "after_loras"
         elif not isinstance(precision_policy, str):
             precision_policy = memory_policy
             memory_policy = base_shift
@@ -112,7 +158,11 @@ class AIOFlux2Klein9BSettings:
             max_shift = reference_megapixels
             reference_megapixels = reference_upscale_method
             reference_upscale_method = reference_resolution_steps
-            reference_resolution_steps = legacy_values[0] if legacy_values else 1
+            reference_resolution_steps = shifted_tail[0] if shifted_tail else 1
+            attention_mode = "auto"
+            torch_compile_mode = "off"
+            torch_compile_backend = "inductor"
+            performance_apply_timing = "after_loras"
 
         return (
             {
@@ -126,5 +176,9 @@ class AIOFlux2Klein9BSettings:
                 "reference_megapixels": reference_megapixels,
                 "reference_upscale_method": reference_upscale_method,
                 "reference_resolution_steps": reference_resolution_steps,
+                "attention_mode": attention_mode,
+                "torch_compile_mode": torch_compile_mode,
+                "torch_compile_backend": torch_compile_backend,
+                "performance_apply_timing": performance_apply_timing,
             },
         )

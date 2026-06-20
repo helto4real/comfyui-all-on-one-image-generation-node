@@ -25,6 +25,26 @@ class ModelProfile:
 
 
 PROFILES: dict[str, ModelProfile] = {
+    "ideogram4": ModelProfile(
+        key="ideogram4",
+        display_name="Ideogram 4",
+        family="ideogram4",
+        default_steps=20,
+        default_cfg=7.0,
+        default_width=1024,
+        default_height=1024,
+        default_sampler="euler",
+        default_scheduler="ideogram4",
+        supports_negative_prompt=False,
+        supports_reference_image=False,
+        supports_mask=False,
+        supports_gguf=False,
+        required_components=("diffusion_model", "text_encoder", "vae"),
+        notes=(
+            "Local open-weight Ideogram 4 text-to-image profile using dual-model "
+            "guidance and Qwen3-VL text encoding."
+        ),
+    ),
     "z_image_turbo": ModelProfile(
         key="z_image_turbo",
         display_name="Z-Image Turbo",

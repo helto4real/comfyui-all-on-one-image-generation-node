@@ -247,7 +247,7 @@ def test_main_node_passes_lora_config_to_adapter(monkeypatch):
     assert captured["lora_config"]["loras"][0]["name"] == "style"
     assert captured["loaded_model"] == "patched_model"
     assert captured["loaded_clip"] == "patched_clip"
-    assert '"loras": [{"enabled": true, "name": "style"' in run_info
+    assert json.loads(run_info)["loras"][0]["name"] == "style"
     assert (output_width, output_height) == (1024, 1024)
 
 

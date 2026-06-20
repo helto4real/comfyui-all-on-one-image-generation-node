@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 try:
-    from ..adapters import Flux2Klein9BAdapter, ZImageTurboAdapter  # noqa: F401
+    from ..adapters import Flux2Klein9BAdapter, Ideogram4Adapter, ZImageTurboAdapter  # noqa: F401
     from ..services import pipeline
     from ..services.dimensions import (
         ASPECT_RATIOS,
@@ -29,7 +29,7 @@ try:
         validate_settings_family,
     )
 except ImportError:  # pragma: no cover - direct test imports
-    from adapters import Flux2Klein9BAdapter, ZImageTurboAdapter  # noqa: F401
+    from adapters import Flux2Klein9BAdapter, Ideogram4Adapter, ZImageTurboAdapter  # noqa: F401
     from services import pipeline
     from services.dimensions import (
         ASPECT_RATIOS,

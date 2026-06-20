@@ -136,6 +136,112 @@ def test_pipeline_applies_loras_before_prompt_encoding(monkeypatch):
     ]
 
 
+def test_pipeline_applies_performance_after_loras_by_default(monkeypatch):
+    events = []
+
+    monkeypatch.setattr(
+        pipeline,
+        "load_diffusion_model",
+        lambda **kwargs: events.append("load_model") or "model",
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "load_text_encoder",
+        lambda **kwargs: events.append("load_clip") or "clip",
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "apply_lora_config",
+        lambda **kwargs: events.append("apply_loras") or ("model+lora", "clip+lora", []),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "apply_model_performance",
+        lambda **kwargs: events.append(f"performance:{kwargs['model']}") or f"{kwargs['model']}+perf",
+    )
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
+    monkeypatch.setattr(pipeline, "encode_z_image_prompt", lambda **kwargs: "conditioning")
+    monkeypatch.setattr(pipeline, "make_empty_z_image_latent", lambda **kwargs: {"samples": "empty"})
+    monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", lambda **kwargs: {"samples": "sampled"})
+    monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: "image")
+
+    pipeline.generate_z_image_turbo_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        width=1024,
+        height=1024,
+        seed=0,
+        steps=8,
+        cfg=1.0,
+        sampler="auto",
+        scheduler="auto",
+        settings={"attention_mode": "off", "performance_apply_timing": "after_loras"},
+        lora_config={"loras": [{"enabled": True, "name": "style"}]},
+    )
+
+    assert events[:4] == [
+        "load_model",
+        "load_clip",
+        "apply_loras",
+        "performance:model+lora",
+    ]
+
+
+def test_pipeline_can_apply_performance_before_loras(monkeypatch):
+    events = []
+
+    monkeypatch.setattr(
+        pipeline,
+        "load_diffusion_model",
+        lambda **kwargs: events.append("load_model") or "model",
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "load_text_encoder",
+        lambda **kwargs: events.append("load_clip") or "clip",
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "apply_model_performance",
+        lambda **kwargs: events.append(f"performance:{kwargs['model']}") or f"{kwargs['model']}+perf",
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "apply_lora_config",
+        lambda **kwargs: events.append(f"apply_loras:{kwargs['model']}") or ("model+perf+lora", "clip+lora", []),
+    )
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
+    monkeypatch.setattr(pipeline, "encode_z_image_prompt", lambda **kwargs: "conditioning")
+    monkeypatch.setattr(pipeline, "make_empty_z_image_latent", lambda **kwargs: {"samples": "empty"})
+    monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", lambda **kwargs: {"samples": "sampled"})
+    monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: "image")
+
+    pipeline.generate_z_image_turbo_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        width=1024,
+        height=1024,
+        seed=0,
+        steps=8,
+        cfg=1.0,
+        sampler="auto",
+        scheduler="auto",
+        settings={"attention_mode": "off", "performance_apply_timing": "before_loras"},
+        lora_config={"loras": [{"enabled": True, "name": "style"}]},
+    )
+
+    assert events[:4] == [
+        "load_model",
+        "load_clip",
+        "performance:model",
+        "apply_loras:model+perf",
+    ]
+
+
 def test_z_image_pipeline_uses_connected_post_lora_model_and_clip(monkeypatch):
     events = []
     captured = {}
@@ -249,6 +355,188 @@ def test_z_image_pipeline_skips_vae_when_image_decode_disabled(monkeypatch):
     assert positive == "conditioning:prompt"
     assert negative == "conditioning:"
     assert loaded_vae is None
+
+
+def test_ideogram4_pipeline_uses_dual_model_flow_and_ideogram_sigmas(monkeypatch):
+    calls = {"models": []}
+
+    def fake_load_model(**kwargs):
+        calls["models"].append(kwargs)
+        return f"model:{kwargs['diffusion_model']}"
+
+    def fake_load_clip(**kwargs):
+        calls["clip"] = kwargs
+        return "clip"
+
+    def fake_aura(**kwargs):
+        calls["aura"] = kwargs
+        return "conditional+aura"
+
+    def fake_loras(**kwargs):
+        calls["loras"] = kwargs
+        return "conditional+aura+lora", [{"name": "style"}]
+
+    def fake_cfg_override(**kwargs):
+        calls["cfg_override"] = kwargs
+        return "conditional+aura+lora+cfg"
+
+    def fake_encode(**kwargs):
+        calls["encode"] = kwargs
+        return "positive"
+
+    def fake_guider(**kwargs):
+        calls["guider"] = kwargs
+        return "guider"
+
+    def fake_sigmas(**kwargs):
+        calls["sigmas"] = kwargs
+        return "ideogram_sigmas"
+
+    def fake_sample(**kwargs):
+        calls["sample"] = kwargs
+        return {"samples": "sampled"}
+
+    monkeypatch.setattr(pipeline, "load_diffusion_model", fake_load_model)
+    monkeypatch.setattr(pipeline, "load_text_encoder", fake_load_clip)
+    monkeypatch.setattr(pipeline, "apply_model_sampling_aura", fake_aura)
+    monkeypatch.setattr(pipeline, "apply_lora_config_model_only", fake_loras)
+    monkeypatch.setattr(pipeline, "apply_cfg_override", fake_cfg_override)
+    monkeypatch.setattr(pipeline, "encode_ideogram4_prompt", fake_encode)
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "negative")
+    monkeypatch.setattr(pipeline, "make_empty_ideogram4_latent", lambda **kwargs: {"samples": "empty"})
+    monkeypatch.setattr(pipeline, "build_dual_model_guider", fake_guider)
+    monkeypatch.setattr(pipeline, "ideogram4_sigmas", fake_sigmas)
+    monkeypatch.setattr(
+        pipeline,
+        "basic_sigmas",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("basic scheduler should not be used")),
+    )
+    monkeypatch.setattr(pipeline, "sample_with_custom_guider", fake_sample)
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
+    monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: "image")
+
+    image, latent, positive, negative, loaded_vae = pipeline.generate_ideogram4_t2i(
+        diffusion_model="ideogram4_fp8_scaled.safetensors",
+        unconditional_model="ideogram4_unconditional_fp8_scaled.safetensors",
+        text_encoder="qwen3vl_8b_fp8_scaled.safetensors",
+        vae="flux2-vae.safetensors",
+        positive_prompt="prompt",
+        width=1024,
+        height=1024,
+        seed=123,
+        steps=20,
+        sampler="euler",
+        scheduler="ideogram4",
+        settings={
+            "precision_policy": "bf16",
+            "sampling_shift": 5.0,
+            "cfg_override_enabled": True,
+            "cfg_override": 3.0,
+            "cfg_override_start_percent": 0.7,
+            "cfg_override_end_percent": 1.0,
+            "dual_cfg": 7.0,
+            "schedule_mode": "ideogram4",
+            "mu": 0.0,
+            "std": 1.75,
+        },
+        lora_config={"loras": [{"enabled": True, "name": "style"}]},
+    )
+
+    assert image == "image"
+    assert latent == {"samples": "sampled"}
+    assert positive == "positive"
+    assert negative == "negative"
+    assert loaded_vae == "vae"
+    assert calls["models"] == [
+        {"diffusion_model": "ideogram4_fp8_scaled.safetensors", "precision_policy": "bf16"},
+        {"diffusion_model": "ideogram4_unconditional_fp8_scaled.safetensors", "precision_policy": "bf16"},
+    ]
+    assert calls["clip"] == {
+        "text_encoder": "qwen3vl_8b_fp8_scaled.safetensors",
+        "clip_type": "ideogram4",
+    }
+    assert calls["aura"] == {"model": "model:ideogram4_fp8_scaled.safetensors", "shift": 5.0}
+    assert calls["loras"]["model"] == "conditional+aura"
+    assert calls["cfg_override"] == {
+        "model": "conditional+aura+lora",
+        "cfg": 3.0,
+        "start_percent": 0.7,
+        "end_percent": 1.0,
+    }
+    assert calls["guider"] == {
+        "model": "conditional+aura+lora+cfg",
+        "model_negative": "model:ideogram4_unconditional_fp8_scaled.safetensors",
+        "positive": "positive",
+        "negative": "negative",
+        "cfg": 7.0,
+    }
+    assert calls["sigmas"] == {
+        "steps": 20,
+        "width": 1024,
+        "height": 1024,
+        "mu": 0.0,
+        "std": 1.75,
+    }
+    assert calls["sample"]["guider"] == "guider"
+    assert calls["sample"]["sampler"] == "euler"
+    assert calls["sample"]["sigmas"] == "ideogram_sigmas"
+
+
+def test_ideogram4_pipeline_workflow_preset_uses_basic_scheduler(monkeypatch):
+    calls = {}
+
+    def fake_basic_sigmas(**kwargs):
+        calls["basic_sigmas"] = kwargs
+        return "basic_sigmas"
+
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: f"model:{kwargs['diffusion_model']}")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_model_sampling_aura", lambda **kwargs: "conditional+aura")
+    monkeypatch.setattr(
+        pipeline,
+        "apply_lora_config_model_only",
+        lambda **kwargs: (kwargs["model"], []),
+    )
+    monkeypatch.setattr(pipeline, "apply_cfg_override", lambda **kwargs: kwargs["model"])
+    monkeypatch.setattr(pipeline, "encode_ideogram4_prompt", lambda **kwargs: "positive")
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "negative")
+    monkeypatch.setattr(pipeline, "make_empty_ideogram4_latent", lambda **kwargs: {"samples": "empty"})
+    monkeypatch.setattr(pipeline, "build_dual_model_guider", lambda **kwargs: "guider")
+    monkeypatch.setattr(
+        pipeline,
+        "ideogram4_sigmas",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("ideogram sigmas should not be used")),
+    )
+    monkeypatch.setattr(pipeline, "basic_sigmas", fake_basic_sigmas)
+    monkeypatch.setattr(pipeline, "sample_with_custom_guider", lambda **kwargs: {"samples": "sampled"})
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
+    monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: "image")
+
+    pipeline.generate_ideogram4_t2i(
+        diffusion_model="conditional.safetensors",
+        unconditional_model="unconditional.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        width=1024,
+        height=1024,
+        seed=123,
+        steps=28,
+        sampler="euler",
+        scheduler="simple",
+        settings={
+            "sampling_shift": 5.0,
+            "cfg_override_enabled": True,
+            "dual_cfg": 7.0,
+            "schedule_mode": "basic",
+        },
+    )
+
+    assert calls["basic_sigmas"] == {
+        "model": "conditional+aura",
+        "scheduler": "simple",
+        "steps": 28,
+    }
 
 
 def test_z_image_pipeline_returns_vae_without_decoding_when_requested(monkeypatch):

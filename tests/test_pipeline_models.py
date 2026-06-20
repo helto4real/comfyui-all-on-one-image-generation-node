@@ -50,6 +50,105 @@ def test_pipeline_models_node_loads_with_model_family_clip_type(monkeypatch):
     }
 
 
+def test_pipeline_models_node_uses_ideogram4_clip_type_and_model_only_loras(monkeypatch):
+    from nodes import pipeline_models
+
+    calls = {}
+
+    def fake_load_clip(**kwargs):
+        calls["clip"] = kwargs
+        return "clip"
+
+    def fake_model_only_loras(**kwargs):
+        calls["loras"] = kwargs
+        return "model+lora", [{"name": "style"}]
+
+    monkeypatch.setattr(pipeline_models.pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline_models.pipeline, "load_text_encoder", fake_load_clip)
+    monkeypatch.setattr(
+        pipeline_models.pipeline,
+        "apply_lora_config",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("Ideogram 4 should use model-only LoRAs")),
+    )
+    monkeypatch.setattr(pipeline_models.pipeline, "apply_lora_config_model_only", fake_model_only_loras)
+
+    model, clip = AIOLoadPipelineModels().load(
+        model_type="ideogram4",
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        model_settings={"family": "ideogram4"},
+        lora_config={"loras": [{"enabled": True, "name": "style"}]},
+    )
+
+    assert model == "model+lora"
+    assert clip == "clip"
+    assert calls["clip"] == {
+        "text_encoder": "text.safetensors",
+        "clip_type": "ideogram4",
+    }
+    assert calls["loras"]["model"] == "model"
+
+
+def test_pipeline_models_node_applies_performance_after_loras(monkeypatch):
+    from nodes import pipeline_models
+
+    events = []
+
+    monkeypatch.setattr(pipeline_models.pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline_models.pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(
+        pipeline_models.pipeline,
+        "apply_lora_config",
+        lambda **kwargs: events.append("loras") or ("model+lora", "clip+lora", []),
+    )
+    monkeypatch.setattr(
+        pipeline_models.pipeline,
+        "apply_model_performance",
+        lambda **kwargs: events.append(f"performance:{kwargs['model']}") or f"{kwargs['model']}+perf",
+    )
+
+    model, clip = AIOLoadPipelineModels().load(
+        model_type="z_image_turbo",
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        model_settings={"family": "z_image_turbo", "attention_mode": "off", "performance_apply_timing": "after_loras"},
+    )
+
+    assert model == "model+lora+perf"
+    assert clip == "clip+lora"
+    assert events == ["loras", "performance:model+lora"]
+
+
+def test_pipeline_models_node_applies_performance_before_loras(monkeypatch):
+    from nodes import pipeline_models
+
+    events = []
+
+    monkeypatch.setattr(pipeline_models.pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline_models.pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(
+        pipeline_models.pipeline,
+        "apply_model_performance",
+        lambda **kwargs: events.append(f"performance:{kwargs['model']}") or f"{kwargs['model']}+perf",
+    )
+    monkeypatch.setattr(
+        pipeline_models.pipeline,
+        "apply_lora_config",
+        lambda **kwargs: events.append(f"loras:{kwargs['model']}") or ("model+perf+lora", "clip+lora", []),
+    )
+
+    model, clip = AIOLoadPipelineModels().load(
+        model_type="z_image_turbo",
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        model_settings={"family": "z_image_turbo", "attention_mode": "off", "performance_apply_timing": "before_loras"},
+    )
+
+    assert model == "model+perf+lora"
+    assert clip == "clip+lora"
+    assert events == ["performance:model", "loras:model+perf"]
+
+
 def test_pipeline_models_node_applies_empty_lora_config(monkeypatch):
     from nodes import pipeline_models
 

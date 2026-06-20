@@ -6,6 +6,7 @@ try:
     from .services import lora_info as _lora_info  # noqa: F401
     from .nodes import (
         AIOFlux2Klein9BSettings,
+        AIOIdeogram4Settings,
         AIOImageGenerate,
         AIOLoadPipelineModels,
         AIOLoraConfiguration,
@@ -15,6 +16,7 @@ except ImportError:  # pragma: no cover - direct pytest/importlib collection
     import services.lora_info as _lora_info  # noqa: F401
     from nodes import (
         AIOFlux2Klein9BSettings,
+        AIOIdeogram4Settings,
         AIOImageGenerate,
         AIOLoadPipelineModels,
         AIOLoraConfiguration,
@@ -27,6 +29,7 @@ NODE_CLASS_MAPPINGS = {
     "AIOImageGenerate": AIOImageGenerate,
     "AIOZImageTurboSettings": AIOZImageTurboSettings,
     "AIOFlux2Klein9BSettings": AIOFlux2Klein9BSettings,
+    "AIOIdeogram4Settings": AIOIdeogram4Settings,
     "AIOLoraConfiguration": AIOLoraConfiguration,
     "AIOLoadPipelineModels": AIOLoadPipelineModels,
 }
@@ -35,6 +38,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "AIOImageGenerate": "AIO Image Generate",
     "AIOZImageTurboSettings": "Z-Image Turbo Settings",
     "AIOFlux2Klein9BSettings": "FLUX.2 Klein 9B Settings",
+    "AIOIdeogram4Settings": "Ideogram 4 Settings",
     "AIOLoraConfiguration": "AIO LoRA Configuration",
     "AIOLoadPipelineModels": "AIO Load Pipeline Models",
 }

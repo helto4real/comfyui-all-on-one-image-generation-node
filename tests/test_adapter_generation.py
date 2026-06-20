@@ -1,7 +1,10 @@
 import json
 
-from adapters import flux2_klein_9b, z_image_turbo
+import pytest
+
+from adapters import flux2_klein_9b, ideogram4, z_image_turbo
 from adapters.flux2_klein_9b import Flux2Klein9BAdapter
+from adapters.ideogram4 import Ideogram4Adapter
 from adapters.z_image_turbo import ZImageTurboAdapter
 from nodes.aio_generate import AIOImageGenerate
 from services.reference_inputs import ReferenceInputs
@@ -134,6 +137,61 @@ def test_flux2_adapter_passes_reference_inputs_to_pipeline(monkeypatch):
     assert calls["reference_inputs"] is reference_inputs
 
 
+def test_ideogram4_adapter_calls_real_generation_pipeline(monkeypatch):
+    calls = {}
+
+    def fake_generate(**kwargs):
+        calls.update(kwargs)
+        return "image", {"samples": "latent"}, "positive", "negative", "vae"
+
+    monkeypatch.setattr(ideogram4.pipeline, "generate_ideogram4_t2i", fake_generate)
+    adapter = Ideogram4Adapter()
+    settings = adapter.resolve_settings(
+        model_settings={
+            "family": "ideogram4",
+            "unconditional_model": "uncond.safetensors",
+            "preset_steps": 20,
+            "dual_cfg": 7.0,
+            "scheduler": "ideogram4",
+        },
+        width=1024,
+        height=1024,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+    )
+
+    image, latent, positive, negative, loaded_vae = adapter.generate(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="ignored",
+        width=1024,
+        height=1024,
+        seed=123,
+        settings=settings,
+        sampler=settings["sampler"],
+        scheduler=settings["scheduler"],
+        loaded_model="patched_model",
+        loaded_clip="patched_clip",
+    )
+
+    assert image == "image"
+    assert latent == {"samples": "latent"}
+    assert positive == "positive"
+    assert negative == "negative"
+    assert calls["unconditional_model"] == "uncond.safetensors"
+    assert calls["steps"] == 20
+    assert calls["sampler"] == "euler"
+    assert calls["scheduler"] == "ideogram4"
+    assert calls["loaded_model"] == "patched_model"
+    assert calls["loaded_clip"] == "patched_clip"
+    assert calls["decode_image"] is True
+    assert calls["return_vae"] is False
+
+
 def test_adapters_pass_decode_image_and_return_vae_to_pipeline(monkeypatch):
     calls = {}
 
@@ -226,6 +284,94 @@ def test_flux2_rejects_more_than_four_references(monkeypatch):
         assert str(error) == "FLUX.2 Klein supports at most four connected reference images."
     else:
         raise AssertionError("Expected ValueError.")
+
+
+def test_ideogram4_validation_rejects_invalid_inputs():
+    adapter = Ideogram4Adapter()
+    base = {
+        "diffusion_model": "model.safetensors",
+        "text_encoder": "text.safetensors",
+        "vae": "vae.safetensors",
+        "positive_prompt": "prompt",
+        "negative_prompt": "",
+        "width": 1024,
+        "height": 1024,
+        "settings": {"unconditional_model": "uncond.safetensors"},
+    }
+
+    with pytest.raises(ValueError, match="positive_prompt is required"):
+        adapter.validate_inputs(**{**base, "positive_prompt": ""})
+    with pytest.raises(ValueError, match="reference_image was connected"):
+        adapter.validate_inputs(**base, reference_inputs=ReferenceInputs(images=("first",)))
+    with pytest.raises(ValueError, match="mask was connected"):
+        adapter.validate_inputs(**base, reference_inputs=ReferenceInputs(images=(), mask="mask"))
+    with pytest.raises(ValueError, match="multiples of 16"):
+        adapter.validate_inputs(**{**base, "width": 1025})
+    with pytest.raises(ValueError, match="between 256 and 2048"):
+        adapter.validate_inputs(**{**base, "width": 4096})
+    with pytest.raises(ValueError, match="aspect ratio must not exceed 6:1"):
+        adapter.validate_inputs(**{**base, "width": 2048, "height": 256})
+    with pytest.raises(ValueError, match="unconditional_model is required"):
+        adapter.validate_inputs(**{**base, "settings": {"unconditional_model": ""}})
+
+
+def test_ideogram4_negative_prompt_returns_warning():
+    adapter = Ideogram4Adapter()
+
+    warnings = adapter.validate_inputs(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="ignored",
+        width=1024,
+        height=1024,
+        settings={"unconditional_model": "uncond.safetensors"},
+    )
+
+    assert warnings == [
+        "Ideogram 4 profile does not use negative prompts by default; "
+        "negative_prompt was ignored."
+    ]
+
+
+def test_ideogram4_resolve_settings_uses_presets_and_workflow_scheduler():
+    default_settings = Ideogram4Adapter().resolve_settings(
+        model_settings={
+            "family": "ideogram4",
+            "preset_steps": 20,
+            "dual_cfg": 7.0,
+            "scheduler": "ideogram4",
+        },
+        width=1024,
+        height=1024,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+    )
+    workflow_settings = Ideogram4Adapter().resolve_settings(
+        model_settings={
+            "family": "ideogram4",
+            "preset_steps": 28,
+            "dual_cfg": 7.0,
+            "scheduler": "simple",
+            "schedule_mode": "basic",
+        },
+        width=1024,
+        height=1024,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+    )
+
+    assert default_settings["steps"] == 20
+    assert default_settings["cfg"] == 7.0
+    assert default_settings["sampler"] == "euler"
+    assert default_settings["scheduler"] == "ideogram4"
+    assert workflow_settings["steps"] == 28
+    assert workflow_settings["scheduler"] == "simple"
 
 
 def test_flux2_allows_exact_dimensions_when_multiple_value_is_none(monkeypatch):

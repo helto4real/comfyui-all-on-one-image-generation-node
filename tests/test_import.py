@@ -27,6 +27,7 @@ def test_custom_node_package_imports_without_torch_or_gguf_dependency():
         "AIOImageGenerate",
         "AIOZImageTurboSettings",
         "AIOFlux2Klein9BSettings",
+        "AIOIdeogram4Settings",
         "AIOLoraConfiguration",
         "AIOLoadPipelineModels",
     }

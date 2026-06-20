@@ -11,6 +11,7 @@ Clone or copy this folder into `ComfyUI/custom_nodes`, then restart ComfyUI. The
 - `AIO Image Generate`
 - `Z-Image Turbo Settings`
 - `FLUX.2 Klein 9B Settings`
+- `Ideogram 4 Settings`
 - `AIO LoRA Configuration`
 - `AIO Load Pipeline Models`
 
@@ -20,6 +21,7 @@ All nodes appear under `AIO/Image`.
 
 - `z_image_turbo`: text-to-image generation, defaults to 8 steps and CFG 1.0. Negative prompts are ignored by default and reported in `run_info.warnings`.
 - `flux2_klein_9b`: text-to-image and reference-image generation, distilled defaults to 4 steps and CFG 1.0. Reference mode is inferred from how many reference images are connected.
+- `ideogram4`: local open-weight Ideogram 4 text-to-image generation, defaults to the official 20-step Ideogram scheduler preset with dual-model CFG 7.0. Negative prompts are ignored by default and reported in `run_info.warnings`.
 
 ## Supported Formats
 
@@ -41,6 +43,13 @@ The main node resolves filenames lazily at execution time:
 - text encoder: `models/text_encoders`, `models/clip`, or backend-provided GGUF key `clip_gguf`
 - VAE: `models/vae`, plus backend-provided `vae_gguf` when available
 
+Ideogram 4 expects the conditional diffusion model, unconditional diffusion model, Qwen3-VL text encoder, and FLUX.2 VAE from the Comfy-Org Ideogram 4 packaging. A typical setup is:
+
+- conditional diffusion model: `ideogram4/ideogram4_fp8_scaled.safetensors`
+- unconditional diffusion model: `diffusion_models/ideogram4/ideogram4_unconditional_fp8_scaled.safetensors`
+- text encoder: `qwen3vl_8b_fp8_scaled.safetensors`
+- VAE: `flux.2/flux2-vae.safetensors`
+
 The dropdown may prefix values with their category when multiple folders are searched.
 
 ## Basic Usage
@@ -58,9 +67,13 @@ The node is not an output node, so it is safe for API-mode workflows.
 
 ## Settings Nodes
 
-`Z-Image Turbo Settings` returns an `AIO_MODEL_SETTINGS` dict with speed preset, forced steps, prompt enhancement, negative-prompt policy, and precision policy.
+`Z-Image Turbo Settings` returns an `AIO_MODEL_SETTINGS` dict with speed preset, forced steps, prompt enhancement, negative-prompt policy, precision policy, attention backend, Torch compile, and performance-apply timing.
 
-`FLUX.2 Klein 9B Settings` returns an `AIO_MODEL_SETTINGS` dict with distilled/base variant, guidance, reference strength, precision policy, memory policy, shift parameters, and reference scaling controls. FLUX.2 Klein edit mode is inferred from connected reference image sockets.
+`FLUX.2 Klein 9B Settings` returns an `AIO_MODEL_SETTINGS` dict with distilled/base variant, guidance, reference strength, precision policy, memory policy, shift parameters, reference scaling controls, attention backend, Torch compile, and performance-apply timing. FLUX.2 Klein edit mode is inferred from connected reference image sockets.
+
+`Ideogram 4 Settings` returns an `AIO_MODEL_SETTINGS` dict with the unconditional model, sampling preset, dual CFG, final CFG override window, AuraFlow sampling shift, precision policy, attention backend, Torch compile, and performance-apply timing. The official presets use Ideogram 4 sigmas; `Workflow Compatible` uses the saved workflow's simple scheduler path.
+
+All settings nodes expose `attention_mode` (`auto`, `off`, `sage`, `sage3`, `flash`, `xformers`, `pytorch`, `split`, `sub_quad`), `torch_compile_mode` (`auto`, `off`, `on`), `torch_compile_backend` (`inductor`, `cudagraphs`), and `performance_apply_timing` (`after_loras`, `before_loras`). `auto` attention selects the best installed compatible backend, `off` leaves ComfyUI defaults untouched, and `after_loras` applies attention/compile patches to the final LoRA-patched model.
 
 The main node rejects mismatched settings, for example connecting FLUX settings while `model_type` is `z_image_turbo`.
 
@@ -69,6 +82,8 @@ The main node rejects mismatched settings, for example connecting FLUX settings 
 `AIO LoRA Configuration` returns an `AIO_LORA_CONFIG` dict for the main node. Its UI is modeled after rgthree's Power LoRA Loader: add ordered LoRA rows, toggle rows, toggle all from the node menu, reorder or remove rows from the row context menu, and choose single or separate model/clip strengths.
 
 LoRAs are applied after the diffusion model and text encoder are loaded, and before prompt encoding and sampling. This matches how a normal workflow would place LoRA loaders after model loading. The backend uses ComfyUI's `LoraLoader.load_lora`, so LoRA files stay lazy and are not loaded at import time.
+
+Ideogram 4 applies LoRAs to the conditional diffusion model only, matching ComfyUI's `LoraLoaderModelOnly` workflow pattern. The Qwen3-VL text encoder and unconditional model are not LoRA-patched by the Ideogram 4 adapter.
 
 The LoRA info button is also implemented locally. It reads safetensors metadata, stores editable notes/strength hints in a sidecar `*.aio-lora-info.json` file beside the LoRA, can fetch Civitai model-version data by SHA256 hash, and renders a rgthree-style info dialog without requiring rgthree as a runtime dependency.
 
@@ -93,6 +108,8 @@ API workflows can pass rgthree-style dynamic row payloads directly:
 
 `run_info.loras` records the enabled, non-zero LoRAs that were applied.
 
+`run_info.performance` records the requested and resolved attention mode, Torch/Triton compile mode, compile backend, and whether performance patches were applied before or after LoRAs.
+
 ## External Model Patching
 
 `AIO Load Pipeline Models` loads the same diffusion model and text encoder pair as the main node, applies an optional `AIO_LORA_CONFIG`, then outputs standard ComfyUI `MODEL` and `CLIP` values. Connect those outputs through any compatible external model/CLIP patch nodes, then connect the patched results to the optional `model` and `clip` inputs on `AIO Image Generate`.
@@ -106,6 +123,8 @@ When both `model` and `clip` are connected, the main node treats them as already
 - FLUX.2 Klein supports up to four reference images through `image 1` to `image 4`.
 - FLUX.2 Klein settings expose reference image scaling controls, defaulting to 1.0 megapixel, `area`, and 1 resolution step.
 - FLUX.2 Klein accepts a mask with `image 1`, but inpaint behavior is staged for a later adapter pass.
+- Ideogram 4 supports text-to-image only in this adapter. Reference images, masks, negative prompts, and GGUF model files are not implemented for Ideogram 4.
+- Ideogram 4 output dimensions must be multiples of 16, between 256 and 2048 pixels per side, with aspect ratio no wider than 6:1.
 - Z-Image reference-image and mask paths are staged for a later adapter pass.
 
 ## Adapter Implementation Notes
@@ -116,9 +135,12 @@ Local ComfyUI source was inspected before implementing the generation pipeline. 
 - `/home/thhel/git/ComfyUI/comfy/sample.py`: `comfy.sample.sample` signature
 - `/home/thhel/git/ComfyUI/comfy/utils.py`: `ProgressBar`
 - `/home/thhel/git/ComfyUI/comfy_extras/nodes_flux.py`: `EmptyFlux2LatentImage`, Flux guidance, Flux2 scheduler
+- `/home/thhel/git/ComfyUI/comfy_extras/nodes_ideogram4.py`: Ideogram 4 scheduler and sigma helper
+- `/home/thhel/git/ComfyUI/comfy_extras/nodes_custom_sampler.py`: `DualModelGuider`, `CFGOverride`, `RandomNoise`, `KSamplerSelect`, `SamplerCustomAdvanced`, `BasicScheduler`
+- `/home/thhel/git/ComfyUI/comfy_extras/nodes_model_advanced.py`: `ModelSamplingAuraFlow`
 - `/home/thhel/git/ComfyUI/comfy_extras/nodes_zimage.py`: Z-Image conditioning node patterns
-- `/home/thhel/git/ComfyUI/comfy/supported_models.py`: `Flux2` and `ZImage` model-family detection
-- `/home/thhel/git/ComfyUI/nodes.py`: `LoraLoader.load_lora`
+- `/home/thhel/git/ComfyUI/comfy/supported_models.py`: `Flux2`, `Ideogram4`, and `ZImage` model-family detection
+- `/home/thhel/git/ComfyUI/nodes.py`: `LoraLoader.load_lora`, `LoraLoaderModelOnly`, `CLIPTextEncode`
 - `/home/thhel/git/ComfyUI/custom_nodes/rgthree-comfy/py/power_lora_loader.py`: Power LoRA dynamic backend payload shape
 - `/home/thhel/git/ComfyUI/custom_nodes/rgthree-comfy/web/comfyui/power_lora_loader.js`: Power LoRA frontend interaction model
 - `/home/thhel/git/ComfyUI/custom_nodes/rgthree-comfy/web/comfyui/dialog_info.js`: rgthree LoRA info dialog behavior
