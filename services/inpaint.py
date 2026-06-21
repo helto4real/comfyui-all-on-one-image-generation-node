@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from typing import Any
 
@@ -90,12 +91,11 @@ def prepare_inpaint_latent(
     normalized = normalize_inpaint_config(config)
     image = resize_image_to_dimensions(normalized["image"], width=width, height=height)
     mask = prepare_inpaint_mask(normalized, width=width, height=height)
-    latent = nodes.VAEEncodeForInpaint().encode(
-        vae,
-        image,
-        mask,
-        int(normalized["mask_grow"]),
-    )[0]
+    latent = nodes.VAEEncode().encode(vae, image)[0]
+    latent = latent.copy()
+    latent["noise_mask"] = grow_inpaint_mask(mask, int(normalized["mask_grow"])).reshape(
+        (-1, 1, mask.shape[-2], mask.shape[-1])
+    )
     return latent, image, mask
 
 
@@ -114,6 +114,20 @@ def prepare_inpaint_mask(config: Mapping[str, Any], *, width: int, height: int):
     if int(mask.shape[-1]) != int(width) or int(mask.shape[-2]) != int(height):
         mask = F.interpolate(mask, size=(int(height), int(width)), mode="bilinear", align_corners=False)
     return torch.clamp(mask[:, 0, :, :], 0.0, 1.0)
+
+
+def grow_inpaint_mask(mask: Any, grow_mask_by: int):
+    import torch  # type: ignore
+    import torch.nn.functional as F  # type: ignore
+
+    amount = int(grow_mask_by)
+    prepared = mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1])).round()
+    if amount <= 0:
+        return torch.clamp(prepared[:, 0, :, :], 0.0, 1.0)
+    kernel = torch.ones((1, 1, amount, amount), dtype=prepared.dtype, device=prepared.device)
+    padding = math.ceil((amount - 1) / 2)
+    grown = torch.clamp(F.conv2d(prepared, kernel, padding=padding), 0, 1)
+    return grown[:, :, : mask.shape[-2], : mask.shape[-1]][:, 0, :, :]
 
 
 def resize_image_to_dimensions(image: Any, *, width: int, height: int):

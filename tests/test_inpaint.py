@@ -1,7 +1,16 @@
+import sys
+from types import SimpleNamespace
+
 import pytest
 
 from nodes.inpaint import AIOInpaint
-from services.inpaint import normalize_inpaint_config, resolve_dimensions_from_inpaint_config
+from services.inpaint import (
+    grow_inpaint_mask,
+    normalize_inpaint_config,
+    prepare_inpaint_latent,
+    prepare_inpaint_mask,
+    resolve_dimensions_from_inpaint_config,
+)
 
 
 class FakeImage:
@@ -83,3 +92,67 @@ def test_inpaint_dimensions_round_to_model_multiple():
     assert (dimensions.width, dimensions.height) == (512, 768)
     assert dimensions.size_mode == "use inpaint image size"
     assert dimensions.multiple_value == "16"
+
+
+def test_prepare_inpaint_mask_can_invert_mask():
+    torch = pytest.importorskip("torch")
+    mask = torch.tensor([[[0.0, 1.0], [0.25, 0.75]]])
+
+    prepared = prepare_inpaint_mask(
+        normalize_inpaint_config(image=FakeImage(), mask=mask, mask_invert=True),
+        width=2,
+        height=2,
+    )
+
+    assert torch.allclose(prepared, torch.tensor([[[1.0, 0.0], [0.75, 0.25]]]))
+
+
+def test_grow_inpaint_mask_expands_rounded_active_area():
+    torch = pytest.importorskip("torch")
+    mask = torch.zeros((1, 5, 5))
+    mask[:, 2, 2] = 1.0
+
+    grown = grow_inpaint_mask(mask, 3)
+
+    assert grown.shape == (1, 5, 5)
+    assert int(grown.sum().item()) == 9
+    assert grown[0, 1:4, 1:4].min().item() == 1.0
+
+
+def test_prepare_inpaint_latent_encodes_clean_image_and_attaches_noise_mask(monkeypatch):
+    torch = pytest.importorskip("torch")
+    image = torch.rand((1, 4, 4, 3))
+    mask = torch.zeros((1, 4, 4))
+    mask[:, 1:3, 1:3] = 1.0
+    captured = {}
+
+    class FakeVAEEncode:
+        def encode(self, vae, pixels):
+            captured["vae"] = vae
+            captured["pixels"] = pixels
+            return ({"samples": "clean_source_latent"},)
+
+    class FakeVAEEncodeForInpaint:
+        def encode(self, *args, **kwargs):
+            raise AssertionError("gray-masked VAEEncodeForInpaint should not be used")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "nodes",
+        SimpleNamespace(VAEEncode=FakeVAEEncode, VAEEncodeForInpaint=FakeVAEEncodeForInpaint),
+    )
+
+    latent, source_image, blend_mask = prepare_inpaint_latent(
+        vae="vae",
+        config=normalize_inpaint_config(image=image, mask=mask, mask_grow=0),
+        width=4,
+        height=4,
+    )
+
+    assert captured["vae"] == "vae"
+    assert captured["pixels"] is image
+    assert source_image is image
+    assert torch.equal(blend_mask, mask)
+    assert latent["samples"] == "clean_source_latent"
+    assert latent["noise_mask"].shape == (1, 1, 4, 4)
+    assert torch.equal(latent["noise_mask"][:, 0], mask)
