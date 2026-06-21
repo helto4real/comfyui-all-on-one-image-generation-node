@@ -341,7 +341,7 @@ class AIOImageGenerate:
                         "default": 0,
                         "min": 0,
                         "max": 2**63 - 1,
-                        "control_after_generate": True,
+                        "control_after_generate": "fixed",
                         "tooltip": "Random seed for generation. Reuse the same seed and settings for repeatable results.",
                     },
                 ),
@@ -443,7 +443,6 @@ class AIOImageGenerate:
         **reference_values: Any,
     ):
         del weight_format
-        del privacy_mode
         resolved_positive_prompt = privacy.decrypt_text_if_encrypted(positive_prompt)
         resolved_negative_prompt = privacy.decrypt_text_if_encrypted(negative_prompt)
 
@@ -511,7 +510,17 @@ class AIOImageGenerate:
         effective_cfg = float(settings["cfg"])
         effective_sampler = str(settings["sampler"])
         effective_scheduler = str(settings["scheduler"])
-        effective_positive_prompt = str(settings.get("positive_prompt_override") or resolved_positive_prompt)
+        positive_prompt_override = settings.get("positive_prompt_override")
+        effective_positive_prompt = (
+            privacy.decrypt_text_if_encrypted(positive_prompt_override)
+            if positive_prompt_override
+            else resolved_positive_prompt
+        )
+        run_info_privacy_mode = bool(
+            privacy_mode
+            or settings.get("prompt_builder_privacy_mode")
+            or settings.get("privacy_mode")
+        )
 
         warnings = adapter.validate_inputs(
             diffusion_model=diffusion_model,
@@ -577,6 +586,7 @@ class AIOImageGenerate:
             warnings=warnings,
             adapter_version=adapter.version,
             loras=lora_summary,
+            privacy_mode=run_info_privacy_mode,
         )
         return (
             image,

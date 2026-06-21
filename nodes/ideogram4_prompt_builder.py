@@ -200,7 +200,6 @@ class AIOIdeogram4PromptBuilder:
         privacy_mode: bool = False,
         **dimension_values: Any,
     ):
-        del privacy_mode
         high_level_description = privacy.decrypt_text_if_encrypted(high_level_description)
         background = privacy.decrypt_text_if_encrypted(background)
         photo = privacy.decrypt_text_if_encrypted(photo)
@@ -241,17 +240,20 @@ class AIOIdeogram4PromptBuilder:
             height=height,
         )
         prompt = prompt_builder.format_caption(caption, output_format)
+        private_prompt = privacy.encrypt_state({"value": prompt}) if privacy_mode else prompt
+        prompt_output = json.dumps(private_prompt, ensure_ascii=False, separators=(",", ":")) if privacy_mode else prompt
         preview = self._render_preview(boxes, width, height, image, int(bg_brightness))
         bboxes_out = prompt_builder.pixel_bboxes(boxes, width, height)
         payload = {
             "family": "ideogram4",
-            "prompt": prompt,
+            "prompt": private_prompt,
             "width": width,
             "height": height,
             "max_side": int(dimensions.max_side),
             "aspect_ratio": dimensions.aspect_ratio,
             "multiple_value": dimensions.multiple_value,
             "output_format": output_format,
+            "privacy_mode": bool(privacy_mode),
         }
         ui = {"dims": [width, height]}
         if boxes_seeded:
@@ -260,7 +262,7 @@ class AIOIdeogram4PromptBuilder:
             ui["caption"] = [prompt_builder.dumps_pretty(caption)]
         return {
             "ui": ui,
-            "result": (payload, prompt, preview, bboxes_out, width, height),
+            "result": (payload, prompt_output, preview, bboxes_out, width, height),
         }
 
     @staticmethod

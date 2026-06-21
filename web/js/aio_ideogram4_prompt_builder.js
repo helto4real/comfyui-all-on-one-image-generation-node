@@ -330,7 +330,7 @@ function createEditor(node) {
 
   function serializePrivateValue(widget, value) {
     if (!privacyEnabled()) return value;
-    if ((privacyRestorePending || privacyRestoreFailed) && isEncryptedPrivacyPayload(widget?.value)) {
+    if (isEncryptedPrivacyPayload(widget?.value)) {
       return typeof widget.value === "string" ? widget.value : JSON.stringify(parsePrivacyPayload(widget.value));
     }
     try {
@@ -339,6 +339,19 @@ function createEditor(node) {
       setStatus(`Privacy encryption failed: ${error.message}`);
       throw error;
     }
+  }
+
+  function existingEncryptedWorkflowPayload() {
+    const candidates = [
+      node._aioIdeogram4LastPrivatePayload,
+      node.properties?.[STATE_PROPERTY],
+      node._aioIdeogram4PendingWorkflowInfo?.[WORKFLOW_STATE_KEY],
+      node._aioIdeogram4PendingWorkflowInfo?.ideo,
+    ];
+    for (const candidate of candidates) {
+      if (isEncryptedPrivacyPayload(candidate)) return parsePrivacyPayload(candidate);
+    }
+    return null;
   }
 
   function widgetValues() {
@@ -387,7 +400,9 @@ function createEditor(node) {
 
   function workflowStatePayload() {
     if (privacyEnabled() && (privacyRestorePending || privacyRestoreFailed)) {
-      return node._aioIdeogram4LastPrivatePayload || node.properties?.[STATE_PROPERTY] || null;
+      const existing = existingEncryptedWorkflowPayload();
+      if (existing) return existing;
+      throw new Error("Private prompt builder is locked and no encrypted workflow state is available to preserve.");
     }
     const state = currentState();
     if (!privacyEnabled()) {
@@ -401,7 +416,9 @@ function createEditor(node) {
     } catch (error) {
       setStatus(`Privacy encryption failed: ${error.message}`);
       console.error("[AIO Ideogram 4 Prompt Builder] privacy encryption failed", error);
-      return node.properties?.[STATE_PROPERTY] || null;
+      const existing = existingEncryptedWorkflowPayload();
+      if (existing) return existing;
+      throw error;
     }
   }
 
@@ -642,13 +659,36 @@ function createEditor(node) {
     app.graph?.setDirtyCanvas?.(true, true);
   }
 
+  function workflowWidgetValue(widget) {
+    if (!widget) return "";
+    if (widget === elementsWidget) return serializePrivateValue(widget, serializedElementsValue());
+    if (widget === stylePaletteWidget) return serializePrivateValue(widget, serializedStylePaletteValue());
+    return serializePrivateValue(widget, directWidgetValue(widget));
+  }
+
+  function scrubWorkflowWidgets(output) {
+    if (!output || !privacyEnabled() || !Array.isArray(output.widgets_values)) return;
+    for (const name of SENSITIVE_WIDGET_NAMES) {
+      const widget = widgetByName(node, name);
+      const index = node.widgets?.indexOf(widget);
+      if (!widget || index == null || index < 0 || index >= output.widgets_values.length) continue;
+      output.widgets_values[index] = workflowWidgetValue(widget);
+    }
+  }
+
   function serializeForWorkflow(output) {
     if (!output) return;
     syncExecutionWidgets();
     const payload = workflowStatePayload();
     if (payload) {
+      node.properties ||= {};
+      node.properties[STATE_PROPERTY] = payload;
+      if (output.properties && typeof output.properties === "object") {
+        output.properties[STATE_PROPERTY] = payload;
+      }
       output[WORKFLOW_STATE_KEY] = payload;
     }
+    scrubWorkflowWidgets(output);
   }
 
   function repaintRestoredState() {

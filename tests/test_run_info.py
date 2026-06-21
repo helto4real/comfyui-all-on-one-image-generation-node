@@ -1,5 +1,8 @@
 import json
 
+import pytest
+
+from services import privacy
 from services.run_info import build_run_info, to_json
 
 
@@ -96,3 +99,45 @@ def test_run_info_reports_performance_defaults_when_settings_are_absent():
         "resolved_torch_compile_backend": "off",
         "performance_apply_timing": "after_loras",
     }
+
+
+@pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
+def test_run_info_encrypts_prompt_override_when_private(monkeypatch, tmp_path):
+    monkeypatch.setattr(privacy, "config_dir", lambda: tmp_path)
+    settings = {
+        "family": "ideogram4",
+        "steps": 20,
+        "positive_prompt_source": "ideogram4_prompt_builder",
+        "positive_prompt_override": '{"secret":"private prompt"}',
+    }
+
+    run_info = build_run_info(
+        model_type="ideogram4",
+        display_name="Ideogram 4",
+        diffusion_model="ideogram4/ideogram4_fp8_scaled.safetensors",
+        diffusion_model_format="safetensors",
+        text_encoder="qwen3vl_8b_fp8_scaled.safetensors",
+        text_encoder_format="safetensors",
+        vae="flux.2/flux2-vae.safetensors",
+        vae_format="safetensors",
+        width=1024,
+        height=1024,
+        seed=123,
+        steps=20,
+        cfg=7.0,
+        sampler="euler",
+        scheduler="ideogram4",
+        settings=settings,
+        warnings=[],
+        adapter_version="0.1.0",
+        privacy_mode=True,
+    )
+
+    dumped = to_json(run_info)
+    parsed = json.loads(dumped)
+    encrypted = parsed["settings"]["positive_prompt_override"]
+
+    assert "private prompt" not in dumped
+    assert privacy.is_encrypted_payload(encrypted)
+    assert privacy.decrypt_text_if_encrypted(encrypted) == '{"secret":"private prompt"}'
+    assert settings["positive_prompt_override"] == '{"secret":"private prompt"}'

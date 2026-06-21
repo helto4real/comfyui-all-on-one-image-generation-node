@@ -8,6 +8,7 @@ from nodes.aio_generate import (
     output_is_reachable,
     workflow_output_has_link,
 )
+from services import privacy
 
 
 class FakeImage:
@@ -40,6 +41,7 @@ def test_main_node_exposes_core_inputs():
     assert required["max side"][1]["max"] == 4096
     assert "aspect ratio" in required
     assert required["multiple value"][0] == ["none", "8", "16", "32"]
+    assert required["seed"][1]["control_after_generate"] == "fixed"
     assert "width" not in required
     assert "height" not in required
     assert "model_settings" in optional
@@ -381,6 +383,83 @@ def test_ideogram_prompt_builder_overrides_prompt_and_dimensions(monkeypatch):
     assert parsed["width"] == 1088
     assert parsed["height"] == 608
     assert parsed["settings"]["positive_prompt_source"] == "ideogram4_prompt_builder"
+
+
+@pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
+def test_ideogram_prompt_builder_privacy_marker_redacts_run_info(monkeypatch, tmp_path):
+    monkeypatch.setattr(privacy, "config_dir", lambda: tmp_path)
+
+    captured = {}
+
+    class FakeProfile:
+        display_name = "Ideogram 4"
+
+    class FakeAdapter:
+        version = "0.1.0"
+
+        def profile(self):
+            return FakeProfile()
+
+        def resolve_settings(self, **kwargs):
+            resolved = dict(kwargs["model_settings"])
+            resolved.update(
+                {
+                    "width": kwargs["width"],
+                    "height": kwargs["height"],
+                    "steps": 20,
+                    "cfg": 7.0,
+                    "sampler": "euler",
+                    "scheduler": "ideogram4",
+                }
+            )
+            return resolved
+
+        def validate_inputs(self, **kwargs):
+            captured["validated"] = kwargs
+            return []
+
+        def generate(self, **kwargs):
+            captured["generated"] = kwargs
+            return "image", {"samples": "latent"}, "positive", "negative", "vae"
+
+    from nodes import aio_generate
+
+    monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
+    encrypted_prompt = privacy.encrypt_state({"value": '{"secret":"private room"}'})
+
+    _, _, run_info, *_ = AIOImageGenerate().generate(
+        model_type="ideogram4",
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="",
+        negative_prompt="",
+        seed=0,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+        privacy_mode=False,
+        model_settings={
+            "family": "ideogram4",
+            "positive_prompt_override": encrypted_prompt,
+            "positive_prompt_source": "ideogram4_prompt_builder",
+            "prompt_builder_privacy_mode": True,
+        },
+        **{
+            "size mode": "use aspect ratio",
+            "max side": 512,
+            "aspect ratio": "1:1",
+            "multiple value": "16",
+        },
+    )
+
+    assert captured["generated"]["positive_prompt"] == '{"secret":"private room"}'
+    assert "private room" not in run_info
+    parsed = json.loads(run_info)
+    encrypted = parsed["settings"]["positive_prompt_override"]
+    assert privacy.is_encrypted_payload(encrypted)
+    assert privacy.decrypt_text_if_encrypted(encrypted) == '{"secret":"private room"}'
 
 
 def test_main_node_skips_image_decode_for_latent_only_prompt(monkeypatch):

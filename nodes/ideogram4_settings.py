@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 try:
+    from ..services import privacy
     from ..services.performance import (
         ATTENTION_MODES,
         PERFORMANCE_APPLY_TIMINGS,
@@ -10,6 +11,7 @@ try:
         TORCH_COMPILE_MODES,
     )
 except ImportError:  # pragma: no cover - direct test imports
+    from services import privacy
     from services.performance import (
         ATTENTION_MODES,
         PERFORMANCE_APPLY_TIMINGS,
@@ -201,10 +203,15 @@ class AIOIdeogram4Settings:
             "performance_apply_timing": performance_apply_timing,
         }
         if isinstance(prompt_builder, dict):
-            prompt = str(prompt_builder.get("prompt", "")).strip()
+            prompt_is_private = bool(prompt_builder.get("privacy_mode"))
+            prompt = privacy.decrypt_text_if_encrypted(prompt_builder.get("prompt", "")).strip()
             if prompt:
-                settings["positive_prompt_override"] = prompt
+                settings["positive_prompt_override"] = (
+                    privacy.encrypt_state({"value": prompt}) if prompt_is_private else prompt
+                )
                 settings["positive_prompt_source"] = "ideogram4_prompt_builder"
+            if prompt_is_private:
+                settings["prompt_builder_privacy_mode"] = True
             for key in ("width", "height", "max_side", "aspect_ratio", "multiple_value"):
                 if key in prompt_builder:
                     settings[f"prompt_builder_{key}"] = prompt_builder[key]

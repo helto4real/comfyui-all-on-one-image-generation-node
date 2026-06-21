@@ -1,6 +1,9 @@
 import json
 
+import pytest
+
 from nodes.ideogram4_prompt_builder import AIOIdeogram4PromptBuilder
+from services import privacy
 from services import ideogram4_prompt_builder as builder
 
 
@@ -39,6 +42,31 @@ def test_compact_json_matches_kj_key_order_and_formatting():
         '"compositional_deconstruction":{"background":"Room","elements":[{"type":"obj",'
         '"bbox":[200,100,600,400],"desc":"person","color_palette":["#00FF00","#0000FF"]}]}}'
     )
+
+
+@pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
+def test_private_prompt_builder_encrypts_prompt_outputs(monkeypatch, tmp_path):
+    monkeypatch.setattr(privacy, "config_dir", lambda: tmp_path)
+
+    result = AIOIdeogram4PromptBuilder().build_prompt(
+        high_level_description="Private overview",
+        background="Private room",
+        style="photo",
+        import_mode="when empty",
+        output_format="compact",
+        bg_brightness=25,
+        privacy_mode=True,
+        **{"max side": 1024, "aspect ratio": "1:1", "multiple value": "none"},
+    )["result"]
+
+    payload, prompt_output = result[0], result[1]
+    dumped = json.dumps(payload) + str(prompt_output)
+
+    assert "Private overview" not in dumped
+    assert "Private room" not in dumped
+    assert privacy.is_encrypted_payload(payload["prompt"])
+    assert privacy.decrypt_text_if_encrypted(payload["prompt"]) == privacy.decrypt_text_if_encrypted(prompt_output)
+    assert "Private overview" in privacy.decrypt_text_if_encrypted(prompt_output)
 
 
 def test_pretty_json_matches_kj_scalar_array_formatting():
@@ -269,9 +297,10 @@ def test_prompt_builder_decrypts_private_fields_without_changing_output(monkeypa
         **{"max side": 1024, "aspect ratio": "1:1", "multiple value": "16"},
     )["result"]
 
-    assert payload["prompt"] == prompt
-    assert prompt == (
+    expected = (
         '{"compositional_deconstruction":{"background":"Private room",'
         '"elements":[{"type":"obj","bbox":[200,100,600,400],"desc":"person"},'
         '{"type":"text","bbox":[100,500,300,700],"text":"PRIVATE","desc":"sign"}]}}'
     )
+    assert privacy.decrypt_text_if_encrypted(payload["prompt"]) == expected
+    assert privacy.decrypt_text_if_encrypted(prompt) == expected

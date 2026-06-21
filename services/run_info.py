@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from . import privacy
+
 
 PERFORMANCE_KEYS = (
     "attention_mode",
@@ -16,6 +18,21 @@ PERFORMANCE_KEYS = (
     "performance_apply_timing",
     "performance_warnings",
 )
+SENSITIVE_SETTINGS_KEYS = (
+    "positive_prompt_override",
+)
+
+
+def settings_info_from_settings(settings: dict[str, Any], privacy_mode: bool = False) -> dict[str, Any]:
+    info = dict(settings)
+    if not privacy_mode:
+        return info
+    for key in SENSITIVE_SETTINGS_KEYS:
+        value = info.get(key)
+        if value in (None, "") or privacy.is_encrypted_payload(value):
+            continue
+        info[key] = privacy.encrypt_state({"value": str(value)})
+    return info
 
 
 def performance_info_from_settings(settings: dict[str, Any]) -> dict[str, Any]:
@@ -56,7 +73,9 @@ def build_run_info(
     warnings: list[str],
     adapter_version: str,
     loras: list[dict[str, Any]] | None = None,
+    privacy_mode: bool = False,
 ) -> dict[str, Any]:
+    settings_info = settings_info_from_settings(settings, privacy_mode=privacy_mode)
     return {
         "model_type": model_type,
         "display_name": display_name,
@@ -73,8 +92,8 @@ def build_run_info(
         "cfg": cfg,
         "sampler": sampler,
         "scheduler": scheduler,
-        "settings": settings,
-        "performance": performance_info_from_settings(settings),
+        "settings": settings_info,
+        "performance": performance_info_from_settings(settings_info),
         "warnings": warnings,
         "adapter_version": adapter_version,
         "loras": loras or [],

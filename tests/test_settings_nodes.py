@@ -1,6 +1,9 @@
+import pytest
+
 from nodes.flux2_klein_settings import AIOFlux2Klein9BSettings
 from nodes.ideogram4_settings import AIOIdeogram4Settings, DEFAULT_UNCONDITIONAL_MODEL
 from nodes.z_image_settings import AIOZImageTurboSettings
+from services import privacy
 import sys
 
 
@@ -101,6 +104,35 @@ def test_ideogram4_settings_accepts_prompt_builder_payload():
     assert settings["prompt_builder_max_side"] == 1088
     assert settings["prompt_builder_aspect_ratio"] == "16:9"
     assert settings["prompt_builder_multiple_value"] == "16"
+
+
+@pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
+def test_ideogram4_settings_encrypts_private_prompt_builder_override(monkeypatch, tmp_path):
+    monkeypatch.setattr(privacy, "config_dir", lambda: tmp_path)
+    prompt = '{"compositional_deconstruction":{"background":"Private room","elements":[]}}'
+
+    settings = AIOIdeogram4Settings().build_settings(
+        "Default",
+        DEFAULT_UNCONDITIONAL_MODEL,
+        7.0,
+        True,
+        3.0,
+        0.7,
+        1.0,
+        5.0,
+        "auto",
+        prompt_builder={
+            "family": "ideogram4",
+            "prompt": prompt,
+            "privacy_mode": True,
+        },
+    )[0]
+
+    dumped = str(settings["positive_prompt_override"])
+    assert "Private room" not in dumped
+    assert privacy.is_encrypted_payload(settings["positive_prompt_override"])
+    assert privacy.decrypt_text_if_encrypted(settings["positive_prompt_override"]) == prompt
+    assert settings["prompt_builder_privacy_mode"] is True
 
 
 def test_ideogram4_unconditional_model_choices_are_category_prefixed(monkeypatch):
