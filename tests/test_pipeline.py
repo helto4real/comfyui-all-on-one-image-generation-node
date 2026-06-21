@@ -482,6 +482,70 @@ def test_ideogram4_pipeline_uses_dual_model_flow_and_ideogram_sigmas(monkeypatch
     assert calls["sample"]["sigmas"] == "ideogram_sigmas"
 
 
+def test_ideogram4_pipeline_can_skip_unconditional_model(monkeypatch):
+    calls = {"models": [], "performance": []}
+
+    def fake_load_model(**kwargs):
+        calls["models"].append(kwargs)
+        return f"model:{kwargs['diffusion_model']}"
+
+    def fake_performance(**kwargs):
+        calls["performance"].append(kwargs["model"])
+        return f"{kwargs['model']}+perf"
+
+    def fake_guider(**kwargs):
+        calls["guider"] = kwargs
+        return "guider"
+
+    monkeypatch.setattr(pipeline, "load_diffusion_model", fake_load_model)
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_model_sampling_aura", lambda **kwargs: f"{kwargs['model']}+aura")
+    monkeypatch.setattr(pipeline, "apply_model_performance", fake_performance)
+    monkeypatch.setattr(
+        pipeline,
+        "apply_lora_config_model_only",
+        lambda **kwargs: (f"{kwargs['model']}+lora", []),
+    )
+    monkeypatch.setattr(pipeline, "apply_cfg_override", lambda **kwargs: f"{kwargs['model']}+cfg")
+    monkeypatch.setattr(pipeline, "encode_ideogram4_prompt", lambda **kwargs: "positive")
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "negative")
+    monkeypatch.setattr(pipeline, "make_empty_ideogram4_latent", lambda **kwargs: {"samples": "empty"})
+    monkeypatch.setattr(pipeline, "build_dual_model_guider", fake_guider)
+    monkeypatch.setattr(pipeline, "ideogram4_sigmas", lambda **kwargs: "ideogram_sigmas")
+    monkeypatch.setattr(pipeline, "sample_with_custom_guider", lambda **kwargs: {"samples": "sampled"})
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
+    monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: "image")
+
+    pipeline.generate_ideogram4_t2i(
+        diffusion_model="ideogram4_fp8_scaled.safetensors",
+        unconditional_model="",
+        text_encoder="qwen3vl_8b_fp8_scaled.safetensors",
+        vae="flux2-vae.safetensors",
+        positive_prompt="prompt",
+        width=1024,
+        height=1024,
+        seed=123,
+        steps=20,
+        sampler="euler",
+        scheduler="ideogram4",
+        settings={
+            "run_unconditional_model": False,
+            "sampling_shift": 5.0,
+            "cfg_override_enabled": True,
+            "dual_cfg": 7.0,
+            "schedule_mode": "ideogram4",
+            "performance_apply_timing": "before_loras",
+        },
+    )
+
+    assert calls["models"] == [
+        {"diffusion_model": "ideogram4_fp8_scaled.safetensors", "precision_policy": None},
+    ]
+    assert calls["performance"] == ["model:ideogram4_fp8_scaled.safetensors+aura"]
+    assert calls["guider"]["model_negative"] is None
+    assert calls["guider"]["model"] == "model:ideogram4_fp8_scaled.safetensors+aura+perf+lora+cfg"
+
+
 def test_ideogram4_pipeline_workflow_preset_uses_basic_scheduler(monkeypatch):
     calls = {}
 

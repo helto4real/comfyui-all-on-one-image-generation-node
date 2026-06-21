@@ -150,6 +150,13 @@ class AIOIdeogram4Settings:
                     PERFORMANCE_APPLY_TIMINGS,
                     {"default": "after_loras", "tooltip": "Apply attention and compile settings before or after AIO LoRAs."},
                 ),
+                "run_unconditional_model": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "Run the separate unconditional Ideogram 4 model for dual-model guidance. Disable for turbo LoRA workflows.",
+                    },
+                ),
             },
             "optional": {
                 "prompt_builder": (
@@ -176,6 +183,7 @@ class AIOIdeogram4Settings:
         torch_compile_mode: str = "off",
         torch_compile_backend: str = "inductor",
         performance_apply_timing: str = "after_loras",
+        run_unconditional_model: bool = True,
         prompt_builder=None,
     ):
         preset_values = dict(IDEOGRAM4_PRESETS.get(preset, IDEOGRAM4_PRESETS["Default"]))
@@ -201,6 +209,7 @@ class AIOIdeogram4Settings:
             "torch_compile_mode": torch_compile_mode,
             "torch_compile_backend": torch_compile_backend,
             "performance_apply_timing": performance_apply_timing,
+            "run_unconditional_model": bool(run_unconditional_model),
         }
         if isinstance(prompt_builder, dict):
             prompt_is_private = bool(prompt_builder.get("privacy_mode"))

@@ -314,6 +314,11 @@ def test_ideogram4_validation_rejects_invalid_inputs():
     with pytest.raises(ValueError, match="unconditional_model is required"):
         adapter.validate_inputs(**{**base, "settings": {"unconditional_model": ""}})
 
+    warnings = adapter.validate_inputs(
+        **{**base, "settings": {"unconditional_model": "", "run_unconditional_model": False}}
+    )
+    assert warnings == []
+
 
 def test_ideogram4_negative_prompt_returns_warning():
     adapter = Ideogram4Adapter()

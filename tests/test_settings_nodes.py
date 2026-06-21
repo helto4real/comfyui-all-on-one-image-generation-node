@@ -20,6 +20,23 @@ def test_z_settings_returns_family_dict():
     assert settings["performance_apply_timing"] == "after_loras"
 
 
+def test_ideogram4_settings_can_disable_unconditional_model():
+    settings = AIOIdeogram4Settings().build_settings(
+        "Default",
+        DEFAULT_UNCONDITIONAL_MODEL,
+        7.0,
+        True,
+        3.0,
+        0.7,
+        1.0,
+        5.0,
+        "auto",
+        run_unconditional_model=False,
+    )[0]
+
+    assert settings["run_unconditional_model"] is False
+
+
 def test_flux_settings_returns_family_dict():
     settings = AIOFlux2Klein9BSettings().build_settings(
         "distilled", 1.0, "auto", "balanced", 0.5, 1.15
@@ -73,6 +90,7 @@ def test_ideogram4_settings_returns_default_family_dict():
     assert settings["torch_compile_mode"] == "off"
     assert settings["torch_compile_backend"] == "inductor"
     assert settings["performance_apply_timing"] == "after_loras"
+    assert settings["run_unconditional_model"] is True
 
 
 def test_ideogram4_settings_accepts_prompt_builder_payload():

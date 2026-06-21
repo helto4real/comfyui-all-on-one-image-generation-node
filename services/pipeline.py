@@ -663,11 +663,14 @@ def generate_ideogram4_t2i(
             diffusion_model=diffusion_model,
             precision_policy=settings.get("precision_policy"),
         )
-    _phase(progress, "loading unconditional diffusion model")
-    model_negative = load_diffusion_model(
-        diffusion_model=unconditional_model,
-        precision_policy=settings.get("precision_policy"),
-    )
+    run_unconditional_model = bool(settings.get("run_unconditional_model", True))
+    model_negative = None
+    if run_unconditional_model:
+        _phase(progress, "loading unconditional diffusion model")
+        model_negative = load_diffusion_model(
+            diffusion_model=unconditional_model,
+            precision_policy=settings.get("precision_policy"),
+        )
     clip = loaded_clip
     if clip is None:
         _phase(progress, "loading text encoder")
@@ -684,13 +687,15 @@ def generate_ideogram4_t2i(
     apply_timing = normalize_performance_apply_timing(settings)
     if apply_timing == "before_loras":
         model = _apply_model_performance_if_configured(model=model, settings=settings, progress=progress)
-        model_negative = _apply_model_performance_if_configured(model=model_negative, settings=settings, progress=progress)
+        if model_negative is not None:
+            model_negative = _apply_model_performance_if_configured(model=model_negative, settings=settings, progress=progress)
     if not using_connected_model_pair:
         _phase(progress, "applying loras")
         model, _ = apply_lora_config_model_only(model=model, lora_config=lora_config)
     if apply_timing == "after_loras":
         model = _apply_model_performance_if_configured(model=model, settings=settings, progress=progress)
-        model_negative = _apply_model_performance_if_configured(model=model_negative, settings=settings, progress=progress)
+        if model_negative is not None:
+            model_negative = _apply_model_performance_if_configured(model=model_negative, settings=settings, progress=progress)
     if settings.get("cfg_override_enabled", True):
         _phase(progress, "applying cfg override")
         model = apply_cfg_override(

@@ -73,7 +73,7 @@ The node is not an output node, so it is safe for API-mode workflows.
 
 `FLUX.2 Klein 9B Settings` returns an `AIO_MODEL_SETTINGS` dict with distilled/base variant, guidance, reference strength, precision policy, memory policy, shift parameters, reference scaling controls, attention backend, Torch compile, and performance-apply timing. FLUX.2 Klein edit mode is inferred from connected reference image sockets.
 
-`Ideogram 4 Settings` returns an `AIO_MODEL_SETTINGS` dict with the unconditional model, sampling preset, dual CFG, final CFG override window, AuraFlow sampling shift, precision policy, attention backend, Torch compile, and performance-apply timing. The official presets use Ideogram 4 sigmas; `Workflow Compatible` uses the saved workflow's simple scheduler path.
+`Ideogram 4 Settings` returns an `AIO_MODEL_SETTINGS` dict with the unconditional model toggle and model path, sampling preset, dual CFG, final CFG override window, AuraFlow sampling shift, precision policy, attention backend, Torch compile, and performance-apply timing. The official presets use Ideogram 4 sigmas; `Workflow Compatible` uses the saved workflow's simple scheduler path. Disable `run_unconditional_model` for turbo LoRA workflows that should skip the separate unconditional diffusion model and run the guider with the conditional model only.
 
 `Ideogram 4 Prompt Builder` returns an `AIO_IDEOGRAM4_PROMPT` payload plus convenience `prompt`, `preview`, `bboxes`, `width`, and `height` outputs. Connect its first output to `Ideogram 4 Settings`. When connected, the generated JSON prompt replaces the main node's `positive_prompt`, and the builder's resolved dimensions replace the main node's size controls for Ideogram 4 only. The builder uses the same `max side`, `aspect ratio`, and `multiple value` calculation as `AIO Image Generate`; it does not expose raw width/height inputs.
 
@@ -95,7 +95,7 @@ The main node rejects mismatched settings, for example connecting FLUX settings 
 
 LoRAs are applied after the diffusion model and text encoder are loaded, and before prompt encoding and sampling. This matches how a normal workflow would place LoRA loaders after model loading. The backend uses ComfyUI's `LoraLoader.load_lora`, so LoRA files stay lazy and are not loaded at import time.
 
-Ideogram 4 applies LoRAs to the conditional diffusion model only, matching ComfyUI's `LoraLoaderModelOnly` workflow pattern. The Qwen3-VL text encoder and unconditional model are not LoRA-patched by the Ideogram 4 adapter.
+Ideogram 4 applies LoRAs to the conditional diffusion model only, matching ComfyUI's `LoraLoaderModelOnly` workflow pattern. The Qwen3-VL text encoder and unconditional model are not LoRA-patched by the Ideogram 4 adapter. When `run_unconditional_model` is disabled, the unconditional model is not required, loaded, or patched.
 
 The LoRA info button is also implemented locally. It reads safetensors metadata, stores editable notes/strength hints in a sidecar `*.aio-lora-info.json` file beside the LoRA, can fetch Civitai model-version data by SHA256 hash, and renders a rgthree-style info dialog without requiring rgthree as a runtime dependency.
 

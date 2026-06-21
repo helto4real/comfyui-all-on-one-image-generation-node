@@ -70,8 +70,9 @@ class Ideogram4Adapter(BaseImageAdapter):
         aspect = max(width / height, height / width)
         if aspect > 6.0:
             raise ValueError("Ideogram 4 aspect ratio must not exceed 6:1.")
+        run_unconditional_model = bool(settings.get("run_unconditional_model", True))
         unconditional_model = str(settings.get("unconditional_model", "")).strip()
-        if not unconditional_model:
+        if run_unconditional_model and not unconditional_model:
             raise ValueError("unconditional_model is required for Ideogram 4.")
         validation.validate_reference_inputs(
             profile,
@@ -79,7 +80,10 @@ class Ideogram4Adapter(BaseImageAdapter):
             reference_inputs=reference_inputs,
             mask=mask,
         )
-        if any(infer_model_format(name) == "gguf" for name in (diffusion_model, unconditional_model, text_encoder, vae)):
+        model_names = [diffusion_model, text_encoder, vae]
+        if run_unconditional_model:
+            model_names.append(unconditional_model)
+        if any(infer_model_format(name) == "gguf" for name in model_names):
             raise ValueError("Ideogram 4 does not currently support GGUF model files in this adapter.")
         warning = validation.validate_negative_prompt_policy(
             profile,
@@ -87,7 +91,7 @@ class Ideogram4Adapter(BaseImageAdapter):
             ignored_by_default=True,
         )
         validation.validate_gguf_available_for_models(
-            gguf_backend.is_available(), diffusion_model, text_encoder, vae, unconditional_model
+            gguf_backend.is_available(), *model_names
         )
         return [warning] if warning else []
 
@@ -97,7 +101,7 @@ class Ideogram4Adapter(BaseImageAdapter):
             progress.phase("resolving models")
         return pipeline.generate_ideogram4_t2i(
             diffusion_model=kwargs["diffusion_model"],
-            unconditional_model=kwargs["settings"]["unconditional_model"],
+            unconditional_model=kwargs["settings"].get("unconditional_model", ""),
             text_encoder=kwargs["text_encoder"],
             vae=kwargs["vae"],
             positive_prompt=kwargs["positive_prompt"],
