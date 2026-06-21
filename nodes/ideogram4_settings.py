@@ -148,7 +148,15 @@ class AIOIdeogram4Settings:
                     PERFORMANCE_APPLY_TIMINGS,
                     {"default": "after_loras", "tooltip": "Apply attention and compile settings before or after AIO LoRAs."},
                 ),
-            }
+            },
+            "optional": {
+                "prompt_builder": (
+                    "AIO_IDEOGRAM4_PROMPT",
+                    {
+                        "tooltip": "Optional prompt and dimensions from the AIO Ideogram 4 Prompt Builder.",
+                    },
+                ),
+            },
         }
 
     def build_settings(
@@ -166,30 +174,38 @@ class AIOIdeogram4Settings:
         torch_compile_mode: str = "off",
         torch_compile_backend: str = "inductor",
         performance_apply_timing: str = "after_loras",
+        prompt_builder=None,
     ):
         preset_values = dict(IDEOGRAM4_PRESETS.get(preset, IDEOGRAM4_PRESETS["Default"]))
         if preset == "Workflow Compatible" and cfg_override_start_percent == 0.7:
             cfg_override_start_percent = float(preset_values["cfg_override_start_percent"])
-        return (
-            {
-                "family": "ideogram4",
-                "preset": preset,
-                "unconditional_model": unconditional_model,
-                "preset_steps": int(preset_values["steps"]),
-                "mu": float(preset_values["mu"]),
-                "std": float(preset_values["std"]),
-                "schedule_mode": preset_values["schedule_mode"],
-                "scheduler": preset_values.get("scheduler", "ideogram4"),
-                "dual_cfg": dual_cfg,
-                "cfg_override_enabled": cfg_override_enabled,
-                "cfg_override": cfg_override,
-                "cfg_override_start_percent": cfg_override_start_percent,
-                "cfg_override_end_percent": cfg_override_end_percent,
-                "sampling_shift": sampling_shift,
-                "precision_policy": precision_policy,
-                "attention_mode": attention_mode,
-                "torch_compile_mode": torch_compile_mode,
-                "torch_compile_backend": torch_compile_backend,
-                "performance_apply_timing": performance_apply_timing,
-            },
-        )
+        settings = {
+            "family": "ideogram4",
+            "preset": preset,
+            "unconditional_model": unconditional_model,
+            "preset_steps": int(preset_values["steps"]),
+            "mu": float(preset_values["mu"]),
+            "std": float(preset_values["std"]),
+            "schedule_mode": preset_values["schedule_mode"],
+            "scheduler": preset_values.get("scheduler", "ideogram4"),
+            "dual_cfg": dual_cfg,
+            "cfg_override_enabled": cfg_override_enabled,
+            "cfg_override": cfg_override,
+            "cfg_override_start_percent": cfg_override_start_percent,
+            "cfg_override_end_percent": cfg_override_end_percent,
+            "sampling_shift": sampling_shift,
+            "precision_policy": precision_policy,
+            "attention_mode": attention_mode,
+            "torch_compile_mode": torch_compile_mode,
+            "torch_compile_backend": torch_compile_backend,
+            "performance_apply_timing": performance_apply_timing,
+        }
+        if isinstance(prompt_builder, dict):
+            prompt = str(prompt_builder.get("prompt", "")).strip()
+            if prompt:
+                settings["positive_prompt_override"] = prompt
+                settings["positive_prompt_source"] = "ideogram4_prompt_builder"
+            for key in ("width", "height", "max_side", "aspect_ratio", "multiple_value"):
+                if key in prompt_builder:
+                    settings[f"prompt_builder_{key}"] = prompt_builder[key]
+        return (settings,)

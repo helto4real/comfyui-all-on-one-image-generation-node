@@ -1,5 +1,6 @@
 import { app } from "/scripts/app.js";
 import { api } from "/scripts/api.js";
+import { decryptValue, encryptValueSync, isEncryptedPrivacyPayload } from "./aio_privacy.js";
 
 const NODE_NAME = "AIOLoraConfiguration";
 const NODE_DISPLAY_NAME = "AIO LoRA Configuration";
@@ -14,6 +15,10 @@ const MAX_SIDE_MAX = 4096;
 const LORA_HEADER_TOOLTIP = "Toggle every configured LoRA row on or off.";
 const LORA_ROW_TOOLTIP = "LoRA row: choose a LoRA, toggle it, inspect metadata, and adjust strength.";
 const ADD_LORA_TOOLTIP = "Add a LoRA row filtered by the match field.";
+const PRIVACY_WIDGET_NAME = "privacy_mode";
+const PROMPT_WIDGET_NAMES = ["positive_prompt", "negative_prompt"];
+const PRIVACY_STYLE_ID = "aio-generate-privacy-style";
+const MASKED_PROMPT_VALUE = "Private prompt - hover to reveal";
 
 const DEFAULT_ROW = {
   on: true,
@@ -83,6 +88,216 @@ function markNodeDirty(node) {
   } else {
     app.graph?.setDirtyCanvas?.(true, true);
   }
+}
+
+function privacyEnabled(node) {
+  return Boolean(widgetByName(node, PRIVACY_WIDGET_NAME)?.value);
+}
+
+function setPrivacyStatus(node, message = "") {
+  node._aioPrivacyStatus = message;
+  markNodeDirty(node);
+}
+
+function installGeneratePrivacyStyles() {
+  if (document.getElementById(PRIVACY_STYLE_ID)) {
+    return;
+  }
+  const style = document.createElement("style");
+  style.id = PRIVACY_STYLE_ID;
+  style.textContent = `
+    .aio-generate-private-field {
+      color: transparent !important;
+      text-shadow: none !important;
+      caret-color: transparent !important;
+    }
+    .aio-generate-private-field::placeholder {
+      color: transparent !important;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
+function directPromptWidgetValue(widget) {
+  const value = widget?.value;
+  if (value == null) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (isEncryptedPrivacyPayload(value)) {
+    return JSON.stringify(value);
+  }
+  return "";
+}
+
+function promptWidgetDomElements(widget) {
+  const elements = [];
+  for (const candidate of [widget?.inputEl, widget?.element, widget?.inputElement, widget?.textarea, widget?.textElement]) {
+    if (candidate instanceof HTMLElement) {
+      elements.push(candidate);
+    }
+  }
+  for (const candidate of [...elements]) {
+    elements.push(...candidate.querySelectorAll?.("textarea,input,[contenteditable='true']") || []);
+  }
+  return [...new Set(elements)].filter((element) => element instanceof HTMLElement);
+}
+
+function updatePromptDomPrivacy(node) {
+  const masked = privacyEnabled(node) && !node._aioPrivacyReveal;
+  for (const name of PROMPT_WIDGET_NAMES) {
+    const widget = widgetByName(node, name);
+    for (const element of promptWidgetDomElements(widget)) {
+      element.classList.toggle("aio-generate-private-field", masked);
+      element.setAttribute("data-aio-private", masked ? "true" : "false");
+    }
+  }
+}
+
+function promptPrivacyMasked(node) {
+  return privacyEnabled(node) && !node._aioPrivacyReveal;
+}
+
+function restorePromptWidgetsAfterDraw(node) {
+  const restore = node?._aioPrivacyDrawRestore;
+  if (!Array.isArray(restore) || !restore.length) {
+    return;
+  }
+  for (const item of restore) {
+    if (item?.widget) {
+      item.widget.value = item.value;
+    }
+  }
+  node._aioPrivacyDrawRestore = [];
+}
+
+function maskPromptWidgetsForDraw(node) {
+  restorePromptWidgetsAfterDraw(node);
+  if (!promptPrivacyMasked(node)) {
+    return;
+  }
+  const restore = [];
+  for (const name of PROMPT_WIDGET_NAMES) {
+    const widget = widgetByName(node, name);
+    if (!widget) {
+      continue;
+    }
+    restore.push({ widget, value: widget.value });
+    widget.value = MASKED_PROMPT_VALUE;
+  }
+  node._aioPrivacyDrawRestore = restore;
+}
+
+async function decryptPromptWidget(node, widget) {
+  if (!widget || widget._aioPrivacyDecrypting || !isEncryptedPrivacyPayload(widget.value)) {
+    return;
+  }
+  widget._aioPrivacyDecrypting = true;
+  setPrivacyStatus(node, "Decrypting private prompts...");
+  try {
+    widget.value = await decryptValue(widget.value);
+    setPrivacyStatus(node, "");
+  } catch (error) {
+    setPrivacyStatus(node, `Private prompt locked: ${error.message}`);
+    console.error("[AIO Image Generate] privacy decrypt failed", error);
+  } finally {
+    widget._aioPrivacyDecrypting = false;
+    markNodeDirty(node);
+  }
+}
+
+function patchPromptPrivacyWidget(node, widget) {
+  if (!widget || widget._aioPrivacyPatched) {
+    return;
+  }
+  const originalDraw = widget.draw;
+  if (typeof originalDraw === "function") {
+    widget.draw = function () {
+      if (!promptPrivacyMasked(node)) {
+        return originalDraw.apply(this, arguments);
+      }
+      const value = this.value;
+      this.value = MASKED_PROMPT_VALUE;
+      try {
+        return originalDraw.apply(this, arguments);
+      } finally {
+        this.value = value;
+      }
+    };
+  }
+  widget.serializeValue = function () {
+    restorePromptWidgetsAfterDraw(node);
+    const value = directPromptWidgetValue(this);
+    if (!privacyEnabled(node)) {
+      return value;
+    }
+    try {
+      return encryptValueSync(value ?? "");
+    } catch (error) {
+      setPrivacyStatus(node, `Privacy encryption failed: ${error.message}`);
+      throw error;
+    }
+  };
+  widget._aioPrivacyPatched = true;
+}
+
+function ensureAioGeneratePrivacyUi(node) {
+  if (!isAioGenerateNode(node) || node._aioGeneratePrivacyInstalled) {
+    return;
+  }
+  node._aioGeneratePrivacyInstalled = true;
+  node._aioPrivacyReveal = false;
+  installGeneratePrivacyStyles();
+
+  for (const name of PROMPT_WIDGET_NAMES) {
+    const widget = widgetByName(node, name);
+    patchPromptPrivacyWidget(node, widget);
+    decryptPromptWidget(node, widget);
+  }
+
+  const privacyWidget = widgetByName(node, PRIVACY_WIDGET_NAME);
+  patchWidgetCallback(privacyWidget, "_aioPrivacyModeCallbackPatched", () => {
+    updatePromptDomPrivacy(node);
+    markNodeDirty(node);
+  });
+
+  const originalMouseEnter = node.onMouseEnter;
+  node.onMouseEnter = function () {
+    restorePromptWidgetsAfterDraw(this);
+    this._aioPrivacyReveal = true;
+    updatePromptDomPrivacy(this);
+    markNodeDirty(this);
+    return originalMouseEnter?.apply(this, arguments);
+  };
+
+  const originalMouseLeave = node.onMouseLeave;
+  node.onMouseLeave = function () {
+    restorePromptWidgetsAfterDraw(this);
+    this._aioPrivacyReveal = false;
+    updatePromptDomPrivacy(this);
+    markNodeDirty(this);
+    return originalMouseLeave?.apply(this, arguments);
+  };
+
+  const originalDrawBackground = node.onDrawBackground;
+  node.onDrawBackground = function (ctx) {
+    const result = originalDrawBackground?.apply(this, arguments);
+    updatePromptDomPrivacy(this);
+    maskPromptWidgetsForDraw(this);
+    return result;
+  };
+
+  const originalDrawForeground = node.onDrawForeground;
+  node.onDrawForeground = function (ctx) {
+    restorePromptWidgetsAfterDraw(this);
+    const result = originalDrawForeground?.apply(this, arguments);
+    return result;
+  };
+
+  markNodeDirty(node);
+  requestAnimationFrame(() => updatePromptDomPrivacy(node));
 }
 
 function patchWidgetCallback(widget, patchKey, callback) {
@@ -1647,6 +1862,7 @@ app.registerExtension({
       for (const node of app.graph?._nodes || []) {
         ensureLoraUi(node);
         ensureAioGenerateSizingUi(node);
+        ensureAioGeneratePrivacyUi(node);
       }
     });
   },
@@ -1660,9 +1876,11 @@ app.registerExtension({
   nodeCreated(node) {
     ensureLoraUi(node);
     ensureAioGenerateSizingUi(node);
+    ensureAioGeneratePrivacyUi(node);
   },
   loadedGraphNode(node) {
     ensureLoraUi(node);
     ensureAioGenerateSizingUi(node);
+    ensureAioGeneratePrivacyUi(node);
   },
 });

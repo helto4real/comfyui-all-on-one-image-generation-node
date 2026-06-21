@@ -23,6 +23,7 @@ def test_main_node_exposes_core_inputs():
     assert "weight_format" not in required
     assert "positive_prompt" in required
     assert "negative_prompt" in required
+    assert required["privacy_mode"][1]["default"] is False
     assert "pid_enabled" not in required
     assert "pid_save_vram" not in required
     assert "pid_capture_enabled" not in required
@@ -249,6 +250,137 @@ def test_main_node_passes_lora_config_to_adapter(monkeypatch):
     assert captured["loaded_clip"] == "patched_clip"
     assert json.loads(run_info)["loras"][0]["name"] == "style"
     assert (output_width, output_height) == (1024, 1024)
+
+
+def test_main_node_decrypts_private_prompt_widgets(monkeypatch, tmp_path):
+    from nodes import aio_generate
+    from services import privacy
+
+    monkeypatch.setattr(aio_generate.privacy, "config_dir", lambda: tmp_path)
+    captured = {}
+
+    class FakeAdapter:
+        version = "test"
+
+        def resolve_settings(self, **kwargs):
+            return {
+                "width": kwargs["width"],
+                "height": kwargs["height"],
+                "steps": 8,
+                "cfg": 1.0,
+                "sampler": "auto",
+                "scheduler": "auto",
+            }
+
+        def validate_inputs(self, **kwargs):
+            captured["validated"] = kwargs
+            return []
+
+        def generate(self, **kwargs):
+            captured["generated"] = kwargs
+            return "image", {"samples": "latent"}, "positive", "negative", "vae"
+
+    positive = json.dumps(privacy.encrypt_state({"value": "private positive"}, base_dir=tmp_path))
+    negative = json.dumps(privacy.encrypt_state({"value": "private negative"}, base_dir=tmp_path))
+    monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
+
+    AIOImageGenerate().generate(
+        model_type="z_image_turbo",
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt=positive,
+        negative_prompt=negative,
+        privacy_mode=True,
+        width=1024,
+        height=1024,
+        seed=0,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+    )
+
+    assert captured["validated"]["positive_prompt"] == "private positive"
+    assert captured["validated"]["negative_prompt"] == "private negative"
+    assert captured["generated"]["positive_prompt"] == "private positive"
+    assert captured["generated"]["negative_prompt"] == "private negative"
+
+
+def test_ideogram_prompt_builder_overrides_prompt_and_dimensions(monkeypatch):
+    from nodes import aio_generate
+
+    captured = {}
+
+    class FakeAdapter:
+        version = "test"
+
+        def resolve_settings(self, **kwargs):
+            captured["resolved"] = kwargs
+            resolved = dict(kwargs["model_settings"])
+            resolved.update(
+                {
+                    "width": kwargs["width"],
+                    "height": kwargs["height"],
+                    "steps": 8,
+                    "cfg": 7.0,
+                    "sampler": "euler",
+                    "scheduler": "ideogram4",
+                }
+            )
+            return resolved
+
+        def validate_inputs(self, **kwargs):
+            captured["validated"] = kwargs
+            return []
+
+        def generate(self, **kwargs):
+            captured["generated"] = kwargs
+            return "image", {"samples": "latent"}, "positive", "negative", "vae"
+
+    monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
+
+    _, _, run_info, _, _, _, _, _, output_width, output_height = AIOImageGenerate().generate(
+        model_type="ideogram4",
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="",
+        negative_prompt="",
+        seed=0,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+        model_settings={
+            "family": "ideogram4",
+            "positive_prompt_override": '{"compositional_deconstruction":{"background":"Room","elements":[]}}',
+            "positive_prompt_source": "ideogram4_prompt_builder",
+            "prompt_builder_width": 1088,
+            "prompt_builder_height": 608,
+            "prompt_builder_max_side": 1088,
+            "prompt_builder_aspect_ratio": "16:9",
+            "prompt_builder_multiple_value": "16",
+        },
+        **{
+            "size mode": "use aspect ratio",
+            "max side": 512,
+            "aspect ratio": "1:1",
+            "multiple value": "16",
+        },
+    )
+
+    assert captured["resolved"]["width"] == 1088
+    assert captured["resolved"]["height"] == 608
+    assert captured["validated"]["positive_prompt"] == '{"compositional_deconstruction":{"background":"Room","elements":[]}}'
+    assert captured["generated"]["positive_prompt"] == '{"compositional_deconstruction":{"background":"Room","elements":[]}}'
+    assert captured["generated"]["width"] == 1088
+    assert captured["generated"]["height"] == 608
+    assert (output_width, output_height) == (1088, 608)
+    parsed = json.loads(run_info)
+    assert parsed["width"] == 1088
+    assert parsed["height"] == 608
+    assert parsed["settings"]["positive_prompt_source"] == "ideogram4_prompt_builder"
 
 
 def test_main_node_skips_image_decode_for_latent_only_prompt(monkeypatch):

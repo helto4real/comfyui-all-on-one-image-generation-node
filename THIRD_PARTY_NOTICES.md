@@ -29,3 +29,14 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## ComfyUI-KJNodes
+
+The AIO Ideogram 4 prompt builder is adapted from the `Ideogram4PromptBuilderKJ`
+node in [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes), including
+the structured Ideogram 4 JSON formatting rules, bbox conversion behavior, and
+visual editor interaction model.
+
+ComfyUI-KJNodes is licensed under the GNU General Public License version 3.0.
+The full license text is available from the upstream project and at
+<https://www.gnu.org/licenses/gpl-3.0.html>.

@@ -72,6 +72,37 @@ def test_ideogram4_settings_returns_default_family_dict():
     assert settings["performance_apply_timing"] == "after_loras"
 
 
+def test_ideogram4_settings_accepts_prompt_builder_payload():
+    settings = AIOIdeogram4Settings().build_settings(
+        "Default",
+        DEFAULT_UNCONDITIONAL_MODEL,
+        7.0,
+        True,
+        3.0,
+        0.7,
+        1.0,
+        5.0,
+        "auto",
+        prompt_builder={
+            "family": "ideogram4",
+            "prompt": '{"compositional_deconstruction":{"background":"Room","elements":[]}}',
+            "width": 1088,
+            "height": 608,
+            "max_side": 1088,
+            "aspect_ratio": "16:9",
+            "multiple_value": "16",
+        },
+    )[0]
+
+    assert settings["positive_prompt_source"] == "ideogram4_prompt_builder"
+    assert settings["positive_prompt_override"] == '{"compositional_deconstruction":{"background":"Room","elements":[]}}'
+    assert settings["prompt_builder_width"] == 1088
+    assert settings["prompt_builder_height"] == 608
+    assert settings["prompt_builder_max_side"] == 1088
+    assert settings["prompt_builder_aspect_ratio"] == "16:9"
+    assert settings["prompt_builder_multiple_value"] == "16"
+
+
 def test_ideogram4_unconditional_model_choices_are_category_prefixed(monkeypatch):
     class FakeFolderPaths:
         @staticmethod

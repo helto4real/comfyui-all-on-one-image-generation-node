@@ -11,6 +11,7 @@ Clone or copy this folder into `ComfyUI/custom_nodes`, then restart ComfyUI. The
 - `AIO Image Generate`
 - `Z-Image Turbo Settings`
 - `FLUX.2 Klein 9B Settings`
+- `Ideogram 4 Prompt Builder`
 - `Ideogram 4 Settings`
 - `AIO LoRA Configuration`
 - `AIO Load Pipeline Models`
@@ -59,9 +60,10 @@ The dropdown may prefix values with their category when multiple folders are sea
 3. Select diffusion model, text encoder, and VAE files.
 4. Enter a positive prompt.
 5. Optionally attach the matching model-specific settings node.
-6. Optionally attach `AIO LoRA Configuration` to apply one or more LoRAs.
-7. Optionally use `AIO Load Pipeline Models` and external `MODEL`/`CLIP` patch nodes after the LoRA phase.
-8. Connect `IMAGE` to Preview Image or Save Image.
+6. For Ideogram 4, optionally connect `Ideogram 4 Prompt Builder` to `Ideogram 4 Settings` to use structured JSON prompting.
+7. Optionally attach `AIO LoRA Configuration` to apply one or more LoRAs.
+8. Optionally use `AIO Load Pipeline Models` and external `MODEL`/`CLIP` patch nodes after the LoRA phase.
+9. Connect `IMAGE` to Preview Image or Save Image.
 
 The node is not an output node, so it is safe for API-mode workflows.
 
@@ -72,6 +74,16 @@ The node is not an output node, so it is safe for API-mode workflows.
 `FLUX.2 Klein 9B Settings` returns an `AIO_MODEL_SETTINGS` dict with distilled/base variant, guidance, reference strength, precision policy, memory policy, shift parameters, reference scaling controls, attention backend, Torch compile, and performance-apply timing. FLUX.2 Klein edit mode is inferred from connected reference image sockets.
 
 `Ideogram 4 Settings` returns an `AIO_MODEL_SETTINGS` dict with the unconditional model, sampling preset, dual CFG, final CFG override window, AuraFlow sampling shift, precision policy, attention backend, Torch compile, and performance-apply timing. The official presets use Ideogram 4 sigmas; `Workflow Compatible` uses the saved workflow's simple scheduler path.
+
+`Ideogram 4 Prompt Builder` returns an `AIO_IDEOGRAM4_PROMPT` payload plus convenience `prompt`, `preview`, `bboxes`, `width`, and `height` outputs. Connect its first output to `Ideogram 4 Settings`. When connected, the generated JSON prompt replaces the main node's `positive_prompt`, and the builder's resolved dimensions replace the main node's size controls for Ideogram 4 only. The builder uses the same `max side`, `aspect ratio`, and `multiple value` calculation as `AIO Image Generate`; it does not expose raw width/height inputs.
+
+The prompt builder's JSON output is KJ-compatible: compact output uses the same key order, bbox normalization, palette casing, and compact separators as `Ideogram4PromptBuilderKJ`.
+
+## Privacy Mode
+
+`AIO Image Generate` and `Ideogram 4 Prompt Builder` include a `privacy_mode` toggle. When enabled, prompt text and prompt-builder editor state are saved to workflow JSON as AES-256-GCM envelopes under the `helto.aio-image-generate` schema, using a local key file at `config/privacy_key.json`. The frontend also masks private text while the node is not hovered and reveals it while the pointer is inside the node.
+
+Encrypted workflows require the same local privacy key to decrypt. If the key is missing or different, the node keeps a locked/error state instead of restoring private text as clear text.
 
 All settings nodes expose `attention_mode` (`auto`, `off`, `sage`, `sage3`, `flash`, `xformers`, `pytorch`, `split`, `sub_quad`), `torch_compile_mode` (`auto`, `off`, `on`), `torch_compile_backend` (`inductor`, `cudagraphs`), and `performance_apply_timing` (`after_loras`, `before_loras`). `auto` attention selects the best installed compatible backend, `off` leaves ComfyUI defaults untouched, and `after_loras` applies attention/compile patches to the final LoRA-patched model.
 
@@ -90,6 +102,8 @@ The LoRA info button is also implemented locally. It reads safetensors metadata,
 ### Attribution
 
 The LoRA configuration node and LoRA info dialog are inspired by and partially adapted from [rgthree-comfy](https://github.com/rgthree/rgthree-comfy), especially its Power LoRA Loader UI and model-info dialog. rgthree-comfy is copyright Regis Gaughan, III (rgthree) and is distributed under the MIT License.
+
+The Ideogram 4 prompt builder backend formatting and editor behavior are adapted from [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)' `Ideogram4PromptBuilderKJ`, which is distributed under GPL-3.0. See `THIRD_PARTY_NOTICES.md`.
 
 API workflows can pass rgthree-style dynamic row payloads directly:
 
@@ -119,7 +133,7 @@ When both `model` and `clip` are connected, the main node treats them as already
 ## Known Limitations
 
 - GGUF depends on an external compatible backend such as ComfyUI-GGUF.
-- Output size is controlled globally with `size mode`, `max side`, `aspect ratio`, and `multiple value`.
+- Output size is controlled globally with `size mode`, `max side`, `aspect ratio`, and `multiple value`, except when an Ideogram 4 Prompt Builder is connected through Ideogram 4 Settings; in that case the builder dimensions override the main node for Ideogram 4.
 - FLUX.2 Klein supports up to four reference images through `image 1` to `image 4`.
 - FLUX.2 Klein settings expose reference image scaling controls, defaulting to 1.0 megapixel, `area`, and 1 resolution step.
 - FLUX.2 Klein accepts a mask with `image 1`, but inpaint behavior is staged for a later adapter pass.
@@ -145,6 +159,8 @@ Local ComfyUI source was inspected before implementing the generation pipeline. 
 - `/home/thhel/git/ComfyUI/custom_nodes/rgthree-comfy/web/comfyui/power_lora_loader.js`: Power LoRA frontend interaction model
 - `/home/thhel/git/ComfyUI/custom_nodes/rgthree-comfy/web/comfyui/dialog_info.js`: rgthree LoRA info dialog behavior
 - `/home/thhel/git/ComfyUI/custom_nodes/rgthree-comfy/web/common/css/dialog_model_info.css`: rgthree LoRA info dialog layout and visual styling
+- `/home/thhel/git/ComfyUI/custom_nodes/comfyui-kjnodes/nodes/ideogram4_nodes.py`: Ideogram 4 structured prompt JSON shape and preview/bbox behavior
+- `/home/thhel/git/ComfyUI/custom_nodes/comfyui-kjnodes/web/js/ideogram4_prompt_builder.js`: Ideogram 4 prompt builder frontend interaction model
 - `/home/thhel/git/ComfyUI/custom_nodes/ComfyUI-GGUF/nodes.py`: `UnetLoaderGGUF`, `CLIPLoaderGGUF`, `clip_gguf`, and `unet_gguf` path/list patterns
 - `/home/thhel/git/ComfyUI/custom_nodes/gguf/pig.py`: `clip_gguf`, `model_gguf`, and `vae_gguf` path/list patterns
 
@@ -164,6 +180,8 @@ This pack uses classic nodes for broad community compatibility. The contracts ar
 
 ## License Guidance
 
-This project is distributed under the MIT License. Because the LoRA UI intentionally adapts behavior and styling from rgthree-comfy, MIT matches rgthree-comfy's license, keeps the same permissive terms, and preserves the original rgthree MIT copyright and permission notice in `THIRD_PARTY_NOTICES.md`.
+The original AIO code is distributed under the MIT License. Because the LoRA UI intentionally adapts behavior and styling from rgthree-comfy, MIT matches rgthree-comfy's license, keeps the same permissive terms, and preserves the original rgthree MIT copyright and permission notice in `THIRD_PARTY_NOTICES.md`.
 
-Other compatible options include Apache-2.0, if you want an explicit patent grant, or GPL-3.0, if you want downstream copyleft requirements. For this ComfyUI node pack, MIT is the simplest and most community-friendly fit.
+The Ideogram 4 prompt-builder implementation includes code and behavior adapted from GPL-3.0 KJNodes sources. Treat those derived prompt-builder portions as GPL-3.0-covered material, comply with GPL-3.0 when redistributing them, and keep the KJNodes notice intact.
+
+For new code that does not derive from GPL sources, MIT remains the simplest and most community-friendly fit for this ComfyUI node pack.

@@ -6,10 +6,11 @@ from typing import Any
 
 try:
     from ..adapters import Flux2Klein9BAdapter, Ideogram4Adapter, ZImageTurboAdapter  # noqa: F401
-    from ..services import pipeline
+    from ..services import pipeline, privacy
     from ..services.dimensions import (
         ASPECT_RATIOS,
         MULTIPLE_VALUES,
+        ResolvedDimensions,
         SIZE_MODE_ASPECT_RATIO,
         SIZE_MODE_IMAGE_1,
         SIZE_MODES,
@@ -30,10 +31,11 @@ try:
     )
 except ImportError:  # pragma: no cover - direct test imports
     from adapters import Flux2Klein9BAdapter, Ideogram4Adapter, ZImageTurboAdapter  # noqa: F401
-    from services import pipeline
+    from services import pipeline, privacy
     from services.dimensions import (
         ASPECT_RATIOS,
         MULTIPLE_VALUES,
+        ResolvedDimensions,
         SIZE_MODE_ASPECT_RATIO,
         SIZE_MODE_IMAGE_1,
         SIZE_MODES,
@@ -304,6 +306,13 @@ class AIOImageGenerate:
                         "tooltip": "Prompt describing content to avoid. Some model families ignore this input by default.",
                     },
                 ),
+                "privacy_mode": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": "Encrypt prompt text in saved workflows and hide it unless the node is hovered.",
+                    },
+                ),
                 "size mode": (
                     list(SIZE_MODES),
                     {"tooltip": "Choose whether output dimensions come from the aspect ratio controls or from image 1."},
@@ -420,6 +429,7 @@ class AIOImageGenerate:
         sampler: str = "auto",
         scheduler: str = "auto",
         pid_capture_step: int = 0,
+        privacy_mode: bool = False,
         model_settings: dict[str, Any] | None = None,
         lora_config: dict[str, Any] | None = None,
         model: Any = None,
@@ -433,6 +443,10 @@ class AIOImageGenerate:
         **reference_values: Any,
     ):
         del weight_format
+        del privacy_mode
+        resolved_positive_prompt = privacy.decrypt_text_if_encrypted(positive_prompt)
+        resolved_negative_prompt = privacy.decrypt_text_if_encrypted(negative_prompt)
+
         image_connected = output_is_connected(prompt, extra_pnginfo, unique_id, 0, default=True)
         vae_connected = output_is_connected(prompt, extra_pnginfo, unique_id, 5)
         pid_latent_connected = output_is_connected(prompt, extra_pnginfo, unique_id, PID_LATENT_OUTPUT_INDEX)
@@ -466,6 +480,18 @@ class AIOImageGenerate:
             default_height=profile.default_height,
             multiple_value=reference_values.get("multiple value"),
         )
+        if model_type == "ideogram4" and model_settings:
+            builder_width = model_settings.get("prompt_builder_width")
+            builder_height = model_settings.get("prompt_builder_height")
+            if builder_width is not None and builder_height is not None:
+                dimensions = ResolvedDimensions(
+                    width=int(builder_width),
+                    height=int(builder_height),
+                    max_side=int(model_settings.get("prompt_builder_max_side", max(int(builder_width), int(builder_height)))),
+                    aspect_ratio=str(model_settings.get("prompt_builder_aspect_ratio", dimensions.aspect_ratio)),
+                    size_mode=SIZE_MODE_ASPECT_RATIO,
+                    multiple_value=str(model_settings.get("prompt_builder_multiple_value", dimensions.multiple_value)),
+                )
         settings = adapter.resolve_settings(
             model_settings=model_settings,
             width=dimensions.width,
@@ -485,13 +511,14 @@ class AIOImageGenerate:
         effective_cfg = float(settings["cfg"])
         effective_sampler = str(settings["sampler"])
         effective_scheduler = str(settings["scheduler"])
+        effective_positive_prompt = str(settings.get("positive_prompt_override") or resolved_positive_prompt)
 
         warnings = adapter.validate_inputs(
             diffusion_model=diffusion_model,
             text_encoder=text_encoder,
             vae=vae,
-            positive_prompt=positive_prompt,
-            negative_prompt=negative_prompt,
+            positive_prompt=effective_positive_prompt,
+            negative_prompt=resolved_negative_prompt,
             width=effective_width,
             height=effective_height,
             settings=settings,
@@ -507,8 +534,8 @@ class AIOImageGenerate:
             diffusion_model=diffusion_model,
             text_encoder=text_encoder,
             vae=vae,
-            positive_prompt=positive_prompt,
-            negative_prompt=negative_prompt,
+            positive_prompt=effective_positive_prompt,
+            negative_prompt=resolved_negative_prompt,
             width=effective_width,
             height=effective_height,
             seed=seed,
