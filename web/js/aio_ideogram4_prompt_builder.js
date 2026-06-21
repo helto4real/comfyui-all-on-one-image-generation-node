@@ -6,8 +6,10 @@ const MIN_WIDTH = 620;
 const EDITOR_HEIGHT = 520;
 const DEFAULT_COLOR = "#8ca8ff";
 const ACTIVE_COLOR = "#ffd166";
+const LIBRARY_ROUTE = "/aio_image_generate/ideogram4_prompt_library";
 const WORKFLOW_STATE_KEY = "aio_ideogram4_prompt_builder";
 const STATE_PROPERTY = "aio_ideogram4_prompt_builder_state";
+const LIBRARY_ITEM_PROPERTY = "aio_ideogram4_prompt_library_item_id";
 const PRIVACY_WIDGET_NAME = "privacy_mode";
 const SENSITIVE_WIDGET_NAMES = [
   "high_level_description",
@@ -41,6 +43,16 @@ const STATE_WIDGET_NAMES = [
   "bg_brightness",
   "import_json",
 ];
+const ICONS = {
+  library: `<svg viewBox="0 0 24 24"><path d="M5 5h6v14H5z"/><path d="M13 5h6v14h-6z"/><path d="M7 8h2M15 8h2M7 12h2M15 12h2"/></svg>`,
+  save: `<svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>`,
+  load: `<svg viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>`,
+  copy: `<svg viewBox="0 0 24 24"><path d="M8 8h11v11H8z"/><path d="M5 16H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h11a1 1 0 0 1 1 1v1"/></svg>`,
+  delete: `<svg viewBox="0 0 24 24"><path d="M6 7h12M10 7V5h4v2M9 10v7M15 10v7M8 7l1 12h6l1-12"/></svg>`,
+  edit: `<svg viewBox="0 0 24 24"><path d="m4 20 4-1 11-11-3-3L5 16z"/><path d="m14 6 3 3"/></svg>`,
+  close: `<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>`,
+  search: `<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg>`,
+};
 
 function widgetByName(node, name) {
   return node.widgets?.find((widget) => widget.name === name);
@@ -95,6 +107,40 @@ function cloneJson(value, fallback) {
   } catch {
     return fallback;
   }
+}
+
+async function fetchLibraryJson(url, options) {
+  const response = await fetch(url, options);
+  const text = await response.text();
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(text || response.statusText || `HTTP ${response.status}`);
+  }
+  if (!response.ok || data.ok === false || data.error) throw new Error(data.error || response.statusText || `HTTP ${response.status}`);
+  return data;
+}
+
+function iconButton(label, iconName, title) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "aio-ideo-icon-btn";
+  button.title = title || label;
+  button.setAttribute("aria-label", title || label);
+  button.innerHTML = ICONS[iconName] || "";
+  return button;
+}
+
+function textButton(label, iconName = "") {
+  const button = document.createElement("button");
+  button.type = "button";
+  if (iconName) {
+    button.innerHTML = `${ICONS[iconName] || ""}<span>${label}</span>`;
+  } else {
+    button.textContent = label;
+  }
+  return button;
 }
 
 function normalizedColor(value) {
@@ -242,6 +288,9 @@ function installStyles() {
     .aio-ideo-toolbar{display:flex;align-items:center;gap:6px;flex:0 0 auto;min-height:25px}
     .aio-ideo-toolbar button,.aio-ideo-row button{background:#2b2b2b;color:#ddd;border:1px solid #555;border-radius:4px;padding:3px 7px;font:12px sans-serif;cursor:pointer}
     .aio-ideo-toolbar button:hover,.aio-ideo-row button:hover{background:#383838}
+    .aio-ideo-toolbar .aio-ideo-icon-btn{width:28px;height:25px;display:inline-flex;align-items:center;justify-content:center;padding:3px}
+    .aio-ideo-icon-btn svg,.aio-ideo-library svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+    .aio-ideo-toolbar .aio-ideo-library-linked{color:#7de0a0;border-color:#4c9a64}
     .aio-ideo-count{margin-left:auto;color:#aaa;white-space:nowrap}
     .aio-ideo-main{display:grid;grid-template-columns:minmax(260px,1fr) 340px;gap:8px;width:100%;min-width:0;min-height:0;flex:1 1 auto}
     .aio-ideo-canvasBox{position:relative;display:flex;align-items:center;justify-content:center;min-height:0;background:#0b0b0b;border:1px solid #383838;border-radius:4px;overflow:hidden}
@@ -272,6 +321,44 @@ function installStyles() {
       color: transparent !important;
     }
     .aio-ideo-privacy-status{position:absolute;left:8px;right:8px;bottom:8px;z-index:4;padding:6px 8px;border:1px solid #7a4f32;border-radius:4px;background:#2b1d18;color:#ffd8c2;box-shadow:0 8px 22px rgba(0,0,0,0.4)}
+    .aio-ideo-library{position:fixed;inset:0;z-index:10020;display:flex;align-items:center;justify-content:center;padding:28px;box-sizing:border-box;background:rgba(4,8,13,.74);color:#dce3ee;font:13px/1.35 system-ui,sans-serif}
+    .aio-ideo-library-panel{width:min(980px,calc(100vw - 56px));height:min(700px,calc(100vh - 56px));min-height:480px;display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;border:1px solid rgba(129,143,164,.52);border-radius:8px;background:#121820;box-shadow:0 28px 78px rgba(0,0,0,.62);overflow:hidden}
+    .aio-ideo-library-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:18px 20px 8px}
+    .aio-ideo-library-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:20px;font-weight:700;color:#f6f8fb}
+    .aio-ideo-library-controls{display:grid;grid-template-columns:minmax(220px,1fr) 160px auto;gap:10px;align-items:center;padding:8px 20px 12px}
+    .aio-ideo-library-search{height:36px;display:grid;grid-template-columns:20px minmax(0,1fr);align-items:center;gap:5px;padding:0 10px;border:1px solid rgba(111,123,143,.68);border-radius:5px;background:#0c1218;color:#9da9ba}
+    .aio-ideo-library-search input,.aio-ideo-library select,.aio-ideo-library input,.aio-ideo-library textarea{min-width:0;box-sizing:border-box;background:#0f1720;color:#f3f6fa;border:1px solid rgba(93,111,139,.86);border-radius:4px}
+    .aio-ideo-library-search input{height:32px;border:0;background:transparent;outline:0}
+    .aio-ideo-library select{height:36px;padding:0 10px}
+    .aio-ideo-library-body{min-height:0;display:grid;grid-template-columns:minmax(320px,1fr) 320px;border-top:1px solid rgba(65,76,91,.72);overflow:hidden}
+    .aio-ideo-library-grid{min-height:0;overflow:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));grid-auto-rows:min-content;gap:12px;padding:16px}
+    .aio-ideo-library-details{min-height:0;overflow:auto;display:flex;flex-direction:column;gap:12px;padding:16px 18px;border-left:1px solid rgba(65,76,91,.72)}
+    .aio-ideo-library-card{min-width:0;display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid rgba(61,72,88,.95);border-radius:7px;background:#151b22;color:#dce3ee;text-align:left;cursor:pointer}
+    .aio-ideo-library-card:hover{border-color:rgba(78,125,210,.78);background:#19212a}
+    .aio-ideo-library-card.is-selected{border-color:#2f7cff;box-shadow:0 0 0 1px #2f7cff inset}
+    .aio-ideo-library-card-title,.aio-ideo-library-detail-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#f4f7fb;font-weight:700}
+    .aio-ideo-library-detail-title{font-size:18px}
+    .aio-ideo-library-card-meta,.aio-ideo-library-preview,.aio-ideo-library-detail-meta,.aio-ideo-library-status{min-width:0;overflow:hidden;text-overflow:ellipsis;color:#a8b3c3}
+    .aio-ideo-library-preview{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;white-space:normal;min-height:72px;padding:8px;border:1px solid rgba(61,72,88,.82);border-radius:5px;background:#0c1218;font:11px/1.35 ui-monospace,monospace}
+    .aio-ideo-library-actions,.aio-ideo-library-card-actions{display:flex;align-items:center;justify-content:flex-end;gap:7px;margin-top:auto}
+    .aio-ideo-library button{min-width:32px;min-height:32px;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:0 10px;border:1px solid rgba(78,89,105,.9);border-radius:5px;background:#202a36;color:#f4f7fb;cursor:pointer}
+    .aio-ideo-library button:hover{background:#2a3646}
+    .aio-ideo-library button.primary{border-color:#2c6af0;background:#2769ec;color:#fff}
+    .aio-ideo-library button.positive{border-color:#49a45f;background:#23723d;color:#f6fff8}
+    .aio-ideo-library button.danger{color:#ffafa8}
+    .aio-ideo-library .aio-ideo-icon-btn{width:34px;padding:0}
+    .aio-ideo-library-status{min-height:18px;padding:0 20px 12px}
+    .aio-ideo-library-empty{grid-column:1/-1;padding:28px 8px;text-align:center;color:#9ba8bd}
+    .aio-ideo-library-save-form{display:grid;gap:8px;padding:10px;border:1px solid rgba(61,72,88,.95);border-radius:7px;background:#111821}
+    .aio-ideo-library-save-form input,.aio-ideo-library-save-form textarea{width:100%;padding:7px}
+    .aio-ideo-library-save-form textarea{min-height:70px;resize:vertical}
+    .aio-ideo-library-private-row{display:flex;gap:7px;align-items:center;color:#cbd5e1}
+    .aio-ideo-library.privacy-mode:not(.is-revealed) .aio-ideo-library-preview,
+    .aio-ideo-library.privacy-mode:not(.is-revealed) .aio-ideo-library-card-meta,
+    .aio-ideo-library.privacy-mode:not(.is-revealed) .aio-ideo-library-detail-meta { color: transparent; text-shadow: none; }
+    .aio-ideo-library.privacy-mode.is-revealed .aio-ideo-library-preview,
+    .aio-ideo-library.privacy-mode.is-revealed .aio-ideo-library-card-meta,
+    .aio-ideo-library.privacy-mode.is-revealed .aio-ideo-library-detail-meta { color: #a8b3c3; }
   `;
   document.head.appendChild(style);
 }
@@ -377,11 +464,11 @@ function createEditor(node) {
     };
   }
 
-  function applyState(state) {
+  function applyState(state, { restorePrivacyMode = false } = {}) {
     if (!state || typeof state !== "object") return;
     for (const [name, value] of Object.entries(state.widgets || {})) {
       const widget = widgetByName(node, name);
-      if (widget && name !== PRIVACY_WIDGET_NAME) widget.value = value;
+      if (widget && (restorePrivacyMode || name !== PRIVACY_WIDGET_NAME)) widget.value = value;
     }
     if (Array.isArray(state.elements)) {
       boxes = cloneJson(state.elements, []);
@@ -500,6 +587,8 @@ function createEditor(node) {
 
   const toolbar = document.createElement("div");
   toolbar.className = "aio-ideo-toolbar";
+  const libraryBtn = iconButton("Library", "library", "Ideogram Prompt Library");
+  const saveLibraryBtn = iconButton("Save", "save", "Save Prompt to Library");
   const copyBtn = document.createElement("button");
   copyBtn.textContent = "Copy";
   const pasteBtn = document.createElement("button");
@@ -520,7 +609,7 @@ function createEditor(node) {
   compactLabel.append(compact, document.createTextNode("compact"));
   const count = document.createElement("span");
   count.className = "aio-ideo-count";
-  toolbar.append(addObjBtn, addTextBtn, copyBtn, pasteBtn, clearBtn, compactLabel, count);
+  toolbar.append(libraryBtn, saveLibraryBtn, addObjBtn, addTextBtn, copyBtn, pasteBtn, clearBtn, compactLabel, count);
 
   const main = document.createElement("div");
   main.className = "aio-ideo-main";
@@ -692,6 +781,7 @@ function createEditor(node) {
   }
 
   function repaintRestoredState() {
+    compact.checked = outputFormatWidget?.value !== "pretty";
     renderList();
     renderForm();
     draw();
@@ -699,8 +789,8 @@ function createEditor(node) {
     updatePrivacyClasses();
   }
 
-  function restorePlainState(state, { markDirty = true } = {}) {
-    applyState(state);
+  function restorePlainState(state, { markDirty = true, restorePrivacyMode = false } = {}) {
+    applyState(state, { restorePrivacyMode });
     if (boxes.length && active < 0) active = 0;
     privacyRestorePending = false;
     privacyRestoreFailed = false;
@@ -805,6 +895,397 @@ function createEditor(node) {
   function captionText() {
     syncExecutionWidgets();
     return formatCaption(node, buildCaption(node, boxes, stylePalette));
+  }
+
+  function libraryItemId() {
+    return String(node.properties?.[LIBRARY_ITEM_PROPERTY] || "").trim();
+  }
+
+  function setLibraryItemId(itemId) {
+    node.properties ||= {};
+    if (itemId) node.properties[LIBRARY_ITEM_PROPERTY] = itemId;
+    else delete node.properties[LIBRARY_ITEM_PROPERTY];
+    updateLibraryButtons();
+  }
+
+  function libraryPayload() {
+    return {
+      family: "ideogram4",
+      version: 1,
+      state: currentState(),
+      prompt: captionText(),
+    };
+  }
+
+  function promptLibraryName() {
+    const widgets = currentState().widgets || {};
+    const candidates = [
+      widgets.high_level_description,
+      widgets.background,
+      captionText().replace(/\s+/g, " ").slice(0, 60),
+    ];
+    return String(candidates.find((value) => String(value || "").trim()) || "Untitled Ideogram Prompt").trim();
+  }
+
+  function updateLibraryButtons() {
+    const linked = Boolean(libraryItemId());
+    saveLibraryBtn.classList.toggle("aio-ideo-library-linked", linked);
+    saveLibraryBtn.title = linked ? "Update Saved Prompt" : "Save Prompt to Library";
+    saveLibraryBtn.setAttribute("aria-label", saveLibraryBtn.title);
+  }
+
+  async function saveCurrentPromptToLibrary({
+    itemId = libraryItemId(),
+    metadata = null,
+    statusCallback = setStatus,
+  } = {}) {
+    const linkedId = String(itemId || "").trim();
+    const body = {
+      name: metadata?.name || promptLibraryName(),
+      description: metadata?.description || "",
+      tags: Array.isArray(metadata?.tags) ? metadata.tags : [],
+      private: metadata?.private ?? privacyEnabled(),
+      prompt: libraryPayload(),
+    };
+    const url = linkedId
+      ? `${LIBRARY_ROUTE}/prompts/${encodeURIComponent(linkedId)}`
+      : `${LIBRARY_ROUTE}/prompts`;
+    const data = await fetchLibraryJson(url, {
+      method: linkedId ? "PUT" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const item = data.item || {};
+    if (item.id) setLibraryItemId(item.id);
+    statusCallback(linkedId ? "Updated saved prompt." : "Saved prompt.");
+    app.graph?.setDirtyCanvas?.(true, true);
+    return item;
+  }
+
+  async function loadLibraryItem(item, { finish = null, statusCallback = setStatus } = {}) {
+    if (!item?.id) return;
+    statusCallback("Loading saved prompt...");
+    const data = await fetchLibraryJson(`${LIBRARY_ROUTE}/prompts/${encodeURIComponent(item.id)}/use`, { method: "POST" });
+    const payload = data.prompt || data.item?.payload || data.item?.prompt;
+    const state = payload?.state;
+    if (!state || typeof state !== "object") throw new Error("Saved prompt did not include builder state.");
+    restorePlainState(state, { restorePrivacyMode: true });
+    setLibraryItemId(item.id);
+    statusCallback(`Loaded ${data.item?.name || item.name || "saved prompt"}.`);
+    finish?.();
+  }
+
+  function showPromptLibrary({ openSave = false } = {}) {
+    const existing = document.querySelector(".aio-ideo-library");
+    existing?.remove();
+
+    const overlay = document.createElement("div");
+    overlay.className = `aio-ideo-library${privacyEnabled() ? " privacy-mode" : ""}`;
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-label", "Ideogram Prompt Library");
+    overlay.addEventListener("pointerdown", stopEvent);
+    overlay.addEventListener("wheel", stopEvent);
+    overlay.addEventListener("pointerenter", () => overlay.classList.add("is-revealed"));
+    overlay.addEventListener("pointerleave", () => overlay.classList.remove("is-revealed"));
+
+    const panel = document.createElement("div");
+    panel.className = "aio-ideo-library-panel";
+    const head = document.createElement("div");
+    head.className = "aio-ideo-library-head";
+    const title = document.createElement("div");
+    title.className = "aio-ideo-library-title";
+    title.textContent = "Ideogram Prompt Library";
+    const closeBtn = iconButton("Close", "close", "Close Prompt Library");
+    head.append(title, closeBtn);
+
+    const controls = document.createElement("div");
+    controls.className = "aio-ideo-library-controls";
+    const searchWrap = document.createElement("label");
+    searchWrap.className = "aio-ideo-library-search";
+    searchWrap.innerHTML = ICONS.search;
+    const search = document.createElement("input");
+    search.type = "search";
+    search.placeholder = "Search prompts...";
+    searchWrap.append(search);
+    const sort = document.createElement("select");
+    for (const [value, label] of [
+      ["newest", "Newest"],
+      ["oldest", "Oldest"],
+      ["name", "Name"],
+      ["used", "Last used"],
+    ]) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      sort.append(option);
+    }
+    const addBtn = textButton("Save Current", "save");
+    addBtn.className = "primary";
+    controls.append(searchWrap, sort, addBtn);
+
+    const body = document.createElement("div");
+    body.className = "aio-ideo-library-body";
+    const grid = document.createElement("div");
+    grid.className = "aio-ideo-library-grid";
+    const details = document.createElement("div");
+    details.className = "aio-ideo-library-details";
+    body.append(grid, details);
+    const status = document.createElement("div");
+    status.className = "aio-ideo-library-status";
+    panel.append(head, controls, body, status);
+    overlay.append(panel);
+    document.body.append(overlay);
+
+    const state = { items: [], search: "", sort: "newest", selectedId: "", saveOpen: openSave };
+    const finish = () => overlay.remove();
+    const setLibraryStatus = (message = "") => {
+      status.textContent = message;
+    };
+    closeBtn.addEventListener("click", finish);
+    addBtn.addEventListener("click", () => {
+      state.saveOpen = true;
+      render();
+    });
+    search.addEventListener("input", () => {
+      state.search = search.value;
+      render();
+    });
+    sort.addEventListener("change", () => {
+      state.sort = sort.value;
+      render();
+    });
+
+    function filteredItems() {
+      const query = state.search.trim().toLowerCase();
+      const items = query
+        ? state.items.filter((item) => {
+            const haystack = [
+              item.name,
+              item.description,
+              item.prompt_preview,
+              ...(Array.isArray(item.tags) ? item.tags : []),
+            ].join(" ").toLowerCase();
+            return haystack.includes(query);
+          })
+        : [...state.items];
+      items.sort((a, b) => {
+        if (state.sort === "oldest") return String(a.created_at || "").localeCompare(String(b.created_at || ""));
+        if (state.sort === "name") return String(a.name || "").localeCompare(String(b.name || ""));
+        if (state.sort === "used") return String(b.last_used_at || "").localeCompare(String(a.last_used_at || ""));
+        return String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || ""));
+      });
+      return items;
+    }
+
+    function selectedItem() {
+      const items = filteredItems();
+      return items.find((item) => item.id === state.selectedId) || items[0] || null;
+    }
+
+    function render() {
+      grid.innerHTML = "";
+      const items = filteredItems();
+      if (!items.length) {
+        const empty = document.createElement("div");
+        empty.className = "aio-ideo-library-empty";
+        empty.textContent = state.search ? "No matching prompts." : "No saved prompts yet.";
+        grid.append(empty);
+      }
+      for (const item of items) {
+        const card = document.createElement("div");
+        card.tabIndex = 0;
+        card.setAttribute("role", "button");
+        card.className = "aio-ideo-library-card" + (item.id === selectedItem()?.id ? " is-selected" : "");
+        const cardTitle = document.createElement("div");
+        cardTitle.className = "aio-ideo-library-card-title";
+        cardTitle.textContent = item.name || "Untitled Ideogram Prompt";
+        const meta = document.createElement("div");
+        meta.className = "aio-ideo-library-card-meta";
+        meta.textContent = `${item.private ? "Private" : "Public"} · ${item.summary?.element_count ?? 0} regions · ${item.summary?.aspect_ratio || "ratio"}`;
+        const preview = document.createElement("div");
+        preview.className = "aio-ideo-library-preview";
+        preview.textContent = item.private ? "Private prompt" : item.prompt_preview || "No prompt preview";
+        const actions = document.createElement("div");
+        actions.className = "aio-ideo-library-card-actions";
+        const loadBtn = iconButton("Load", "load", "Load Saved Prompt");
+        loadBtn.classList.add("primary");
+        loadBtn.addEventListener("click", async (event) => {
+          event.stopPropagation();
+          try {
+            await loadLibraryItem(item, { finish, statusCallback: setLibraryStatus });
+          } catch (error) {
+            setLibraryStatus(`Private prompt locked: ${error.message}`);
+          }
+        });
+        actions.append(loadBtn);
+        card.append(cardTitle, meta, preview, actions);
+        card.addEventListener("click", () => {
+          state.selectedId = item.id;
+          state.saveOpen = false;
+          render();
+        });
+        card.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          state.selectedId = item.id;
+          state.saveOpen = false;
+          render();
+        });
+        grid.append(card);
+      }
+      renderDetails();
+    }
+
+    function renderDetails() {
+      details.innerHTML = "";
+      if (state.saveOpen) {
+        renderSaveForm();
+        return;
+      }
+      const item = selectedItem();
+      if (!item) {
+        const empty = document.createElement("div");
+        empty.className = "aio-ideo-library-empty";
+        empty.textContent = "Select or save a prompt.";
+        details.append(empty);
+        return;
+      }
+      const detailTitle = document.createElement("div");
+      detailTitle.className = "aio-ideo-library-detail-title";
+      detailTitle.textContent = item.name || "Untitled Ideogram Prompt";
+      const meta = document.createElement("div");
+      meta.className = "aio-ideo-library-detail-meta";
+      meta.textContent = `${item.private ? "Private" : "Public"} · ${item.summary?.prompt_char_count ?? 0} chars · updated ${item.updated_at || "unknown"}`;
+      const preview = document.createElement("div");
+      preview.className = "aio-ideo-library-preview";
+      preview.textContent = item.private ? "Private prompt is available after load." : item.prompt_preview || "No prompt preview";
+      const actions = document.createElement("div");
+      actions.className = "aio-ideo-library-actions";
+      const loadBtn = textButton("Load", "load");
+      loadBtn.className = "primary";
+      const overwriteBtn = textButton("Overwrite", "save");
+      overwriteBtn.className = "positive";
+      const renameBtn = iconButton("Rename", "edit", "Rename Saved Prompt");
+      const duplicateBtn = iconButton("Duplicate", "copy", "Duplicate Saved Prompt");
+      const deleteBtn = iconButton("Delete", "delete", "Delete Saved Prompt");
+      deleteBtn.classList.add("danger");
+      loadBtn.addEventListener("click", async () => {
+        try {
+          await loadLibraryItem(item, { finish, statusCallback: setLibraryStatus });
+        } catch (error) {
+          setLibraryStatus(`Private prompt locked: ${error.message}`);
+        }
+      });
+      overwriteBtn.addEventListener("click", async () => {
+        try {
+          await saveCurrentPromptToLibrary({
+            itemId: item.id,
+            metadata: { name: item.name, description: item.description, tags: item.tags, private: privacyEnabled() },
+            statusCallback: setLibraryStatus,
+          });
+          await refreshLibrary();
+        } catch (error) {
+          setLibraryStatus(error.message);
+        }
+      });
+      renameBtn.addEventListener("click", async () => {
+        const name = window.prompt("Rename saved prompt:", item.name || "");
+        if (!name) return;
+        try {
+          await fetchLibraryJson(`${LIBRARY_ROUTE}/prompts/${encodeURIComponent(item.id)}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name }),
+          });
+          setLibraryStatus("Renamed prompt.");
+          await refreshLibrary();
+        } catch (error) {
+          setLibraryStatus(error.message);
+        }
+      });
+      duplicateBtn.addEventListener("click", async () => {
+        try {
+          await fetchLibraryJson(`${LIBRARY_ROUTE}/prompts/${encodeURIComponent(item.id)}/duplicate`, { method: "POST" });
+          setLibraryStatus("Duplicated prompt.");
+          await refreshLibrary();
+        } catch (error) {
+          setLibraryStatus(error.message);
+        }
+      });
+      deleteBtn.addEventListener("click", async () => {
+        if (!window.confirm(`Delete "${item.name || "saved prompt"}"?`)) return;
+        try {
+          await fetchLibraryJson(`${LIBRARY_ROUTE}/prompts/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+          if (libraryItemId() === item.id) setLibraryItemId("");
+          state.selectedId = "";
+          setLibraryStatus("Deleted prompt.");
+          await refreshLibrary();
+        } catch (error) {
+          setLibraryStatus(error.message);
+        }
+      });
+      actions.append(loadBtn, overwriteBtn, renameBtn, duplicateBtn, deleteBtn);
+      details.append(detailTitle, meta, preview, actions);
+    }
+
+    function renderSaveForm() {
+      const form = document.createElement("div");
+      form.className = "aio-ideo-library-save-form";
+      const name = document.createElement("input");
+      name.placeholder = "Prompt name";
+      name.value = promptLibraryName();
+      const description = document.createElement("textarea");
+      description.placeholder = "Description";
+      const privateLabel = document.createElement("label");
+      privateLabel.className = "aio-ideo-library-private-row";
+      const privateInput = document.createElement("input");
+      privateInput.type = "checkbox";
+      privateInput.checked = privacyEnabled();
+      privateLabel.append(privateInput, document.createTextNode("Private"));
+      const actions = document.createElement("div");
+      actions.className = "aio-ideo-library-actions";
+      const saveBtn = textButton("Save", "save");
+      saveBtn.className = "primary";
+      const cancelBtn = textButton("Cancel");
+      actions.append(cancelBtn, saveBtn);
+      form.append(name, description, privateLabel, actions);
+      cancelBtn.addEventListener("click", () => {
+        state.saveOpen = false;
+        render();
+      });
+      saveBtn.addEventListener("click", async () => {
+        try {
+          const item = await saveCurrentPromptToLibrary({
+            itemId: "",
+            metadata: {
+              name: name.value,
+              description: description.value,
+              private: privateInput.checked,
+            },
+            statusCallback: setLibraryStatus,
+          });
+          state.saveOpen = false;
+          state.selectedId = item.id || "";
+          await refreshLibrary();
+        } catch (error) {
+          setLibraryStatus(error.message);
+        }
+      });
+      details.append(form);
+    }
+
+    async function refreshLibrary() {
+      const data = await fetchLibraryJson(`${LIBRARY_ROUTE}/items`);
+      state.items = Array.isArray(data.prompts) ? data.prompts : [];
+      if (!state.selectedId && state.items.length) state.selectedId = libraryItemId() || state.items[0].id;
+      render();
+    }
+
+    refreshLibrary().catch((error) => {
+      setLibraryStatus(error.message || "Could not load prompt library.");
+      render();
+    });
   }
 
   async function restoreEncryptedState() {
@@ -1236,6 +1717,23 @@ function createEditor(node) {
 
   addObjBtn.addEventListener("click", () => addBox("obj"));
   addTextBtn.addEventListener("click", () => addBox("text"));
+  libraryBtn.addEventListener("click", () => showPromptLibrary());
+  saveLibraryBtn.addEventListener("click", async () => {
+    const linkedId = libraryItemId();
+    if (!linkedId) {
+      showPromptLibrary({ openSave: true });
+      return;
+    }
+    if (!window.confirm("Update the linked saved prompt? Choose Cancel to save as a new prompt.")) {
+      showPromptLibrary({ openSave: true });
+      return;
+    }
+    try {
+      await saveCurrentPromptToLibrary({ itemId: linkedId });
+    } catch (error) {
+      setStatus(`Prompt library save failed: ${error.message}`);
+    }
+  });
   removeBtn.addEventListener("click", () => {
     if (active < 0) return;
     boxes.splice(active, 1);
@@ -1361,6 +1859,7 @@ function createEditor(node) {
     syncEditorSize({ fromNodeResize: true });
     fitCanvas();
     updatePrivacyClasses();
+    updateLibraryButtons();
     refresh();
     restoreEncryptedState();
   });

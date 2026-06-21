@@ -4,6 +4,7 @@ from __future__ import annotations
 
 try:
     from .services import lora_info as _lora_info  # noqa: F401
+    from .routes.ideogram4_prompt_library import register_ideogram4_prompt_library_routes
     from .routes.privacy import register_privacy_routes
     from .nodes import (
         AIOFlux2Klein9BSettings,
@@ -16,6 +17,7 @@ try:
     )
 except ImportError:  # pragma: no cover - direct pytest/importlib collection
     import services.lora_info as _lora_info  # noqa: F401
+    from routes.ideogram4_prompt_library import register_ideogram4_prompt_library_routes
     from routes.privacy import register_privacy_routes
     from nodes import (
         AIOFlux2Klein9BSettings,
@@ -51,6 +53,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 
 try:
     register_privacy_routes()
+    register_ideogram4_prompt_library_routes()
 except Exception:
     # Direct imports and tests often run outside ComfyUI's server process.
     pass
