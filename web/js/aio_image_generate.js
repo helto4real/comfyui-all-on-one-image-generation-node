@@ -430,14 +430,27 @@ async function decryptPromptWidget(node, widget) {
   widget._aioPrivacyDecrypting = true;
   setPrivacyStatus(node, "Decrypting private prompts...");
   try {
-    widget.value = await decryptValue(widget.value);
+    setPromptWidgetText(widget, await decryptValue(widget.value));
     setPrivacyStatus(node, "");
   } catch (error) {
     setPrivacyStatus(node, `Private prompt locked: ${error.message}`);
     console.error("[AIO Image Generate] privacy decrypt failed", error);
   } finally {
     widget._aioPrivacyDecrypting = false;
+    updatePromptDomPrivacy(node);
     markNodeDirty(node);
+  }
+}
+
+function setPromptWidgetText(widget, value) {
+  const text = value == null ? "" : String(value);
+  widget.value = text;
+  for (const element of promptWidgetDomElements(widget)) {
+    if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
+      element.value = text;
+    } else if (element.isContentEditable) {
+      element.textContent = text;
+    }
   }
 }
 
@@ -467,8 +480,21 @@ function patchPromptPrivacyWidget(node, widget) {
   widget._aioPrivacyPatched = true;
 }
 
+function refreshAioGeneratePrivacyWidgets(node) {
+  for (const name of PROMPT_WIDGET_NAMES) {
+    const widget = widgetByName(node, name);
+    patchPromptPrivacyWidget(node, widget);
+    decryptPromptWidget(node, widget);
+  }
+  updatePromptDomPrivacy(node);
+}
+
 function ensureAioGeneratePrivacyUi(node) {
-  if (!isAioGenerateNode(node) || node._aioGeneratePrivacyInstalled) {
+  if (!isAioGenerateNode(node)) {
+    return;
+  }
+  if (node._aioGeneratePrivacyInstalled) {
+    refreshAioGeneratePrivacyWidgets(node);
     return;
   }
   node._aioGeneratePrivacyInstalled = true;
@@ -480,11 +506,7 @@ function ensureAioGeneratePrivacyUi(node) {
   node._aioPrivacyReveal = false;
   installGeneratePrivacyStyles();
 
-  for (const name of PROMPT_WIDGET_NAMES) {
-    const widget = widgetByName(node, name);
-    patchPromptPrivacyWidget(node, widget);
-    decryptPromptWidget(node, widget);
-  }
+  refreshAioGeneratePrivacyWidgets(node);
 
   const privacyWidget = widgetByName(node, PRIVACY_WIDGET_NAME);
   patchWidgetCallback(privacyWidget, "_aioPrivacyModeCallbackPatched", () => {
