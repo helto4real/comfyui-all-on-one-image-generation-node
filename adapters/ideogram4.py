@@ -53,6 +53,7 @@ class Ideogram4Adapter(BaseImageAdapter):
         reference_image: Any = None,
         reference_inputs: Any = None,
         mask: Any = None,
+        inpaint_config: dict[str, Any] | None = None,
     ) -> list[str]:
         profile = self.profile()
         validation.validate_required_model_names(
@@ -80,6 +81,7 @@ class Ideogram4Adapter(BaseImageAdapter):
             reference_inputs=reference_inputs,
             mask=mask,
         )
+        validation.validate_inpaint_config(profile, inpaint_config)
         model_names = [diffusion_model, text_encoder, vae]
         if run_unconditional_model:
             model_names.append(unconditional_model)
@@ -115,6 +117,7 @@ class Ideogram4Adapter(BaseImageAdapter):
             lora_config=kwargs.get("lora_config"),
             loaded_model=kwargs.get("loaded_model"),
             loaded_clip=kwargs.get("loaded_clip"),
+            inpaint_config=kwargs.get("inpaint_config"),
             decode_image=kwargs.get("decode_image", True),
             return_vae=kwargs.get("return_vae", False),
             pid_capture_step=kwargs.get("pid_capture_step"),

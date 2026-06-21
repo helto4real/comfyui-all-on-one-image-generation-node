@@ -192,6 +192,40 @@ def test_ideogram4_adapter_calls_real_generation_pipeline(monkeypatch):
     assert calls["return_vae"] is False
 
 
+def test_ideogram4_adapter_passes_inpaint_config_to_pipeline(monkeypatch):
+    calls = {}
+
+    def fake_generate(**kwargs):
+        calls.update(kwargs)
+        return "image", {"samples": "latent"}, "positive", "negative", "vae"
+
+    monkeypatch.setattr(ideogram4.pipeline, "generate_ideogram4_t2i", fake_generate)
+    adapter = Ideogram4Adapter()
+    inpaint_config = {"image": "image", "mask": "mask", "denoise": 1.0}
+
+    adapter.generate(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="ignored",
+        width=1024,
+        height=1024,
+        seed=123,
+        settings={
+            "steps": 20,
+            "sampler": "euler",
+            "scheduler": "ideogram4",
+            "unconditional_model": "uncond.safetensors",
+        },
+        sampler="euler",
+        scheduler="ideogram4",
+        inpaint_config=inpaint_config,
+    )
+
+    assert calls["inpaint_config"] is inpaint_config
+
+
 def test_adapters_pass_decode_image_and_return_vae_to_pipeline(monkeypatch):
     calls = {}
 

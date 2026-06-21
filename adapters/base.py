@@ -59,6 +59,7 @@ class BaseImageAdapter(ABC):
         reference_image: Any = None,
         reference_inputs: Any = None,
         mask: Any = None,
+        inpaint_config: dict[str, Any] | None = None,
     ) -> list[str]:
         """Validate adapter-specific inputs and return non-fatal warnings."""
 
@@ -80,11 +81,13 @@ class BaseImageAdapter(ABC):
         reference_image: Any = None,
         reference_inputs: Any = None,
         mask: Any = None,
+        inpaint_config: dict[str, Any] | None = None,
         lora_config: dict[str, Any] | None = None,
         loaded_model: Any = None,
         loaded_clip: Any = None,
         decode_image: bool = True,
         return_vae: bool = False,
+        pid_capture_step: int | None = None,
         progress: Any = None,
     ):
         """Generate and return (image, latent, positive, negative, vae)."""

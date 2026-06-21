@@ -45,6 +45,7 @@ class ZImageTurboAdapter(BaseImageAdapter):
         reference_image: Any = None,
         reference_inputs: Any = None,
         mask: Any = None,
+        inpaint_config: dict[str, Any] | None = None,
     ) -> list[str]:
         profile = self.profile()
         validation.validate_required_model_names(
@@ -61,6 +62,7 @@ class ZImageTurboAdapter(BaseImageAdapter):
             reference_inputs=reference_inputs,
             mask=mask,
         )
+        validation.validate_inpaint_config(profile, inpaint_config)
         if not positive_prompt.strip():
             raise ValueError("positive_prompt is required.")
         warning = validation.validate_negative_prompt_policy(

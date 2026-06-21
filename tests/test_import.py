@@ -29,6 +29,7 @@ def test_custom_node_package_imports_without_torch_or_gguf_dependency():
         "AIOFlux2Klein9BSettings",
         "AIOIdeogram4PromptBuilder",
         "AIOIdeogram4Settings",
+        "AIOInpaint",
         "AIOLoraConfiguration",
         "AIOLoadPipelineModels",
     }

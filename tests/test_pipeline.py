@@ -482,6 +482,190 @@ def test_ideogram4_pipeline_uses_dual_model_flow_and_ideogram_sigmas(monkeypatch
     assert calls["sample"]["sigmas"] == "ideogram_sigmas"
 
 
+def test_ideogram4_pipeline_uses_inpaint_latent_and_final_blend(monkeypatch):
+    calls = {}
+
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: f"model:{kwargs['diffusion_model']}")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_model_sampling_aura", lambda **kwargs: kwargs["model"])
+    monkeypatch.setattr(pipeline, "apply_lora_config_model_only", lambda **kwargs: (kwargs["model"], []))
+    monkeypatch.setattr(pipeline, "apply_cfg_override", lambda **kwargs: kwargs["model"])
+    monkeypatch.setattr(pipeline, "encode_ideogram4_prompt", lambda **kwargs: "positive")
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "negative")
+    monkeypatch.setattr(
+        pipeline,
+        "make_empty_ideogram4_latent",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("empty latent should not be used")),
+    )
+    monkeypatch.setattr(pipeline, "build_dual_model_guider", lambda **kwargs: "guider")
+    monkeypatch.setattr(pipeline, "ideogram4_sigmas", lambda **kwargs: "sigmas")
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "prepare_inpaint_latent",
+        lambda **kwargs: ({"samples": "inpaint", "noise_mask": "mask"}, "source_image", "prepared_mask"),
+    )
+
+    def fake_denoise(sigmas, denoise):
+        calls["denoise"] = {"sigmas": sigmas, "denoise": denoise}
+        return "trimmed_sigmas"
+
+    def fake_sample(**kwargs):
+        calls["sample"] = kwargs
+        return {"samples": "sampled", "noise_mask": kwargs["latent"]["noise_mask"]}
+
+    def fake_blend(**kwargs):
+        calls["blend"] = kwargs
+        return "blended_image"
+
+    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", fake_denoise)
+    monkeypatch.setattr(pipeline, "sample_with_custom_guider", fake_sample)
+    monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: "decoded_image")
+    monkeypatch.setattr(pipeline.inpaint_service, "blend_inpaint_image", fake_blend)
+
+    image, latent, positive, negative, loaded_vae = pipeline.generate_ideogram4_t2i(
+        diffusion_model="conditional.safetensors",
+        unconditional_model="unconditional.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        width=512,
+        height=768,
+        seed=123,
+        steps=20,
+        sampler="euler",
+        scheduler="ideogram4",
+        settings={
+            "sampling_shift": 5.0,
+            "cfg_override_enabled": True,
+            "dual_cfg": 7.0,
+            "schedule_mode": "ideogram4",
+        },
+        inpaint_config={
+            "image": "image",
+            "mask": "mask",
+            "denoise": 0.75,
+            "final_blend": True,
+            "mask_feather": 24,
+        },
+    )
+
+    assert image == "blended_image"
+    assert latent == {"samples": "sampled", "noise_mask": "mask"}
+    assert positive == "positive"
+    assert negative == "negative"
+    assert loaded_vae == "vae"
+    assert calls["denoise"] == {"sigmas": "sigmas", "denoise": 0.75}
+    assert calls["sample"]["latent"] == {"samples": "inpaint", "noise_mask": "mask"}
+    assert calls["sample"]["sigmas"] == "trimmed_sigmas"
+    assert calls["blend"] == {
+        "source_image": "source_image",
+        "generated_image": "decoded_image",
+        "mask": "prepared_mask",
+        "feather": 24,
+    }
+
+
+def test_ideogram4_pipeline_skips_final_blend_when_disabled(monkeypatch):
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_model_sampling_aura", lambda **kwargs: kwargs["model"])
+    monkeypatch.setattr(pipeline, "apply_lora_config_model_only", lambda **kwargs: (kwargs["model"], []))
+    monkeypatch.setattr(pipeline, "apply_cfg_override", lambda **kwargs: kwargs["model"])
+    monkeypatch.setattr(pipeline, "encode_ideogram4_prompt", lambda **kwargs: "positive")
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "negative")
+    monkeypatch.setattr(pipeline, "build_dual_model_guider", lambda **kwargs: "guider")
+    monkeypatch.setattr(pipeline, "ideogram4_sigmas", lambda **kwargs: "sigmas")
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "prepare_inpaint_latent",
+        lambda **kwargs: ({"samples": "inpaint", "noise_mask": "mask"}, "source_image", "prepared_mask"),
+    )
+    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", lambda sigmas, denoise: sigmas)
+    monkeypatch.setattr(pipeline, "sample_with_custom_guider", lambda **kwargs: {"samples": "sampled"})
+    monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: "decoded_image")
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "blend_inpaint_image",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("blend should not run")),
+    )
+
+    image, *_ = pipeline.generate_ideogram4_t2i(
+        diffusion_model="conditional.safetensors",
+        unconditional_model="unconditional.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        width=512,
+        height=768,
+        seed=123,
+        steps=20,
+        sampler="euler",
+        scheduler="ideogram4",
+        settings={"sampling_shift": 5.0, "cfg_override_enabled": True, "dual_cfg": 7.0},
+        inpaint_config={
+            "image": "image",
+            "mask": "mask",
+            "denoise": 1.0,
+            "final_blend": False,
+        },
+    )
+
+    assert image == "decoded_image"
+
+
+def test_ideogram4_pipeline_skips_decode_and_blend_for_latent_only_inpaint(monkeypatch):
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_model_sampling_aura", lambda **kwargs: kwargs["model"])
+    monkeypatch.setattr(pipeline, "apply_lora_config_model_only", lambda **kwargs: (kwargs["model"], []))
+    monkeypatch.setattr(pipeline, "apply_cfg_override", lambda **kwargs: kwargs["model"])
+    monkeypatch.setattr(pipeline, "encode_ideogram4_prompt", lambda **kwargs: "positive")
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "negative")
+    monkeypatch.setattr(pipeline, "build_dual_model_guider", lambda **kwargs: "guider")
+    monkeypatch.setattr(pipeline, "ideogram4_sigmas", lambda **kwargs: "sigmas")
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "prepare_inpaint_latent",
+        lambda **kwargs: ({"samples": "inpaint", "noise_mask": "mask"}, "source_image", "prepared_mask"),
+    )
+    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", lambda sigmas, denoise: sigmas)
+    monkeypatch.setattr(pipeline, "sample_with_custom_guider", lambda **kwargs: {"samples": "sampled"})
+    monkeypatch.setattr(
+        pipeline,
+        "decode_latent",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("decode should not run")),
+    )
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "blend_inpaint_image",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("blend should not run")),
+    )
+
+    image, latent, _, _, loaded_vae = pipeline.generate_ideogram4_t2i(
+        diffusion_model="conditional.safetensors",
+        unconditional_model="unconditional.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        width=512,
+        height=768,
+        seed=123,
+        steps=20,
+        sampler="euler",
+        scheduler="ideogram4",
+        settings={"sampling_shift": 5.0, "cfg_override_enabled": True, "dual_cfg": 7.0},
+        inpaint_config={"image": "image", "mask": "mask", "denoise": 1.0},
+        decode_image=False,
+    )
+
+    assert image is None
+    assert latent == {"samples": "sampled"}
+    assert loaded_vae == "vae"
+
+
 def test_ideogram4_pipeline_can_skip_unconditional_model(monkeypatch):
     calls = {"models": [], "performance": []}
 

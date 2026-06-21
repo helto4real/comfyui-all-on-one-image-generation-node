@@ -8,6 +8,7 @@ from nodes.aio_generate import (
     output_is_reachable,
     workflow_output_has_link,
 )
+from nodes.inpaint import AIOInpaint
 from services import privacy
 
 
@@ -46,6 +47,7 @@ def test_main_node_exposes_core_inputs():
     assert "height" not in required
     assert "model_settings" in optional
     assert "lora_config" in optional
+    assert "inpaint" in optional
     assert "model" in optional
     assert "clip" in optional
     assert "image 1" in optional
@@ -252,6 +254,106 @@ def test_main_node_passes_lora_config_to_adapter(monkeypatch):
     assert captured["loaded_clip"] == "patched_clip"
     assert json.loads(run_info)["loras"][0]["name"] == "style"
     assert (output_width, output_height) == (1024, 1024)
+
+
+def test_main_node_passes_inpaint_config_and_uses_source_dimensions(monkeypatch):
+    from nodes import aio_generate
+
+    captured = {}
+    inpaint_config = AIOInpaint().configure(
+        image=FakeImage(),
+        mask=FakeImage(),
+        mask_grow=8,
+        mask_feather=24,
+        denoise=0.75,
+    )[0]
+
+    class FakeAdapter:
+        version = "test"
+        dimension_multiple = 16
+
+        def resolve_settings(self, **kwargs):
+            captured["resolved"] = kwargs
+            return {
+                "width": kwargs["width"],
+                "height": kwargs["height"],
+                "steps": 20,
+                "cfg": 7.0,
+                "sampler": "euler",
+                "scheduler": "ideogram4",
+            }
+
+        def validate_inputs(self, **kwargs):
+            captured["validated"] = kwargs
+            return []
+
+        def generate(self, **kwargs):
+            captured["generated"] = kwargs
+            return "image", {"samples": "latent"}, "positive", "negative", "vae"
+
+    monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
+
+    _, _, run_info, _, _, _, _, _, output_width, output_height = AIOImageGenerate().generate(
+        model_type="ideogram4",
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="",
+        seed=0,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+        inpaint=inpaint_config,
+        model_settings={
+            "family": "ideogram4",
+            "prompt_builder_width": 1088,
+            "prompt_builder_height": 608,
+        },
+        **{
+            "size mode": "use aspect ratio",
+            "max side": 512,
+            "aspect ratio": "1:1",
+            "multiple value": "16",
+        },
+    )
+
+    assert captured["resolved"]["width"] == 512
+    assert captured["resolved"]["height"] == 768
+    assert captured["validated"]["inpaint_config"]["mask_grow"] == 8
+    assert captured["generated"]["inpaint_config"]["mask_feather"] == 24
+    assert captured["generated"]["inpaint_config"]["denoise"] == 0.75
+    assert (output_width, output_height) == (512, 768)
+    parsed = json.loads(run_info)
+    assert parsed["width"] == 512
+    assert parsed["height"] == 768
+    assert parsed["settings"]["size_mode"] == "use inpaint image size"
+
+
+def test_main_node_rejects_inpaint_for_unsupported_profile(monkeypatch):
+    from adapters import z_image_turbo
+
+    monkeypatch.setattr(z_image_turbo.gguf_backend, "is_available", lambda: True)
+    inpaint_config = AIOInpaint().configure(image=FakeImage(), mask=FakeImage())[0]
+
+    with pytest.raises(ValueError, match="z_image_turbo does not currently support inpaint"):
+        AIOImageGenerate().generate(
+            model_type="z_image_turbo",
+            diffusion_model="model.safetensors",
+            text_encoder="text.safetensors",
+            vae="vae.safetensors",
+            positive_prompt="prompt",
+            negative_prompt="",
+            width=1024,
+            height=1024,
+            seed=0,
+            steps=0,
+            cfg=0.0,
+            sampler="auto",
+            scheduler="auto",
+            inpaint=inpaint_config,
+        )
 
 
 def test_main_node_decrypts_private_prompt_widgets(monkeypatch, tmp_path):

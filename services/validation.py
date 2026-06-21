@@ -108,6 +108,13 @@ def validate_reference_inputs(
         )
 
 
+def validate_inpaint_config(profile: ModelProfile, inpaint_config: Any = None) -> None:
+    if inpaint_config is not None and not profile.supports_inpaint:
+        raise ValueError(
+            f"inpaint was connected, but {profile.key} does not currently support inpaint."
+        )
+
+
 def validate_gguf_available_for_models(
     available: bool,
     *model_names: str,

@@ -54,6 +54,7 @@ class Flux2Klein9BAdapter(BaseImageAdapter):
         reference_image: Any = None,
         reference_inputs: Any = None,
         mask: Any = None,
+        inpaint_config: dict[str, Any] | None = None,
     ) -> list[str]:
         profile = self.profile()
         validation.validate_required_model_names(
@@ -78,6 +79,7 @@ class Flux2Klein9BAdapter(BaseImageAdapter):
             reference_inputs=reference_inputs,
             mask=mask,
         )
+        validation.validate_inpaint_config(profile, inpaint_config)
         validation.validate_gguf_available_for_models(
             gguf_backend.is_available(), diffusion_model, text_encoder, vae
         )

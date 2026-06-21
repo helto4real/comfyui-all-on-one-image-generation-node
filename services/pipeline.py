@@ -12,6 +12,7 @@ from typing import Any
 try:
     from ..loaders import gguf_backend, safetensors_backend
     from .dimensions import parse_multiple_value, round_to_multiple
+    from . import inpaint as inpaint_service
     from .lora_application import apply_lora_config
     from .lora_config import normalize_lora_config
     from .model_resolution import infer_model_format, strip_category_prefix
@@ -19,6 +20,7 @@ try:
 except ImportError:  # pragma: no cover - direct test imports
     from loaders import gguf_backend, safetensors_backend
     from services.dimensions import parse_multiple_value, round_to_multiple
+    from services import inpaint as inpaint_service
     from services.lora_application import apply_lora_config
     from services.lora_config import normalize_lora_config
     from services.model_resolution import infer_model_format, strip_category_prefix
@@ -650,6 +652,7 @@ def generate_ideogram4_t2i(
     lora_config: dict[str, Any] | None = None,
     loaded_model: Any = None,
     loaded_clip: Any = None,
+    inpaint_config: dict[str, Any] | None = None,
     decode_image: bool = True,
     return_vae: bool = False,
     pid_capture_step: int | None = None,
@@ -707,7 +710,21 @@ def generate_ideogram4_t2i(
     _phase(progress, "encoding prompts")
     positive = encode_ideogram4_prompt(clip=clip, prompt=positive_prompt)
     negative = zero_out_conditioning(positive)
-    latent = make_empty_ideogram4_latent(width=width, height=height)
+    loaded_vae = None
+    inpaint_source_image = None
+    inpaint_mask = None
+    if inpaint_config is not None:
+        _phase(progress, "loading vae")
+        loaded_vae = load_vae(vae=vae)
+        _phase(progress, "encoding inpaint image")
+        latent, inpaint_source_image, inpaint_mask = inpaint_service.prepare_inpaint_latent(
+            vae=loaded_vae,
+            config=inpaint_config,
+            width=width,
+            height=height,
+        )
+    else:
+        latent = make_empty_ideogram4_latent(width=width, height=height)
     _phase(progress, "preparing guider")
     guider = build_dual_model_guider(
         model=model,
@@ -716,7 +733,6 @@ def generate_ideogram4_t2i(
         negative=negative,
         cfg=float(settings.get("dual_cfg", settings.get("cfg", 7.0))),
     )
-    _phase(progress, "sampling")
     if settings.get("schedule_mode") == "basic":
         sigmas = basic_sigmas(model=scheduler_model, scheduler=scheduler, steps=steps)
     else:
@@ -727,22 +743,44 @@ def generate_ideogram4_t2i(
             mu=float(settings.get("mu", 0.0)),
             std=float(settings.get("std", 1.75)),
         )
-    sampled_latent = sample_with_custom_guider(
-        guider=guider,
-        seed=seed,
-        sampler=sampler,
-        sigmas=sigmas,
-        latent=latent,
-        pid_capture_step=pid_capture_step,
-    )
+    if inpaint_config is not None:
+        sigmas = inpaint_service.apply_denoise_to_sigmas(
+            sigmas,
+            float(inpaint_config.get("denoise", 1.0)),
+        )
+    if inpaint_config is not None and float(inpaint_config.get("denoise", 1.0)) <= 0.0:
+        sampled_latent = latent
+    else:
+        _phase(progress, "sampling")
+        sampled_latent = sample_with_custom_guider(
+            guider=guider,
+            seed=seed,
+            sampler=sampler,
+            sigmas=sigmas,
+            latent=latent,
+            pid_capture_step=pid_capture_step,
+        )
     image = None
-    loaded_vae = None
     if decode_image or return_vae:
-        _phase(progress, "loading vae")
-        loaded_vae = load_vae(vae=vae)
+        if loaded_vae is None:
+            _phase(progress, "loading vae")
+            loaded_vae = load_vae(vae=vae)
     if decode_image:
         _phase(progress, "decoding")
         image = decode_latent(vae=loaded_vae, latent=sampled_latent)
+        if (
+            inpaint_config is not None
+            and bool(inpaint_config.get("final_blend", True))
+            and inpaint_source_image is not None
+            and inpaint_mask is not None
+        ):
+            _phase(progress, "blending inpaint")
+            image = inpaint_service.blend_inpaint_image(
+                source_image=inpaint_source_image,
+                generated_image=image,
+                mask=inpaint_mask,
+                feather=int(inpaint_config.get("mask_feather", 16)),
+            )
     return image, sampled_latent, positive, negative, loaded_vae
 
 

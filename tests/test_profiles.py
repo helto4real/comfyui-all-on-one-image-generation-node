@@ -10,6 +10,9 @@ def test_profile_defaults():
     assert flux_profile.default_steps == 4
     assert ideogram_profile.default_steps == 20
     assert ideogram_profile.default_cfg == 7.0
+    assert ideogram_profile.supports_inpaint is True
+    assert z_profile.supports_inpaint is False
+    assert flux_profile.supports_inpaint is False
     assert "diffusion_model" in z_profile.required_components
     assert "text_encoder" in flux_profile.required_components
     assert "vae" in flux_profile.required_components

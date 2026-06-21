@@ -19,6 +19,10 @@ try:
     from ..services.progress import ProgressReporter
     from ..services.registry import get_adapter, get_profile, list_model_types
     from ..services.model_resolution import infer_model_format
+    from ..services.inpaint import (
+        normalize_optional_inpaint_config,
+        resolve_dimensions_from_inpaint_config,
+    )
     from ..services.lora_config import normalize_lora_config, summarize_loras
     from ..services.reference_inputs import (
         REFERENCE_IMAGE_INPUT_NAMES,
@@ -44,6 +48,10 @@ except ImportError:  # pragma: no cover - direct test imports
     from services.progress import ProgressReporter
     from services.registry import get_adapter, get_profile, list_model_types
     from services.model_resolution import infer_model_format
+    from services.inpaint import (
+        normalize_optional_inpaint_config,
+        resolve_dimensions_from_inpaint_config,
+    )
     from services.lora_config import normalize_lora_config, summarize_loras
     from services.reference_inputs import (
         REFERENCE_IMAGE_INPUT_NAMES,
@@ -392,6 +400,10 @@ class AIOImageGenerate:
                     "AIO_LORA_CONFIG",
                     {"tooltip": "Optional LoRA stack from the AIO LoRA Configuration node."},
                 ),
+                "inpaint": (
+                    "AIO_INPAINT_CONFIG",
+                    {"tooltip": "Optional AIO Inpaint config. When connected, supported models edit only the masked source-image area."},
+                ),
                 "model": (
                     "MODEL",
                     {"tooltip": "Optional externally loaded or patched post-LoRA model. Connect with clip to skip internal model loading and LoRA application."},
@@ -432,6 +444,7 @@ class AIOImageGenerate:
         privacy_mode: bool = False,
         model_settings: dict[str, Any] | None = None,
         lora_config: dict[str, Any] | None = None,
+        inpaint: dict[str, Any] | None = None,
         model: Any = None,
         clip: Any = None,
         reference_image: Any = None,
@@ -463,23 +476,30 @@ class AIOImageGenerate:
         validate_settings_family(model_type, model_settings)
         normalized_lora_config = normalize_lora_config(lora_config)
         lora_summary = summarize_loras(normalized_lora_config)
+        normalized_inpaint_config = normalize_optional_inpaint_config(inpaint)
 
         adapter = get_adapter(model_type)
         size_mode = reference_values.get("size mode")
         if size_mode == SIZE_MODE_IMAGE_1 and reference_inputs.count == 0:
             size_mode = SIZE_MODE_ASPECT_RATIO
-        dimensions = resolve_dimensions_from_controls(
-            size_mode=size_mode,
-            max_side=reference_values.get("max side"),
-            aspect_ratio=reference_values.get("aspect ratio"),
-            reference_inputs=reference_inputs,
-            legacy_width=width,
-            legacy_height=height,
-            default_width=profile.default_width,
-            default_height=profile.default_height,
-            multiple_value=reference_values.get("multiple value"),
-        )
-        if model_type == "ideogram4" and model_settings:
+        if normalized_inpaint_config is not None:
+            dimensions = resolve_dimensions_from_inpaint_config(
+                normalized_inpaint_config,
+                multiple=int(getattr(adapter, "dimension_multiple", 16)),
+            )
+        else:
+            dimensions = resolve_dimensions_from_controls(
+                size_mode=size_mode,
+                max_side=reference_values.get("max side"),
+                aspect_ratio=reference_values.get("aspect ratio"),
+                reference_inputs=reference_inputs,
+                legacy_width=width,
+                legacy_height=height,
+                default_width=profile.default_width,
+                default_height=profile.default_height,
+                multiple_value=reference_values.get("multiple value"),
+            )
+        if model_type == "ideogram4" and model_settings and normalized_inpaint_config is None:
             builder_width = model_settings.get("prompt_builder_width")
             builder_height = model_settings.get("prompt_builder_height")
             if builder_width is not None and builder_height is not None:
@@ -532,6 +552,7 @@ class AIOImageGenerate:
             height=effective_height,
             settings=settings,
             reference_inputs=reference_inputs,
+            inpaint_config=normalized_inpaint_config,
         )
         progress = ProgressReporter(total_steps=effective_steps, node_id=unique_id)
         progress.phase("resolving models")
@@ -555,6 +576,7 @@ class AIOImageGenerate:
             loaded_model=model,
             loaded_clip=clip,
             reference_inputs=reference_inputs,
+            inpaint_config=normalized_inpaint_config,
             decode_image=decode_image,
             return_vae=vae_connected,
             pid_capture_step=resolved_pid_capture_step,

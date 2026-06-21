@@ -19,6 +19,7 @@ class ModelProfile:
     supports_negative_prompt: bool
     supports_reference_image: bool
     supports_mask: bool
+    supports_inpaint: bool
     supports_gguf: bool
     required_components: tuple[str, ...]
     notes: str
@@ -38,6 +39,7 @@ PROFILES: dict[str, ModelProfile] = {
         supports_negative_prompt=False,
         supports_reference_image=False,
         supports_mask=False,
+        supports_inpaint=True,
         supports_gguf=False,
         required_components=("diffusion_model", "text_encoder", "vae"),
         notes=(
@@ -58,6 +60,7 @@ PROFILES: dict[str, ModelProfile] = {
         supports_negative_prompt=False,
         supports_reference_image=False,
         supports_mask=False,
+        supports_inpaint=False,
         supports_gguf=True,
         required_components=("diffusion_model", "text_encoder", "vae"),
         notes=(
@@ -78,6 +81,7 @@ PROFILES: dict[str, ModelProfile] = {
         supports_negative_prompt=True,
         supports_reference_image=True,
         supports_mask=True,
+        supports_inpaint=False,
         supports_gguf=True,
         required_components=("diffusion_model", "text_encoder", "vae"),
         notes=(

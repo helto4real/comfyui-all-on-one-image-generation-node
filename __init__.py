@@ -11,6 +11,7 @@ try:
         AIOIdeogram4PromptBuilder,
         AIOIdeogram4Settings,
         AIOImageGenerate,
+        AIOInpaint,
         AIOLoadPipelineModels,
         AIOLoraConfiguration,
         AIOZImageTurboSettings,
@@ -24,6 +25,7 @@ except ImportError:  # pragma: no cover - direct pytest/importlib collection
         AIOIdeogram4PromptBuilder,
         AIOIdeogram4Settings,
         AIOImageGenerate,
+        AIOInpaint,
         AIOLoadPipelineModels,
         AIOLoraConfiguration,
         AIOZImageTurboSettings,
@@ -37,6 +39,7 @@ NODE_CLASS_MAPPINGS = {
     "AIOFlux2Klein9BSettings": AIOFlux2Klein9BSettings,
     "AIOIdeogram4PromptBuilder": AIOIdeogram4PromptBuilder,
     "AIOIdeogram4Settings": AIOIdeogram4Settings,
+    "AIOInpaint": AIOInpaint,
     "AIOLoraConfiguration": AIOLoraConfiguration,
     "AIOLoadPipelineModels": AIOLoadPipelineModels,
 }
@@ -47,6 +50,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "AIOFlux2Klein9BSettings": "FLUX.2 Klein 9B Settings",
     "AIOIdeogram4PromptBuilder": "Ideogram 4 Prompt Builder",
     "AIOIdeogram4Settings": "Ideogram 4 Settings",
+    "AIOInpaint": "AIO Inpaint",
     "AIOLoraConfiguration": "AIO LoRA Configuration",
     "AIOLoadPipelineModels": "AIO Load Pipeline Models",
 }
