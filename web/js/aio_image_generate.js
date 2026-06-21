@@ -9,12 +9,15 @@ const GENERATE_NODE_DISPLAY_NAME = "AIO Image Generate";
 const ROW_PREFIX = "lora_";
 const HEADER_NAME = "aio_lora_header";
 const ADD_BUTTON_LABEL = "+ Add LoRA";
+const FIXED_SEED_BUTTON_LABEL = "Generate fixed seed";
 const MIN_NODE_WIDTH = 560;
 const MAX_SIDE_MIN = 256;
 const MAX_SIDE_MAX = 4096;
+const SEED_MAX = 9223372036854775000;
 const LORA_HEADER_TOOLTIP = "Toggle every configured LoRA row on or off.";
 const LORA_ROW_TOOLTIP = "LoRA row: choose a LoRA, toggle it, inspect metadata, and adjust strength.";
 const ADD_LORA_TOOLTIP = "Add a LoRA row filtered by the match field.";
+const FIXED_SEED_BUTTON_TOOLTIP = "Generate a new fixed random seed and write it into the seed field.";
 const PRIVACY_WIDGET_NAME = "privacy_mode";
 const PROMPT_WIDGET_NAMES = ["positive_prompt", "negative_prompt"];
 const PRIVACY_STYLE_ID = "aio-generate-privacy-style";
@@ -42,6 +45,10 @@ function widgetByName(node, name) {
 
 function isAioLoraNodeData(nodeData) {
   return nodeData?.name === NODE_NAME || nodeData?.display_name === NODE_DISPLAY_NAME;
+}
+
+function isAioGenerateNodeData(nodeData) {
+  return nodeData?.name === GENERATE_NODE_NAME || nodeData?.display_name === GENERATE_NODE_DISPLAY_NAME;
 }
 
 function isAioGenerateNode(node) {
@@ -90,6 +97,119 @@ function markNodeDirty(node) {
   }
 }
 
+function randomUnit53() {
+  if (globalThis.crypto?.getRandomValues) {
+    const values = new Uint32Array(2);
+    globalThis.crypto.getRandomValues(values);
+    return (((values[0] & 0x1fffff) * 0x100000000) + values[1]) / 0x20000000000000;
+  }
+  return Math.random();
+}
+
+function randomFixedSeed() {
+  return Math.floor(randomUnit53() * (SEED_MAX + 1));
+}
+
+function ensureAioGenerateSeedButton(node) {
+  if (!isAioGenerateNode(node)) {
+    return;
+  }
+  const seedWidget = widgetByName(node, "seed");
+  const stepsWidget = widgetByName(node, "steps");
+  if (!seedWidget || !stepsWidget) {
+    return;
+  }
+
+  let button = node.widgets?.find((widget) => widget._aioGenerateSeedButton === true);
+  if (!button) {
+    button = node.addWidget("button", FIXED_SEED_BUTTON_LABEL, null, () => {
+      const seed = randomFixedSeed();
+      seedWidget.value = seed;
+      seedWidget.callback?.(seed, app.canvas, node, seedWidget);
+      markNodeDirty(node);
+    });
+    button._aioGenerateSeedButton = true;
+  }
+
+  button.serialize = false;
+  button.options ||= {};
+  button.options.serialize = false;
+  button.tooltip = FIXED_SEED_BUTTON_TOOLTIP;
+  button.options.tooltip = FIXED_SEED_BUTTON_TOOLTIP;
+
+  const widgets = node.widgets || [];
+  const buttonIndex = widgets.indexOf(button);
+  if (buttonIndex >= 0) {
+    widgets.splice(buttonIndex, 1);
+  }
+  const stepsIndex = widgets.indexOf(stepsWidget);
+  widgets.splice(stepsIndex >= 0 ? stepsIndex : widgets.length, 0, button);
+}
+
+function widgetSerializesToWorkflow(widget) {
+  return Boolean(widget) && widget.serialize !== false && widget.options?.serialize !== false;
+}
+
+function serializedWidgetIndex(node, targetWidget) {
+  let serializedIndex = 0;
+  for (const widget of node?.widgets || []) {
+    if (widget === targetWidget) {
+      return widgetSerializesToWorkflow(widget) ? serializedIndex : -1;
+    }
+    if (widgetSerializesToWorkflow(widget)) {
+      serializedIndex += 1;
+    }
+  }
+  return -1;
+}
+
+function removeAioGenerateSeedButton(node) {
+  const widgets = node?.widgets;
+  if (!Array.isArray(widgets)) {
+    return;
+  }
+  for (let index = widgets.length - 1; index >= 0; index -= 1) {
+    if (widgets[index]?._aioGenerateSeedButton === true) {
+      widgets.splice(index, 1);
+    }
+  }
+}
+
+function seedButtonWidgetValueIndex(node, values) {
+  if (!Array.isArray(values)) {
+    return -1;
+  }
+  const widgets = node?.widgets || [];
+  const buttonIndex = widgets.findIndex((widget) => widget?._aioGenerateSeedButton === true);
+  if (buttonIndex >= 0 && values.length === widgets.length) {
+    return buttonIndex;
+  }
+
+  const stepsIndex = widgets.findIndex((widget) => widget?.name === "steps");
+  if (stepsIndex >= 0 && values.length === widgets.length + 1) {
+    return stepsIndex;
+  }
+  return -1;
+}
+
+function valuesWithoutSeedButtonSlot(node, values) {
+  const index = seedButtonWidgetValueIndex(node, values);
+  if (index < 0) {
+    return values;
+  }
+  const normalized = values.slice();
+  normalized.splice(index, 1);
+  return normalized;
+}
+
+function configureInfoWithoutSeedButtonSlot(node, info) {
+  if (!info || !Array.isArray(info.widgets_values)) {
+    return info;
+  }
+  const values = valuesWithoutSeedButtonSlot(node, info.widgets_values);
+  return values === info.widgets_values ? info : { ...info, widgets_values: values };
+}
+
 function privacyEnabled(node) {
   return Boolean(widgetByName(node, PRIVACY_WIDGET_NAME)?.value);
 }
@@ -97,6 +217,26 @@ function privacyEnabled(node) {
 function setPrivacyStatus(node, message = "") {
   node._aioPrivacyStatus = message;
   markNodeDirty(node);
+}
+
+function privacyRevealSources(node) {
+  node._aioPrivacyRevealSources ||= {
+    node: false,
+    prompt: false,
+    focus: false,
+  };
+  return node._aioPrivacyRevealSources;
+}
+
+function setPrivacyRevealSource(node, source, revealed) {
+  const sources = privacyRevealSources(node);
+  sources[source] = Boolean(revealed);
+  node._aioPrivacyReveal = Object.values(sources).some(Boolean);
+}
+
+function privacyRevealed(node) {
+  const sources = privacyRevealSources(node);
+  return Boolean(node._aioPrivacyReveal || Object.values(sources).some(Boolean));
 }
 
 function installGeneratePrivacyStyles() {
@@ -132,6 +272,49 @@ function directPromptWidgetValue(widget) {
   return "";
 }
 
+function encryptedOrEncryptPromptValue(node, widget) {
+  const value = directPromptWidgetValue(widget);
+  if (!privacyEnabled(node)) {
+    return value;
+  }
+  if (isEncryptedPrivacyPayload(value)) {
+    return value;
+  }
+  try {
+    return encryptValueSync(value ?? "");
+  } catch (error) {
+    setPrivacyStatus(node, `Privacy encryption failed: ${error.message}`);
+    throw error;
+  }
+}
+
+function sanitizeGenerateWorkflowSerialization(node, output) {
+  if (!output) {
+    return;
+  }
+  restorePromptWidgetsAfterDraw(node);
+  let values = output.widgets_values;
+  if (!Array.isArray(values)) {
+    return;
+  }
+  const normalizedValues = valuesWithoutSeedButtonSlot(node, values);
+  if (normalizedValues !== values) {
+    output.widgets_values = normalizedValues;
+    values = normalizedValues;
+  }
+  if (!privacyEnabled(node)) {
+    return;
+  }
+  for (const name of PROMPT_WIDGET_NAMES) {
+    const widget = widgetByName(node, name);
+    const index = serializedWidgetIndex(node, widget);
+    if (!widget || index == null || index < 0 || index >= values.length) {
+      continue;
+    }
+    values[index] = encryptedOrEncryptPromptValue(node, widget);
+  }
+}
+
 function promptWidgetDomElements(widget) {
   const elements = [];
   for (const candidate of [widget?.inputEl, widget?.element, widget?.inputElement, widget?.textarea, widget?.textElement]) {
@@ -145,11 +328,61 @@ function promptWidgetDomElements(widget) {
   return [...new Set(elements)].filter((element) => element instanceof HTMLElement);
 }
 
+function updatePromptPrivacyReveal(node, source, revealed) {
+  restorePromptWidgetsAfterDraw(node);
+  setPrivacyRevealSource(node, source, revealed);
+  updatePromptDomPrivacy(node);
+  markNodeDirty(node);
+}
+
+function privacyElementRevealSet(node, source) {
+  const key = source === "focus" ? "_aioPrivacyFocusedPromptElements" : "_aioPrivacyHoveredPromptElements";
+  node[key] ||= new Set();
+  return node[key];
+}
+
+function updatePromptPrivacyElementReveal(node, source, element, revealed) {
+  const elements = privacyElementRevealSet(node, source);
+  if (revealed) {
+    elements.add(element);
+  } else {
+    elements.delete(element);
+  }
+  updatePromptPrivacyReveal(node, source, elements.size > 0);
+}
+
+function patchPromptPrivacyElement(node, element) {
+  if (!element || element._aioGeneratePrivacyRevealNode === node) {
+    return;
+  }
+  element._aioGeneratePrivacyRevealCleanup?.();
+
+  const onPointerEnter = () => updatePromptPrivacyElementReveal(node, "prompt", element, true);
+  const onPointerLeave = () => updatePromptPrivacyElementReveal(node, "prompt", element, false);
+  const onFocusIn = () => updatePromptPrivacyElementReveal(node, "focus", element, true);
+  const onFocusOut = () => updatePromptPrivacyElementReveal(node, "focus", element, false);
+
+  element.addEventListener("pointerenter", onPointerEnter);
+  element.addEventListener("pointerleave", onPointerLeave);
+  element.addEventListener("focusin", onFocusIn);
+  element.addEventListener("focusout", onFocusOut);
+  element._aioGeneratePrivacyRevealNode = node;
+  element._aioGeneratePrivacyRevealCleanup = () => {
+    element.removeEventListener("pointerenter", onPointerEnter);
+    element.removeEventListener("pointerleave", onPointerLeave);
+    element.removeEventListener("focusin", onFocusIn);
+    element.removeEventListener("focusout", onFocusOut);
+    privacyElementRevealSet(node, "prompt").delete(element);
+    privacyElementRevealSet(node, "focus").delete(element);
+  };
+}
+
 function updatePromptDomPrivacy(node) {
-  const masked = privacyEnabled(node) && !node._aioPrivacyReveal;
+  const masked = privacyEnabled(node) && !privacyRevealed(node);
   for (const name of PROMPT_WIDGET_NAMES) {
     const widget = widgetByName(node, name);
     for (const element of promptWidgetDomElements(widget)) {
+      patchPromptPrivacyElement(node, element);
       element.classList.toggle("aio-generate-private-field", masked);
       element.setAttribute("data-aio-private", masked ? "true" : "false");
     }
@@ -157,7 +390,7 @@ function updatePromptDomPrivacy(node) {
 }
 
 function promptPrivacyMasked(node) {
-  return privacyEnabled(node) && !node._aioPrivacyReveal;
+  return privacyEnabled(node) && !privacyRevealed(node);
 }
 
 function restorePromptWidgetsAfterDraw(node) {
@@ -229,16 +462,7 @@ function patchPromptPrivacyWidget(node, widget) {
   }
   widget.serializeValue = function () {
     restorePromptWidgetsAfterDraw(node);
-    const value = directPromptWidgetValue(this);
-    if (!privacyEnabled(node)) {
-      return value;
-    }
-    try {
-      return encryptValueSync(value ?? "");
-    } catch (error) {
-      setPrivacyStatus(node, `Privacy encryption failed: ${error.message}`);
-      throw error;
-    }
+    return encryptedOrEncryptPromptValue(node, this);
   };
   widget._aioPrivacyPatched = true;
 }
@@ -248,6 +472,11 @@ function ensureAioGeneratePrivacyUi(node) {
     return;
   }
   node._aioGeneratePrivacyInstalled = true;
+  node._aioPrivacyRevealSources = {
+    node: false,
+    prompt: false,
+    focus: false,
+  };
   node._aioPrivacyReveal = false;
   installGeneratePrivacyStyles();
 
@@ -266,7 +495,7 @@ function ensureAioGeneratePrivacyUi(node) {
   const originalMouseEnter = node.onMouseEnter;
   node.onMouseEnter = function () {
     restorePromptWidgetsAfterDraw(this);
-    this._aioPrivacyReveal = true;
+    setPrivacyRevealSource(this, "node", true);
     updatePromptDomPrivacy(this);
     markNodeDirty(this);
     return originalMouseEnter?.apply(this, arguments);
@@ -275,7 +504,7 @@ function ensureAioGeneratePrivacyUi(node) {
   const originalMouseLeave = node.onMouseLeave;
   node.onMouseLeave = function () {
     restorePromptWidgetsAfterDraw(this);
-    this._aioPrivacyReveal = false;
+    setPrivacyRevealSource(this, "node", false);
     updatePromptDomPrivacy(this);
     markNodeDirty(this);
     return originalMouseLeave?.apply(this, arguments);
@@ -293,6 +522,13 @@ function ensureAioGeneratePrivacyUi(node) {
   node.onDrawForeground = function (ctx) {
     restorePromptWidgetsAfterDraw(this);
     const result = originalDrawForeground?.apply(this, arguments);
+    return result;
+  };
+
+  const originalOnSerialize = node.onSerialize;
+  node.onSerialize = function (output) {
+    const result = originalOnSerialize?.apply(this, arguments);
+    sanitizeGenerateWorkflowSerialization(this, output);
     return result;
   };
 
@@ -1855,6 +2091,27 @@ function patchLoraNodeType(nodeType) {
   };
 }
 
+function patchAioGenerateNodeType(nodeType) {
+  if (nodeType.prototype.__aioGenerateConfigurePatched) {
+    return;
+  }
+  nodeType.prototype.__aioGenerateConfigurePatched = true;
+
+  const originalConfigure = nodeType.prototype.configure;
+  nodeType.prototype.configure = function () {
+    const normalizedInfo = configureInfoWithoutSeedButtonSlot(this, arguments[0]);
+    const args = arguments.length ? [normalizedInfo, ...Array.prototype.slice.call(arguments, 1)] : arguments;
+    removeAioGenerateSeedButton(this);
+    try {
+      return originalConfigure?.apply(this, args);
+    } finally {
+      ensureAioGenerateSizingUi(this);
+      ensureAioGeneratePrivacyUi(this);
+      ensureAioGenerateSeedButton(this);
+    }
+  };
+}
+
 app.registerExtension({
   name: "aio.image.generate",
   setup() {
@@ -1863,24 +2120,28 @@ app.registerExtension({
         ensureLoraUi(node);
         ensureAioGenerateSizingUi(node);
         ensureAioGeneratePrivacyUi(node);
+        ensureAioGenerateSeedButton(node);
       }
     });
   },
   async beforeRegisterNodeDef(nodeType, nodeData) {
-    if (!isAioLoraNodeData(nodeData)) {
-      return;
+    if (isAioLoraNodeData(nodeData)) {
+      patchLoraNodeType(nodeType);
     }
-
-    patchLoraNodeType(nodeType);
+    if (isAioGenerateNodeData(nodeData)) {
+      patchAioGenerateNodeType(nodeType);
+    }
   },
   nodeCreated(node) {
     ensureLoraUi(node);
     ensureAioGenerateSizingUi(node);
     ensureAioGeneratePrivacyUi(node);
+    ensureAioGenerateSeedButton(node);
   },
   loadedGraphNode(node) {
     ensureLoraUi(node);
     ensureAioGenerateSizingUi(node);
     ensureAioGeneratePrivacyUi(node);
+    ensureAioGenerateSeedButton(node);
   },
 });
