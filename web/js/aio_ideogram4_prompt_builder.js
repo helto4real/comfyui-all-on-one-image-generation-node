@@ -50,6 +50,10 @@ const ICONS = {
   save: `<svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>`,
   load: `<svg viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>`,
   copy: `<svg viewBox="0 0 24 24"><path d="M8 8h11v11H8z"/><path d="M5 16H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h11a1 1 0 0 1 1 1v1"/></svg>`,
+  paste: `<svg viewBox="0 0 24 24"><rect x="8" y="3" width="8" height="4" rx="1"/><path d="M16 5h2a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h2"/></svg>`,
+  clear: `<svg viewBox="0 0 24 24"><path d="M5 16 14 7l4 4-7 7H8z"/><path d="m5 16 3 3"/><path d="M12 20h8"/></svg>`,
+  text: `<svg viewBox="0 0 24 24"><path d="M4 6h11"/><path d="M9.5 6v12"/><path d="M18 13v6"/><path d="M15 16h6"/></svg>`,
+  obj: `<svg viewBox="0 0 24 24"><rect x="3" y="5" width="11" height="11" rx="1"/><path d="M18 13v6"/><path d="M15 16h6"/></svg>`,
   delete: `<svg viewBox="0 0 24 24"><path d="M6 7h12M10 7V5h4v2M9 10v7M15 10v7M8 7l1 12h6l1-12"/></svg>`,
   edit: `<svg viewBox="0 0 24 24"><path d="m4 20 4-1 11-11-3-3L5 16z"/><path d="m14 6 3 3"/></svg>`,
   close: `<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>`,
@@ -648,16 +652,11 @@ function createEditor(node) {
   toolbar.className = "aio-ideo-toolbar";
   const libraryBtn = iconButton("Library", "library", "Ideogram Prompt Library");
   const saveLibraryBtn = iconButton("Save", "save", "Save Prompt to Library");
-  const copyBtn = document.createElement("button");
-  copyBtn.textContent = "Copy";
-  const pasteBtn = document.createElement("button");
-  pasteBtn.textContent = "Paste";
-  const clearBtn = document.createElement("button");
-  clearBtn.textContent = "Clear";
-  const addTextBtn = document.createElement("button");
-  addTextBtn.textContent = "+ Text";
-  const addObjBtn = document.createElement("button");
-  addObjBtn.textContent = "+ Obj";
+  const copyBtn = iconButton("Copy", "copy", "Copy prompt JSON");
+  const pasteBtn = iconButton("Paste", "paste", "Paste Ideogram 4 JSON");
+  const clearBtn = iconButton("Clear", "clear", "Clear all regions and palette");
+  const addTextBtn = iconButton("Add text", "text", "Add text region");
+  const addObjBtn = iconButton("Add object", "obj", "Add object region");
   const compactLabel = document.createElement("label");
   compactLabel.style.display = "flex";
   compactLabel.style.gap = "3px";
