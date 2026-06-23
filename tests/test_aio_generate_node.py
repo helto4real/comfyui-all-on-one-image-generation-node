@@ -16,6 +16,10 @@ class FakeImage:
     shape = (1, 768, 512, 3)
 
 
+class FakeGeneratedImage:
+    shape = (1, 769, 513, 3)
+
+
 def test_main_node_exposes_core_inputs():
     inputs = AIOImageGenerate.INPUT_TYPES()
     required = inputs["required"]
@@ -329,6 +333,57 @@ def test_main_node_passes_inpaint_config_and_uses_source_dimensions(monkeypatch)
     assert parsed["width"] == 512
     assert parsed["height"] == 768
     assert parsed["settings"]["size_mode"] == "use inpaint image size"
+
+
+def test_main_node_reports_actual_decoded_image_dimensions(monkeypatch):
+    from nodes import aio_generate
+
+    class FakeAdapter:
+        version = "test"
+        dimension_multiple = 16
+
+        def resolve_settings(self, **kwargs):
+            return {
+                "width": 512,
+                "height": 768,
+                "steps": 4,
+                "cfg": 1.0,
+                "sampler": "auto",
+                "scheduler": "auto",
+            }
+
+        def validate_inputs(self, **kwargs):
+            return []
+
+        def generate(self, **kwargs):
+            return FakeGeneratedImage(), {"samples": "latent"}, "positive", "negative", "vae"
+
+    monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
+
+    _, _, run_info, _, _, _, _, _, output_width, output_height = AIOImageGenerate().generate(
+        model_type="flux2_klein_9b",
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="",
+        seed=0,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+        **{
+            "size mode": "use aspect ratio",
+            "max side": 512,
+            "aspect ratio": "1:1",
+            "multiple value": "16",
+        },
+    )
+
+    assert (output_width, output_height) == (513, 769)
+    parsed = json.loads(run_info)
+    assert parsed["width"] == 513
+    assert parsed["height"] == 769
 
 
 def test_main_node_rejects_inpaint_for_unsupported_profile(monkeypatch):

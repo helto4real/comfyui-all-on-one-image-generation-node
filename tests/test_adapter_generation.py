@@ -277,6 +277,51 @@ def test_ideogram4_adapter_passes_inpaint_config_to_pipeline(monkeypatch):
     assert calls["inpaint_config"] is inpaint_config
 
 
+def test_flux2_adapter_accepts_inpaint_and_passes_config_to_pipeline(monkeypatch):
+    calls = {}
+
+    def fake_generate(**kwargs):
+        calls.update(kwargs)
+        return "image", {"samples": "latent"}, "positive", "negative", "vae"
+
+    monkeypatch.setattr(flux2_klein_9b.pipeline, "generate_flux2_klein_t2i", fake_generate)
+    monkeypatch.setattr(flux2_klein_9b.gguf_backend, "is_available", lambda: True)
+    adapter = Flux2Klein9BAdapter()
+    settings = {"steps": 4, "cfg": 1.0}
+    inpaint_config = {"image": "image", "mask": "mask", "denoise": 0.8}
+
+    warnings = adapter.validate_inputs(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="negative",
+        width=1024,
+        height=1024,
+        settings=settings,
+        inpaint_config=inpaint_config,
+    )
+
+    adapter.generate(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="negative",
+        width=1024,
+        height=1024,
+        seed=123,
+        settings=settings,
+        sampler="auto",
+        scheduler="auto",
+        inpaint_config=inpaint_config,
+    )
+
+    assert warnings == []
+    assert settings["edit_mode"] == "inpaint"
+    assert calls["inpaint_config"] is inpaint_config
+
+
 def test_adapters_pass_decode_image_and_return_vae_to_pipeline(monkeypatch):
     calls = {}
 

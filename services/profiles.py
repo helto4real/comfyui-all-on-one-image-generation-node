@@ -81,12 +81,12 @@ PROFILES: dict[str, ModelProfile] = {
         supports_negative_prompt=True,
         supports_reference_image=True,
         supports_mask=True,
-        supports_inpaint=False,
+        supports_inpaint=True,
         supports_gguf=True,
         required_components=("diffusion_model", "text_encoder", "vae"),
         notes=(
             "Distilled text-to-image defaults with up to four reference images. "
-            "Mask input is reserved for future inpaint behavior."
+            "AIO Inpaint supports Flux inpaint conditioning with optional crop/stitch and references."
         ),
     ),
     "krea2": ModelProfile(

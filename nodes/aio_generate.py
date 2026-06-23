@@ -196,6 +196,13 @@ def _workflow_widget_value(extra_pnginfo: Any, unique_id: str | None, widget_nam
     return values[index]
 
 
+def _image_dimensions(image: Any) -> tuple[int, int] | None:
+    shape = getattr(image, "shape", None)
+    if shape is None or len(shape) < 3:
+        return None
+    return int(shape[2]), int(shape[1])
+
+
 def _resolve_prompt_text(
     *,
     value: Any,
@@ -697,6 +704,11 @@ class AIOImageGenerate:
         pid_latent = pid_capture["latent"] if pid_capture_connected and pid_capture else None
         pid_sigma = float(pid_capture["sigma"]) if pid_capture_connected and pid_capture else 0.0
         progress.done()
+        output_width = effective_width
+        output_height = effective_height
+        image_dimensions = _image_dimensions(image)
+        if image_dimensions is not None:
+            output_width, output_height = image_dimensions
 
         run_info = build_run_info(
             model_type=model_type,
@@ -707,8 +719,8 @@ class AIOImageGenerate:
             text_encoder_format=infer_model_format(text_encoder),
             vae=vae,
             vae_format=infer_model_format(vae),
-            width=effective_width,
-            height=effective_height,
+            width=output_width,
+            height=output_height,
             seed=seed,
             steps=effective_steps,
             cfg=effective_cfg,
@@ -729,6 +741,6 @@ class AIOImageGenerate:
             loaded_vae,
             pid_latent,
             pid_sigma,
-            effective_width,
-            effective_height,
+            output_width,
+            output_height,
         )

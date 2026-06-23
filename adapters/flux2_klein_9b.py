@@ -18,7 +18,13 @@ except ImportError:  # pragma: no cover - direct test imports
     from adapters.base import BaseImageAdapter
 
 
-def infer_edit_mode(reference_count: int) -> str:
+def infer_edit_mode(reference_count: int, *, inpaint_enabled: bool = False) -> str:
+    if inpaint_enabled and reference_count <= 0:
+        return "inpaint"
+    if inpaint_enabled and reference_count == 1:
+        return "inpaint_single_reference"
+    if inpaint_enabled:
+        return "inpaint_multi_reference"
     if reference_count <= 0:
         return "text_to_image"
     if reference_count == 1:
@@ -72,7 +78,10 @@ class Flux2Klein9BAdapter(BaseImageAdapter):
             reference_count += 1
         if reference_count > 4:
             raise ValueError("FLUX.2 Klein supports at most four connected reference images.")
-        settings["edit_mode"] = infer_edit_mode(reference_count)
+        settings["edit_mode"] = infer_edit_mode(
+            reference_count,
+            inpaint_enabled=inpaint_config is not None,
+        )
         validation.validate_reference_inputs(
             profile,
             reference_image=reference_image,
@@ -86,7 +95,7 @@ class Flux2Klein9BAdapter(BaseImageAdapter):
         warnings: list[str] = []
         active_mask = mask if mask is not None else getattr(reference_inputs, "mask", None)
         if active_mask is not None:
-            warnings.append("mask is accepted for image 1, but inpaint behavior is not implemented yet.")
+            warnings.append("mask is accepted for image 1 as a legacy no-op; use AIO Inpaint for inpaint.")
         return warnings
 
     def generate(self, **kwargs):
@@ -111,6 +120,7 @@ class Flux2Klein9BAdapter(BaseImageAdapter):
             loaded_model=kwargs.get("loaded_model"),
             loaded_clip=kwargs.get("loaded_clip"),
             reference_inputs=kwargs.get("reference_inputs"),
+            inpaint_config=kwargs.get("inpaint_config"),
             decode_image=kwargs.get("decode_image", True),
             return_vae=kwargs.get("return_vae", False),
             pid_capture_step=kwargs.get("pid_capture_step"),

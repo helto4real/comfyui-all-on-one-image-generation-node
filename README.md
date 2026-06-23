@@ -14,6 +14,7 @@ Clone or copy this folder into `ComfyUI/custom_nodes`, then restart ComfyUI. The
 - `Ideogram 4 Prompt Builder`
 - `Ideogram 4 Settings`
 - `Krea 2 Settings`
+- `AIO Inpaint`
 - `AIO LoRA Configuration`
 - `AIO Load Pipeline Models`
 
@@ -22,7 +23,7 @@ All nodes appear under `AIO/Image`.
 ## Supported Model Families
 
 - `z_image_turbo`: text-to-image generation, defaults to 8 steps and CFG 1.0. Negative prompts are ignored by default and reported in `run_info.warnings`.
-- `flux2_klein_9b`: text-to-image and reference-image generation, distilled defaults to 4 steps and CFG 1.0. Reference mode is inferred from how many reference images are connected.
+- `flux2_klein_9b`: text-to-image, reference-image, and AIO Inpaint generation, distilled defaults to 4 steps and CFG 1.0. Reference mode is inferred from how many reference images are connected. When `ComfyUI-Inpaint-CropAndStitch` is installed, Flux inpaint samples a cropped working area and stitches the decoded result back to the original canvas size.
 - `ideogram4`: local open-weight Ideogram 4 text-to-image generation, defaults to the official 20-step Ideogram scheduler preset with dual-model CFG 7.0. Negative prompts are ignored by default and reported in `run_info.warnings`.
 - `krea2`: local Krea 2 text-to-image generation, defaults to the provided workflow's 8-step `er_sde` / `simple` sampler path, CFG 1.0, and 1344x2048 canvas. Negative prompts are ignored by default through zeroed positive conditioning.
 
@@ -70,8 +71,9 @@ The dropdown may prefix values with their category when multiple folders are sea
 5. Optionally attach the matching model-specific settings node.
 6. For Ideogram 4, optionally connect `Ideogram 4 Prompt Builder` to `Ideogram 4 Settings` to use structured JSON prompting.
 7. Optionally attach `AIO LoRA Configuration` to apply one or more LoRAs.
-8. Optionally use `AIO Load Pipeline Models` and external `MODEL`/`CLIP` patch nodes after the LoRA phase.
-9. Connect `IMAGE` to Preview Image or Save Image.
+8. Optionally attach `AIO Inpaint` to edit only a masked source-image area on supported model families.
+9. Optionally use `AIO Load Pipeline Models` and external `MODEL`/`CLIP` patch nodes after the LoRA phase.
+10. Connect `IMAGE` to Preview Image or Save Image.
 
 The node is not an output node, so it is safe for API-mode workflows.
 
@@ -150,8 +152,10 @@ When both `model` and `clip` are connected, the main node treats them as already
 - Output size is controlled globally with `size mode`, `max side`, `aspect ratio`, and `multiple value`, except when an Ideogram 4 Prompt Builder is connected through Ideogram 4 Settings; in that case the builder dimensions override the main node for Ideogram 4.
 - FLUX.2 Klein supports up to four reference images through `image 1` to `image 4`.
 - FLUX.2 Klein settings expose reference image scaling controls, defaulting to 1.0 megapixel, `area`, and 1 resolution step.
-- FLUX.2 Klein accepts a mask with `image 1`, but inpaint behavior is staged for a later adapter pass.
-- Ideogram 4 supports text-to-image only in this adapter. Reference images, masks, negative prompts, and GGUF model files are not implemented for Ideogram 4.
+- FLUX.2 Klein supports inpaint through the dedicated `AIO Inpaint` config node. With `ComfyUI-Inpaint-CropAndStitch` installed, the Flux path crops around the mask, uses ComfyUI `InpaintModelConditioning`, samples the crop, and stitches the decoded result back to the original image size. Without that optional node pack, it falls back to full-frame masked sampling and final blend.
+- FLUX.2 Klein latent-only inpaint output returns the sampled working latent; decoded image output is the path that restores the original canvas size.
+- The legacy `mask` input is still only accepted alongside `image 1` and is not the inpaint contract.
+- Ideogram 4 supports text-to-image and `AIO Inpaint` in this adapter. Reference images, legacy masks, negative prompts, and GGUF model files are not implemented for Ideogram 4.
 - Ideogram 4 output dimensions must be multiples of 16, between 256 and 2048 pixels per side, with aspect ratio no wider than 6:1.
 - Krea 2 supports text-to-image only in this adapter. Reference images, masks, inpaint, negative prompts, and GGUF model files are not implemented for Krea 2.
 - Krea 2 output dimensions must be multiples of 16.
@@ -161,8 +165,9 @@ When both `model` and `clip` are connected, the main node treats them as already
 
 Local ComfyUI source was inspected before implementing the generation pipeline. Relevant references:
 
-- `/home/thhel/git/ComfyUI/nodes.py`: classic `NODE_CLASS_MAPPINGS`, `folder_paths`, `UNETLoader`, `CLIPLoader`, `VAEDecode`, `common_ksampler`
+- `/home/thhel/git/ComfyUI/nodes.py`: classic `NODE_CLASS_MAPPINGS`, `folder_paths`, `UNETLoader`, `CLIPLoader`, `VAEDecode`, `common_ksampler`, `InpaintModelConditioning`
 - `/home/thhel/git/ComfyUI/comfy/sample.py`: `comfy.sample.sample` signature
+- `/home/thhel/git/ComfyUI/comfy/samplers.py`: sampler `noise_mask` and denoise-mask behavior
 - `/home/thhel/git/ComfyUI/comfy/utils.py`: `ProgressBar`
 - `/home/thhel/git/ComfyUI/comfy_extras/nodes_flux.py`: `EmptyFlux2LatentImage`, Flux guidance, Flux2 scheduler
 - `/home/thhel/git/ComfyUI/comfy_extras/nodes_ideogram4.py`: Ideogram 4 scheduler and sigma helper
@@ -170,7 +175,7 @@ Local ComfyUI source was inspected before implementing the generation pipeline. 
 - `/home/thhel/git/ComfyUI/comfy_extras/nodes_model_advanced.py`: `ModelSamplingAuraFlow`
 - `/home/thhel/git/ComfyUI/comfy_extras/nodes_zimage.py`: Z-Image conditioning node patterns
 - `/home/thhel/git/ComfyUI/comfy/text_encoders/krea2.py`: Krea 2 flattened text-conditioning shape
-- `/home/thhel/git/ComfyUI/comfy/model_base.py`: Krea 2 extra conditioning fields
+- `/home/thhel/git/ComfyUI/comfy/model_base.py`: Krea 2 extra conditioning fields and Flux/Flux2 concat inpaint conditioning
 - `/home/thhel/git/ComfyUI/comfy/supported_models.py`: `Flux2`, `Ideogram4`, `Krea2`, and `ZImage` model-family detection
 - `/home/thhel/git/ComfyUI/nodes.py`: `LoraLoader.load_lora`, `LoraLoaderModelOnly`, `CLIPTextEncode`
 - `/home/thhel/git/ComfyUI/custom_nodes/rgthree-comfy/py/power_lora_loader.py`: Power LoRA dynamic backend payload shape
@@ -181,6 +186,7 @@ Local ComfyUI source was inspected before implementing the generation pipeline. 
 - `/home/thhel/git/ComfyUI/custom_nodes/comfyui-kjnodes/web/js/ideogram4_prompt_builder.js`: Ideogram 4 prompt builder frontend interaction model
 - `/home/thhel/git/ComfyUI/custom_nodes/ComfyUI-GGUF/nodes.py`: `UnetLoaderGGUF`, `CLIPLoaderGGUF`, `clip_gguf`, and `unet_gguf` path/list patterns
 - `/home/thhel/git/ComfyUI/custom_nodes/gguf/pig.py`: `clip_gguf`, `model_gguf`, and `vae_gguf` path/list patterns
+- `/home/thhel/git/ComfyUI/custom_nodes/comfyui-inpaint-cropandstitch/inpaint_cropandstitch.py`: optional `InpaintCropImproved` / `InpaintStitchImproved` crop-stitch node contract
 
 The adapters compose these existing primitives lazily at execution time so importing the node pack does not load ComfyUI models, torch, or GGUF packages.
 

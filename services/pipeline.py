@@ -52,7 +52,9 @@ def _phase(progress: Any, message: str) -> None:
         progress.phase(message)
 
 
-def _has_reference_attention_context(reference_inputs: Any = None) -> bool:
+def _has_reference_attention_context(reference_inputs: Any = None, inpaint_config: Any = None) -> bool:
+    if inpaint_config is not None:
+        return True
     if reference_inputs is None:
         return False
     return bool(getattr(reference_inputs, "mask", None) is not None or getattr(reference_inputs, "images", ()))
@@ -63,11 +65,12 @@ def apply_model_performance(
     model: Any,
     settings: dict[str, Any],
     reference_inputs: Any = None,
+    inpaint_config: Any = None,
 ) -> Any:
     return apply_performance_settings(
         model=model,
         settings=settings,
-        has_mask_or_reference=_has_reference_attention_context(reference_inputs),
+        has_mask_or_reference=_has_reference_attention_context(reference_inputs, inpaint_config),
     )
 
 
@@ -76,11 +79,17 @@ def _apply_model_performance_if_configured(
     model: Any,
     settings: dict[str, Any],
     reference_inputs: Any = None,
+    inpaint_config: Any = None,
     progress: Any = None,
 ) -> Any:
     if performance_settings_present(settings):
         _phase(progress, "applying performance settings")
-    return apply_model_performance(model=model, settings=settings, reference_inputs=reference_inputs)
+    return apply_model_performance(
+        model=model,
+        settings=settings,
+        reference_inputs=reference_inputs,
+        inpaint_config=inpaint_config,
+    )
 
 
 def _clip_type(name: str):
@@ -349,6 +358,7 @@ def sample_with_comfy_ksampler(
     positive: Any,
     negative: Any,
     latent: dict[str, Any],
+    denoise: float = 1.0,
     pid_capture_step: int | None = None,
 ):
     if pid_capture_step is None:
@@ -364,6 +374,7 @@ def sample_with_comfy_ksampler(
             positive,
             negative,
             latent,
+            denoise=float(denoise),
         )[0]
 
     import comfy.sample  # type: ignore
@@ -387,7 +398,7 @@ def sample_with_comfy_ksampler(
         device=model.load_device,
         sampler=sampler,
         scheduler=scheduler,
-        denoise=1.0,
+        denoise=float(denoise),
         model_options=model.model_options,
     )
     sigmas = sampler_obj.sigmas
@@ -413,7 +424,7 @@ def sample_with_comfy_ksampler(
         positive,
         negative,
         latent_image,
-        denoise=1.0,
+        denoise=float(denoise),
         disable_noise=False,
         noise_mask=noise_mask,
         callback=callback,
@@ -487,6 +498,7 @@ def sample_with_sigmas(
         pid_capture_step=pid_capture_step,
     )
     disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
+    noise_mask = latent.get("noise_mask")
     samples = comfy.sample.sample(
         model,
         noise,
@@ -498,6 +510,7 @@ def sample_with_sigmas(
         negative,
         latent_image,
         sigmas=sigmas,
+        noise_mask=noise_mask,
         callback=callback,
         disable_pbar=disable_pbar,
         seed=seed,
@@ -972,6 +985,7 @@ def generate_flux2_klein_t2i(
     loaded_model: Any = None,
     loaded_clip: Any = None,
     reference_inputs: Any = None,
+    inpaint_config: dict[str, Any] | None = None,
     decode_image: bool = True,
     return_vae: bool = False,
     pid_capture_step: int | None = None,
@@ -998,6 +1012,7 @@ def generate_flux2_klein_t2i(
             model=model,
             settings=settings,
             reference_inputs=reference_inputs,
+            inpaint_config=inpaint_config,
             progress=progress,
         )
     if not using_connected_model_pair:
@@ -1008,6 +1023,7 @@ def generate_flux2_klein_t2i(
             model=model,
             settings=settings,
             reference_inputs=reference_inputs,
+            inpaint_config=inpaint_config,
             progress=progress,
         )
     _phase(progress, "encoding prompts")
@@ -1019,9 +1035,18 @@ def generate_flux2_klein_t2i(
         negative = encode_flux2_prompt(clip=clip, prompt=negative_prompt or "", guidance=guidance)
     reference_images = tuple(getattr(reference_inputs, "images", ()) or ())
     loaded_vae = None
-    if reference_images:
+    if reference_images or inpaint_config is not None:
         _phase(progress, "loading vae")
         loaded_vae = load_vae(vae=vae)
+    flux_inpaint_source = None
+    if inpaint_config is not None:
+        _phase(progress, "preparing inpaint crop")
+        flux_inpaint_source = inpaint_service.prepare_flux_inpaint_source(
+            config=inpaint_config,
+            width=width,
+            height=height,
+        )
+    if reference_images:
         _phase(progress, "encoding reference images")
         reference_latents = []
         for reference_image in reference_images:
@@ -1033,6 +1058,29 @@ def generate_flux2_klein_t2i(
                 multiple_value=settings.get("multiple_value", "none"),
             )
             reference_latents.append(encode_image_to_latent(vae=loaded_vae, image=scaled_image))
+        if (
+            flux_inpaint_source is not None
+            and bool(inpaint_config.get("crop_source_reference", True))
+        ):
+            reference_latents.append(encode_image_to_latent(vae=loaded_vae, image=flux_inpaint_source.image))
+        if zero_negative_conditioning:
+            positive, _ = apply_reference_latents_to_conditioning(
+                positive=positive,
+                negative=positive,
+                reference_latents=reference_latents,
+            )
+        else:
+            positive, negative = apply_reference_latents_to_conditioning(
+                positive=positive,
+                negative=negative,
+                reference_latents=reference_latents,
+            )
+    elif (
+        flux_inpaint_source is not None
+        and bool(inpaint_config.get("crop_source_reference", True))
+    ):
+        _phase(progress, "encoding inpaint reference")
+        reference_latents = [encode_image_to_latent(vae=loaded_vae, image=flux_inpaint_source.image)]
         if zero_negative_conditioning:
             positive, _ = apply_reference_latents_to_conditioning(
                 positive=positive,
@@ -1047,9 +1095,25 @@ def generate_flux2_klein_t2i(
             )
     if zero_negative_conditioning:
         negative = zero_out_conditioning(positive)
-    latent = make_empty_flux2_latent(width=width, height=height)
-    _phase(progress, "sampling")
-    if scheduler == "auto":
+    if inpaint_config is not None:
+        _phase(progress, "conditioning inpaint")
+        positive, negative, latent = inpaint_service.apply_inpaint_model_conditioning(
+            vae=loaded_vae,
+            positive=positive,
+            negative=negative,
+            image=flux_inpaint_source.image,
+            mask=flux_inpaint_source.mask,
+        )
+    else:
+        latent = make_empty_flux2_latent(width=width, height=height)
+    inpaint_denoise = float(inpaint_config.get("denoise", 1.0)) if inpaint_config is not None else 1.0
+    if inpaint_config is not None and inpaint_denoise <= 0.0:
+        sampled_latent = latent
+    elif scheduler == "auto":
+        sigmas = flux2_sigmas(steps=steps, width=width, height=height)
+        if inpaint_config is not None:
+            sigmas = inpaint_service.apply_denoise_to_sigmas(sigmas, inpaint_denoise)
+        _phase(progress, "sampling")
         sampled_latent = sample_with_sigmas(
             model=model,
             seed=seed,
@@ -1060,10 +1124,11 @@ def generate_flux2_klein_t2i(
             positive=positive,
             negative=negative,
             latent=latent,
-            sigmas=flux2_sigmas(steps=steps, width=width, height=height),
+            sigmas=sigmas,
             pid_capture_step=pid_capture_step,
         )
     else:
+        _phase(progress, "sampling")
         sampled_latent = sample_with_comfy_ksampler(
             model=model,
             seed=seed,
@@ -1074,6 +1139,7 @@ def generate_flux2_klein_t2i(
             positive=positive,
             negative=negative,
             latent=latent,
+            denoise=inpaint_denoise,
             pid_capture_step=pid_capture_step,
         )
     image = None
@@ -1083,4 +1149,19 @@ def generate_flux2_klein_t2i(
     if decode_image:
         _phase(progress, "decoding")
         image = decode_latent(vae=loaded_vae, latent=sampled_latent)
+        if inpaint_config is not None and flux_inpaint_source is not None:
+            if flux_inpaint_source.stitcher is not None:
+                _phase(progress, "stitching inpaint")
+                image = inpaint_service.stitch_inpaint_image(
+                    stitcher=flux_inpaint_source.stitcher,
+                    inpainted_image=image,
+                )
+            elif bool(inpaint_config.get("final_blend", True)):
+                _phase(progress, "blending inpaint")
+                image = inpaint_service.blend_inpaint_image(
+                    source_image=flux_inpaint_source.image,
+                    generated_image=image,
+                    mask=flux_inpaint_source.mask,
+                    feather=int(inpaint_config.get("mask_feather", 16)),
+                )
     return image, sampled_latent, positive, negative, loaded_vae
