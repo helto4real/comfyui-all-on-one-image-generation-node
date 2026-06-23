@@ -1,6 +1,7 @@
 import { app } from "/scripts/app.js";
 import { api } from "/scripts/api.js";
 import { decryptValue, encryptValueSync, isEncryptedPrivacyPayload } from "./aio_privacy.js";
+import { ensureHeltoTokens, HELTO } from "./aio_helto_theme.js";
 
 const NODE_NAME = "AIOLoraConfiguration";
 const NODE_DISPLAY_NAME = "AIO LoRA Configuration";
@@ -245,9 +246,12 @@ function installGeneratePrivacyStyles() {
   }
   const style = document.createElement("style");
   style.id = PRIVACY_STYLE_ID;
+  // Privacy mask: keep prompt glyphs visually unreadable while concealed.
+  // -webkit-text-fill-color guards against partial glyph/selection leaks.
   style.textContent = `
     .aio-generate-private-field {
       color: transparent !important;
+      -webkit-text-fill-color: transparent !important;
       text-shadow: none !important;
       caret-color: transparent !important;
     }
@@ -703,7 +707,7 @@ function drawTogglePart(ctx, { posX, posY, height, value }) {
     ctx.fill();
     ctx.globalAlpha = app.canvas.editor_alpha;
   }
-  ctx.fillStyle = value === true ? "#89B" : "#888";
+  ctx.fillStyle = value === true ? HELTO.accent : HELTO.textFaint;
   const toggleX =
     lowQuality || value === false ? posX + height * 0.5 : value === true ? posX + height : posX + height * 0.75;
   ctx.beginPath();
@@ -747,7 +751,8 @@ function drawInfoIcon(ctx, x, y, size, treatment = "GRAYED") {
   ctx.save();
   ctx.beginPath();
   ctx.roundRect(x, y, size, size, [size * 0.1]);
-  ctx.fillStyle = treatment === "GRAYED" ? "#aaa" : "#2f82ec";
+  // GRAYED = no info (faint); OUTLINED/FILLED = info available -> gold accent.
+  ctx.fillStyle = treatment === "GRAYED" ? HELTO.textFaint : HELTO.accent;
   ctx.strokeStyle = ctx.fillStyle;
   if (treatment === "FILLED") {
     ctx.fill();
@@ -1008,71 +1013,102 @@ function renderInfoDialogContent(container, info, file, isLoading = false) {
 }
 
 function ensureDialogStyles() {
+  ensureHeltoTokens();
   if (document.getElementById("aio-lora-info-styles")) {
     return;
   }
   const style = document.createElement("style");
   style.id = "aio-lora-info-styles";
   style.textContent = `
+    /* ---- Overlay + modal card (Helto modal recipe) ---- */
     .aio-lora-info-overlay {
       position: fixed;
       inset: 0;
       z-index: 10000;
       display: grid;
       place-items: center;
-      background: rgba(0, 0, 0, 0.62);
+      padding: 12px;
+      background: rgba(6, 9, 15, 0.72);
+      backdrop-filter: blur(4px);
+      animation: aio-lora-fade 0.2s ease;
     }
+    @keyframes aio-lora-fade { from { opacity: 0; } to { opacity: 1; } }
     .rgthree-info-dialog {
       width: 90vw;
       max-width: 960px;
       max-height: calc(100vh - 48px);
       overflow: hidden;
-      border: 1px solid rgba(255, 255, 255, 0.18);
-      border-radius: 6px;
-      background: #202020;
-      color: #eee;
-      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
-      font: 13px/1.4 sans-serif;
+      border: 1px solid var(--helto-border-strong);
+      border-radius: var(--helto-radius-lg);
+      background: linear-gradient(135deg, rgba(27, 35, 51, 0.92), rgba(13, 19, 32, 0.96));
+      color: var(--helto-text);
+      box-shadow: var(--helto-shadow-pop);
+      backdrop-filter: blur(15px);
+      font: var(--helto-font-size)/var(--helto-line) var(--helto-font-sans);
+      -webkit-font-smoothing: antialiased;
+      animation: aio-lora-rise 0.2s var(--helto-ease-spring);
     }
+    @keyframes aio-lora-rise { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+    .rgthree-info-dialog *, .rgthree-info-dialog *::before, .rgthree-info-dialog *::after { box-sizing: border-box; }
+    .rgthree-info-dialog ::-webkit-scrollbar { width: 6px; height: 6px; }
+    .rgthree-info-dialog ::-webkit-scrollbar-track { background: transparent; }
+    .rgthree-info-dialog ::-webkit-scrollbar-thumb { background: var(--helto-border-strong); border-radius: 3px; }
+    .rgthree-info-dialog ::-webkit-scrollbar-thumb:hover { background: var(--helto-text-faint); }
     .aio-rgthree-dialog-title {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      min-height: 46px;
-      padding: 0 14px 0 18px;
-      background: #1f2937;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.15);
-      color: #fff;
+      gap: 12px;
+      min-height: 48px;
+      padding: 10px 14px 10px 16px;
+      border-bottom: 1px solid var(--helto-border);
+      color: var(--helto-text);
       font-weight: 700;
     }
     .aio-rgthree-dialog-title h2 {
       margin: 0;
-      font-size: 18px;
+      font-size: 15px;
       line-height: 1.2;
-      color: #fff;
+      letter-spacing: 0.02em;
+      color: var(--helto-text);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
     .aio-lora-close {
-      border: 0;
-      background: transparent;
-      color: #4b8dff;
-      font-size: 30px;
+      flex: 0 0 auto;
+      width: 28px;
+      height: 28px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--helto-border-strong);
+      border-radius: var(--helto-radius-sm);
+      background: linear-gradient(180deg, var(--helto-surface-3), var(--helto-surface-2));
+      color: var(--helto-text-dim);
+      font-size: 18px;
       line-height: 1;
       cursor: pointer;
+      transition: background var(--helto-transition), border-color var(--helto-transition), color var(--helto-transition);
     }
+    .aio-lora-close:hover {
+      background: linear-gradient(180deg, var(--helto-surface-hover), var(--helto-surface-3));
+      border-color: var(--helto-border-hover);
+      color: #fff;
+    }
+    .aio-lora-close:focus-visible { outline: none; border-color: var(--helto-focus); box-shadow: var(--helto-focus-ring); }
     .aio-rgthree-dialog-content {
-      padding: 12px 16px 16px;
+      padding: 14px 16px 16px;
       max-height: calc(100vh - 96px);
       overflow: auto;
     }
     .aio-lora-loading {
-      padding: 8px 10px;
-      margin-bottom: 10px;
-      color: #ddd;
-      background: rgba(255, 255, 255, 0.075);
-      border-radius: 4px;
+      padding: 7px 10px;
+      margin-bottom: 12px;
+      color: var(--helto-text-dim);
+      background: var(--helto-surface-2);
+      border: 1px solid var(--helto-border);
+      border-radius: var(--helto-radius);
     }
     .rgthree-button,
     .rgthree-button-reset {
@@ -1080,22 +1116,33 @@ function ensureDialogStyles() {
       color: inherit;
     }
     .rgthree-button {
-      border: 1px solid rgba(255, 255, 255, 0.24);
-      border-radius: 4px;
-      background: #2b3648;
-      color: #eee;
-      padding: 6px 16px;
+      height: 24px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--helto-border-strong);
+      border-radius: var(--helto-radius-sm);
+      background: linear-gradient(180deg, var(--helto-surface-3), var(--helto-surface-2));
+      color: var(--helto-text);
+      padding: 0 12px;
       cursor: pointer;
+      transition: background var(--helto-transition), border-color var(--helto-transition), color var(--helto-transition);
     }
     .rgthree-button:hover {
-      background: #34445e;
+      background: linear-gradient(180deg, var(--helto-surface-hover), var(--helto-surface-3));
+      border-color: var(--helto-border-hover);
+      color: #fff;
     }
+    .rgthree-button:focus-visible { outline: none; border-color: var(--helto-focus); box-shadow: var(--helto-focus-ring); }
     .rgthree-button-reset {
       border: 0;
       padding: 0;
       background: transparent;
       cursor: pointer;
+      color: var(--helto-text-dim);
+      transition: color var(--helto-transition);
     }
+    .rgthree-button-reset:hover { color: var(--helto-accent-strong); }
     .rgthree-info-dialog .rgthree-info-area {
       list-style: none;
       padding: 0;
@@ -1111,29 +1158,31 @@ function ensureDialogStyles() {
     .rgthree-info-dialog .rgthree-info-area > li + li {
       margin-left: 6px;
     }
+    /* Type / base-model badges = Helto info pills. */
     .rgthree-info-dialog .rgthree-info-area > li.rgthree-info-tag > * {
       min-height: 24px;
-      border-radius: 4px;
+      border-radius: 999px;
       line-height: 1;
-      color: rgba(255, 255, 255, 0.85);
-      background: rgb(69, 92, 85);
-      font-size: 14px;
-      font-weight: bold;
+      color: var(--helto-text-dim);
+      background: var(--helto-surface-2);
+      border: 1px solid var(--helto-border-strong);
+      font-size: 12px;
+      font-weight: 600;
       text-decoration: none;
       display: flex;
-      height: 1.6em;
-      padding: 0 0.5em 0.1em;
+      height: 1.7em;
+      padding: 0 0.7em 0.1em;
       align-content: center;
       justify-content: center;
       align-items: center;
-      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.5);
     }
     .rgthree-info-dialog .rgthree-info-area > li.rgthree-info-tag > *:empty {
       display: none;
     }
     .rgthree-info-dialog .rgthree-info-area > li.-type > * {
-      background: rgb(73, 54, 94);
-      color: rgb(228, 209, 248);
+      background: #14273d;
+      border-color: #355f8f;
+      color: var(--helto-info);
     }
     .rgthree-info-dialog .rgthree-info-area > li.rgthree-info-menu {
       margin-left: auto;
@@ -1162,13 +1211,14 @@ function ensureDialogStyles() {
     }
     .rgthree-info-dialog .rgthree-info-table td {
       position: relative;
-      border: 1px solid rgba(255, 255, 255, 0.25);
+      border: 1px solid var(--helto-border);
       padding: 0;
       vertical-align: top;
     }
     .rgthree-info-dialog .rgthree-info-table td:first-child {
-      background: rgba(255, 255, 255, 0.075);
+      background: var(--helto-surface-2);
       width: 10px;
+      color: var(--helto-text-dim);
     }
     .rgthree-info-dialog .rgthree-info-table td:first-child > *:first-child {
       white-space: nowrap;
@@ -1177,20 +1227,21 @@ function ensureDialogStyles() {
     .rgthree-info-dialog .rgthree-info-table td:first-child small {
       display: block;
       margin-top: 2px;
-      opacity: 0.75;
+      color: var(--helto-text-faint);
     }
     .rgthree-info-dialog .rgthree-info-table td:first-child small > [data-action] {
+      color: var(--helto-accent);
       text-decoration: underline;
       cursor: pointer;
     }
     .rgthree-info-dialog .rgthree-info-table td:first-child small > [data-action]:hover {
       text-decoration: none;
     }
-    .rgthree-info-dialog .rgthree-info-table td a,
-    .rgthree-info-dialog .rgthree-info-table td a:hover,
-    .rgthree-info-dialog .rgthree-info-table td a:visited {
-      color: inherit;
+    .rgthree-info-dialog .rgthree-info-table td a {
+      color: var(--helto-accent);
     }
+    .rgthree-info-dialog .rgthree-info-table td a:hover { color: var(--helto-accent-strong); }
+    .rgthree-info-dialog .rgthree-info-table td a:visited { color: var(--helto-accent); }
     .rgthree-info-dialog .rgthree-info-table td svg {
       width: 1.3333em;
       height: 1.3333em;
@@ -1207,12 +1258,17 @@ function ensureDialogStyles() {
     .rgthree-info-dialog .rgthree-info-table td > textarea {
       padding: 5px 10px;
       border: 0;
-      box-shadow: inset 1px 1px 5px 0 rgba(0, 0, 0, 0.5);
+      box-shadow: inset 0 0 0 1px var(--helto-border-strong);
       font: inherit;
       appearance: none;
-      background: #fff;
-      color: #121212;
+      background: var(--helto-bg);
+      color: var(--helto-text);
       resize: vertical;
+    }
+    .rgthree-info-dialog .rgthree-info-table td > input:focus,
+    .rgthree-info-dialog .rgthree-info-table td > textarea:focus {
+      outline: none;
+      box-shadow: inset 0 0 0 1px var(--helto-focus), var(--helto-focus-ring);
     }
     .rgthree-info-dialog .rgthree-info-table td > input:only-child,
     .rgthree-info-dialog .rgthree-info-table td > textarea:only-child {
@@ -1232,6 +1288,7 @@ function ensureDialogStyles() {
       display: flex;
       align-content: center;
       justify-content: center;
+      color: var(--helto-text-faint);
       cursor: help;
     }
     .rgthree-info-dialog .rgthree-info-table td .-help::before {
@@ -1247,36 +1304,40 @@ function ensureDialogStyles() {
       max-height: 15vh;
       overflow: auto;
     }
+    /* Trained-word chips: pill default, GOLD when selected. */
     .rgthree-info-dialog .rgthree-info-table td > ul.rgthree-info-trained-words-list > li {
       display: inline-flex;
       margin: 2px;
       vertical-align: top;
-      border-radius: 4px;
+      border-radius: 999px;
       line-height: 1;
-      color: rgba(255, 255, 255, 0.85);
-      background: rgb(73, 91, 106);
-      font-size: 1.2em;
+      color: var(--helto-text-dim);
+      background: var(--helto-surface-2);
+      border: 1px solid var(--helto-border-strong);
+      font-size: 1.1em;
       font-weight: 600;
       text-decoration: none;
-      height: 1.6em;
+      height: 1.7em;
       align-content: center;
       justify-content: center;
       align-items: center;
-      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.5);
       cursor: pointer;
       white-space: nowrap;
       max-width: 183px;
+      transition: background var(--helto-transition), border-color var(--helto-transition), color var(--helto-transition);
     }
     .rgthree-info-dialog .rgthree-info-table td > ul.rgthree-info-trained-words-list > li:hover {
-      background: rgb(68, 109, 142);
+      background: var(--helto-surface-hover);
+      border-color: var(--helto-border-hover);
+      color: #fff;
     }
     .rgthree-info-dialog .rgthree-info-table td > ul.rgthree-info-trained-words-list > li > svg {
       width: auto;
       height: 1.2em;
     }
     .rgthree-info-dialog .rgthree-info-table td > ul.rgthree-info-trained-words-list > li > span {
-      padding-left: 0.5em;
-      padding-right: 0.5em;
+      padding-left: 0.6em;
+      padding-right: 0.6em;
       padding-bottom: 0.1em;
       text-overflow: ellipsis;
       overflow: hidden;
@@ -1286,11 +1347,14 @@ function ensureDialogStyles() {
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 0 0.5em;
+      padding: 0 0.6em;
       background: rgba(0, 0, 0, 0.2);
     }
     .rgthree-info-dialog .rgthree-info-table td > ul.rgthree-info-trained-words-list > li.-rgthree-is-selected {
-      background: rgb(42, 126, 193);
+      background: var(--helto-accent-bg);
+      border-color: var(--helto-accent-border);
+      color: var(--helto-accent-strong);
+      box-shadow: var(--helto-shadow-glow);
     }
     .rgthree-info-dialog .rgthree-info-images {
       list-style: none;
@@ -1314,6 +1378,9 @@ function ensureDialogStyles() {
       margin: 6px;
       font-size: 0;
       position: relative;
+      border: 1px solid var(--helto-border);
+      border-radius: var(--helto-radius);
+      background: #0a0e16;
     }
     .rgthree-info-dialog .rgthree-info-images > li figure {
       margin: 0;
@@ -1331,7 +1398,7 @@ function ensureDialogStyles() {
       bottom: 0;
       padding: 12px;
       font-size: 12px;
-      background: rgba(0, 0, 0, 0.85);
+      background: rgba(6, 9, 15, 0.85);
       opacity: 0;
       transform: translateY(50px);
       transition: all 0.25s ease-in-out;
@@ -1339,22 +1406,23 @@ function ensureDialogStyles() {
     }
     .rgthree-info-dialog .rgthree-info-images > li figure figcaption > span {
       display: inline-block;
-      padding: 2px 4px;
+      padding: 2px 5px;
       margin: 2px;
-      border-radius: 2px;
-      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: var(--helto-radius-sm);
+      border: 1px solid var(--helto-border-strong);
+      color: var(--helto-text);
       word-break: break-word;
     }
     .rgthree-info-dialog .rgthree-info-images > li figure figcaption > span label {
       display: inline;
       padding: 0;
       margin: 0;
-      opacity: 0.5;
+      color: var(--helto-text-faint);
       pointer-events: none;
       user-select: none;
     }
     .rgthree-info-dialog .rgthree-info-images > li figure figcaption > span a {
-      color: inherit;
+      color: var(--helto-accent);
       text-decoration: underline;
     }
     .rgthree-info-dialog .rgthree-info-images > li figure figcaption:empty {
@@ -1362,6 +1430,7 @@ function ensureDialogStyles() {
     }
     .rgthree-info-dialog .rgthree-info-images > li figure figcaption:empty::before {
       content: "No data.";
+      color: var(--helto-text-faint);
     }
     .rgthree-info-dialog .rgthree-info-images > li:hover figure figcaption {
       opacity: 1;
@@ -1826,10 +1895,10 @@ class LoraRowWidget {
 
   strengthTextColor(value) {
     if (this.loraInfo?.strengthMax != null && value > this.loraInfo.strengthMax) {
-      return "#c66";
+      return HELTO.danger;
     }
     if (this.loraInfo?.strengthMin != null && value < this.loraInfo.strengthMin) {
-      return "#c66";
+      return HELTO.danger;
     }
     return undefined;
   }
