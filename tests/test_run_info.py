@@ -33,6 +33,8 @@ def test_run_info_json_serializable_and_contains_core_fields():
             "resolved_torch_compile_mode": "on",
             "resolved_torch_compile_backend": "inductor",
             "performance_apply_timing": "after_loras",
+            "fp16_accumulation_enabled": True,
+            "resolved_fp16_accumulation_enabled": True,
         },
         warnings=["warning"],
         adapter_version="0.1.0",
@@ -63,6 +65,8 @@ def test_run_info_json_serializable_and_contains_core_fields():
         "resolved_torch_compile_mode": "on",
         "resolved_torch_compile_backend": "inductor",
         "performance_apply_timing": "after_loras",
+        "fp16_accumulation_enabled": True,
+        "resolved_fp16_accumulation_enabled": True,
     }
 
 

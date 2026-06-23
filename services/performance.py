@@ -27,6 +27,7 @@ def performance_settings_present(settings: dict[str, Any]) -> bool:
             "torch_compile_mode",
             "torch_compile_backend",
             "performance_apply_timing",
+            "fp16_accumulation_enabled",
         )
     )
 
@@ -53,6 +54,8 @@ def apply_performance_settings(
     attention_mode = str(settings.get("attention_mode", DEFAULT_ATTENTION_MODE))
     compile_mode = str(settings.get("torch_compile_mode", DEFAULT_TORCH_COMPILE_MODE))
     compile_backend = str(settings.get("torch_compile_backend", DEFAULT_TORCH_COMPILE_BACKEND))
+    fp16_accumulation_present = "fp16_accumulation_enabled" in settings
+    fp16_accumulation_enabled = bool(settings.get("fp16_accumulation_enabled", False))
     timing = normalize_performance_apply_timing(settings)
 
     attention_func, resolved_attention = _resolve_attention(
@@ -65,7 +68,7 @@ def apply_performance_settings(
     compile_backend = compile_backend if compile_backend in TORCH_COMPILE_BACKENDS else DEFAULT_TORCH_COMPILE_BACKEND
 
     patched_model = model
-    if attention_func is not None or should_compile:
+    if attention_func is not None or should_compile or fp16_accumulation_present:
         patched_model = _clone_model(model, disable_dynamic=should_compile, warnings=warnings)
 
     if attention_func is not None and not _apply_attention_override(
@@ -83,12 +86,23 @@ def apply_performance_settings(
             resolved_compile_mode = "on"
             resolved_compile_backend = compile_backend
 
+    resolved_fp16_accumulation = False
+    if fp16_accumulation_present:
+        resolved_fp16_accumulation = _apply_fp16_accumulation_callbacks(
+            patched_model,
+            enabled=fp16_accumulation_enabled,
+            warnings=warnings,
+        )
+
     settings["attention_mode"] = attention_mode if attention_mode in ATTENTION_MODES else DEFAULT_ATTENTION_MODE
     settings["resolved_attention_mode"] = resolved_attention
     settings["torch_compile_mode"] = compile_mode if compile_mode in TORCH_COMPILE_MODES else DEFAULT_TORCH_COMPILE_MODE
     settings["torch_compile_backend"] = compile_backend
     settings["resolved_torch_compile_mode"] = resolved_compile_mode
     settings["resolved_torch_compile_backend"] = resolved_compile_backend
+    if fp16_accumulation_present:
+        settings["fp16_accumulation_enabled"] = fp16_accumulation_enabled
+        settings["resolved_fp16_accumulation_enabled"] = resolved_fp16_accumulation
     settings["performance_apply_timing"] = timing
     if warnings:
         settings["performance_warnings"] = warnings
@@ -214,6 +228,36 @@ def _apply_torch_compile(model: Any, backend: str, warnings: list[str]) -> bool:
         warnings.append(f"could not enable torch compile with backend '{backend}': {exc}")
         logging.warning("[AIO Image Generate] Could not enable torch compile with backend '%s': %s", backend, exc)
         return False
+
+
+def _apply_fp16_accumulation_callbacks(model: Any, *, enabled: bool, warnings: list[str]) -> bool:
+    add_callback = getattr(model, "add_callback", None)
+    if add_callback is None:
+        warnings.append("model could not register fp16 accumulation callbacks")
+        return False
+
+    try:
+        import torch  # type: ignore
+        from comfy.patcher_extension import CallbacksMP  # type: ignore
+    except Exception as exc:  # pragma: no cover - depends on runtime
+        warnings.append(f"could not import torch callback support for fp16 accumulation: {exc}")
+        return False
+
+    matmul = getattr(getattr(getattr(torch, "backends", None), "cuda", None), "matmul", None)
+    if matmul is None or not hasattr(matmul, "allow_fp16_accumulation"):
+        warnings.append("torch.backends.cuda.matmul.allow_fp16_accumulation is not available")
+        return False
+
+    def set_fp16_accumulation(_model: Any) -> None:
+        matmul.allow_fp16_accumulation = enabled
+
+    add_callback(CallbacksMP.ON_PRE_RUN, set_fp16_accumulation)
+    if enabled:
+        def clear_fp16_accumulation(_model: Any) -> None:
+            matmul.allow_fp16_accumulation = False
+
+        add_callback(CallbacksMP.ON_CLEANUP, clear_fp16_accumulation)
+    return True
 
 
 def _skip_transformer_options_guard(guard_entries):

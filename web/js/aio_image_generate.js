@@ -267,6 +267,9 @@ function directPromptWidgetValue(widget) {
   if (value == null) {
     return "";
   }
+  if (value === MASKED_PROMPT_VALUE) {
+    return "";
+  }
   if (typeof value === "string") {
     return value;
   }
@@ -276,8 +279,50 @@ function directPromptWidgetValue(widget) {
   return "";
 }
 
+function promptElementText(element) {
+  if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
+    return element.value;
+  }
+  if (element?.isContentEditable) {
+    return element.textContent ?? "";
+  }
+  return null;
+}
+
+function livePromptDomValue(widget) {
+  for (const element of promptWidgetDomElements(widget)) {
+    const value = promptElementText(element);
+    if (value == null || value === MASKED_PROMPT_VALUE) {
+      continue;
+    }
+    return value;
+  }
+  return null;
+}
+
+function syncPromptWidgetFromDom(node, widget) {
+  restorePromptWidgetsAfterDraw(node);
+  if (!widget || isEncryptedPrivacyPayload(widget.value)) {
+    return directPromptWidgetValue(widget);
+  }
+  const value = livePromptDomValue(widget);
+  if (value == null) {
+    return directPromptWidgetValue(widget);
+  }
+  if (widget.value !== value) {
+    widget.value = value;
+  }
+  return value;
+}
+
+function syncPromptWidgetsFromDom(node) {
+  for (const name of PROMPT_WIDGET_NAMES) {
+    syncPromptWidgetFromDom(node, widgetByName(node, name));
+  }
+}
+
 function encryptedOrEncryptPromptValue(node, widget) {
-  const value = directPromptWidgetValue(widget);
+  const value = syncPromptWidgetFromDom(node, widget);
   if (!privacyEnabled(node)) {
     return value;
   }
@@ -297,6 +342,7 @@ function sanitizeGenerateWorkflowSerialization(node, output) {
     return;
   }
   restorePromptWidgetsAfterDraw(node);
+  syncPromptWidgetsFromDom(node);
   let values = output.widgets_values;
   if (!Array.isArray(values)) {
     return;
@@ -306,16 +352,15 @@ function sanitizeGenerateWorkflowSerialization(node, output) {
     output.widgets_values = normalizedValues;
     values = normalizedValues;
   }
-  if (!privacyEnabled(node)) {
-    return;
-  }
   for (const name of PROMPT_WIDGET_NAMES) {
     const widget = widgetByName(node, name);
     const index = serializedWidgetIndex(node, widget);
     if (!widget || index == null || index < 0 || index >= values.length) {
       continue;
     }
-    values[index] = encryptedOrEncryptPromptValue(node, widget);
+    values[index] = privacyEnabled(node)
+      ? encryptedOrEncryptPromptValue(node, widget)
+      : syncPromptWidgetFromDom(node, widget);
   }
 }
 
@@ -361,17 +406,32 @@ function patchPromptPrivacyElement(node, element) {
   }
   element._aioGeneratePrivacyRevealCleanup?.();
 
+  const onPromptInput = () => {
+    const widget = PROMPT_WIDGET_NAMES.map((name) => widgetByName(node, name))
+      .find((candidate) => promptWidgetDomElements(candidate).includes(element));
+    syncPromptWidgetFromDom(node, widget);
+    markNodeDirty(node);
+  };
   const onPointerEnter = () => updatePromptPrivacyElementReveal(node, "prompt", element, true);
   const onPointerLeave = () => updatePromptPrivacyElementReveal(node, "prompt", element, false);
   const onFocusIn = () => updatePromptPrivacyElementReveal(node, "focus", element, true);
-  const onFocusOut = () => updatePromptPrivacyElementReveal(node, "focus", element, false);
+  const onFocusOut = () => {
+    onPromptInput();
+    updatePromptPrivacyElementReveal(node, "focus", element, false);
+  };
 
+  element.addEventListener("input", onPromptInput);
+  element.addEventListener("change", onPromptInput);
+  element.addEventListener("blur", onPromptInput);
   element.addEventListener("pointerenter", onPointerEnter);
   element.addEventListener("pointerleave", onPointerLeave);
   element.addEventListener("focusin", onFocusIn);
   element.addEventListener("focusout", onFocusOut);
   element._aioGeneratePrivacyRevealNode = node;
   element._aioGeneratePrivacyRevealCleanup = () => {
+    element.removeEventListener("input", onPromptInput);
+    element.removeEventListener("change", onPromptInput);
+    element.removeEventListener("blur", onPromptInput);
     element.removeEventListener("pointerenter", onPointerEnter);
     element.removeEventListener("pointerleave", onPointerLeave);
     element.removeEventListener("focusin", onFocusIn);
@@ -479,6 +539,7 @@ function patchPromptPrivacyWidget(node, widget) {
   }
   widget.serializeValue = function () {
     restorePromptWidgetsAfterDraw(node);
+    syncPromptWidgetFromDom(node, this);
     return encryptedOrEncryptPromptValue(node, this);
   };
   widget._aioPrivacyPatched = true;

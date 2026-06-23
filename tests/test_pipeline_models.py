@@ -89,6 +89,61 @@ def test_pipeline_models_node_uses_ideogram4_clip_type_and_model_only_loras(monk
     assert calls["loras"]["model"] == "model"
 
 
+def test_pipeline_models_node_uses_krea2_clip_type_and_performance(monkeypatch):
+    from nodes import pipeline_models
+
+    calls = {}
+
+    def fake_load_model(**kwargs):
+        calls["model"] = kwargs
+        return "model"
+
+    def fake_load_clip(**kwargs):
+        calls["clip"] = kwargs
+        return "clip"
+
+    def fake_apply_loras(**kwargs):
+        calls["loras"] = kwargs
+        return "model+lora", "clip+lora", [{"name": "style"}]
+
+    def fake_performance(**kwargs):
+        calls["performance"] = kwargs
+        return f"{kwargs['model']}+perf"
+
+    monkeypatch.setattr(pipeline_models.pipeline, "load_diffusion_model", fake_load_model)
+    monkeypatch.setattr(pipeline_models.pipeline, "load_text_encoder", fake_load_clip)
+    monkeypatch.setattr(pipeline_models.pipeline, "apply_lora_config", fake_apply_loras)
+    monkeypatch.setattr(pipeline_models.pipeline, "apply_model_performance", fake_performance)
+
+    model, clip = AIOLoadPipelineModels().load(
+        model_type="krea2",
+        diffusion_model="krea/krea2_turbo_fp8.safetensors",
+        text_encoder="qwen3vl_4b_fp8_scaled.safetensors",
+        model_settings={
+            "family": "krea2",
+            "precision_policy": "fp8",
+            "attention_mode": "off",
+            "fp16_accumulation_enabled": True,
+        },
+        lora_config={"loras": [{"enabled": True, "name": "style"}]},
+    )
+
+    assert model == "model+lora+perf"
+    assert clip == "clip+lora"
+    assert calls["model"] == {
+        "diffusion_model": "krea/krea2_turbo_fp8.safetensors",
+        "precision_policy": "fp8",
+    }
+    assert calls["clip"] == {
+        "text_encoder": "qwen3vl_4b_fp8_scaled.safetensors",
+        "clip_type": "krea2",
+    }
+    assert calls["loras"]["model"] == "model"
+    assert calls["loras"]["clip"] == "clip"
+    assert calls["performance"]["model"] == "model+lora"
+    assert calls["performance"]["settings"]["fp16_accumulation_enabled"] is True
+
+
 def test_pipeline_models_node_applies_performance_after_loras(monkeypatch):
     from nodes import pipeline_models
 

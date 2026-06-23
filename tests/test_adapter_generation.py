@@ -2,9 +2,10 @@ import json
 
 import pytest
 
-from adapters import flux2_klein_9b, ideogram4, z_image_turbo
+from adapters import flux2_klein_9b, ideogram4, krea2, z_image_turbo
 from adapters.flux2_klein_9b import Flux2Klein9BAdapter
 from adapters.ideogram4 import Ideogram4Adapter
+from adapters.krea2 import Krea2Adapter
 from adapters.z_image_turbo import ZImageTurboAdapter
 from nodes.aio_generate import AIOImageGenerate
 from services.reference_inputs import ReferenceInputs
@@ -50,6 +51,56 @@ def test_z_image_adapter_calls_real_generation_pipeline(monkeypatch):
     assert positive == "positive"
     assert negative == "negative"
     assert calls["steps"] == 8
+    assert calls["positive_prompt"] == "prompt"
+    assert calls["loaded_model"] == "patched_model"
+    assert calls["loaded_clip"] == "patched_clip"
+    assert calls["decode_image"] is True
+    assert calls["return_vae"] is False
+
+
+def test_krea2_adapter_calls_real_generation_pipeline(monkeypatch):
+    calls = {}
+
+    def fake_generate(**kwargs):
+        calls.update(kwargs)
+        return "image", {"samples": "latent"}, "positive", "negative", "vae"
+
+    monkeypatch.setattr(krea2.pipeline, "generate_krea2_t2i", fake_generate)
+    adapter = Krea2Adapter()
+    settings = adapter.resolve_settings(
+        model_settings={"family": "krea2", "rebalance_enabled": True},
+        width=1344,
+        height=2048,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+    )
+
+    image, latent, positive, negative, loaded_vae = adapter.generate(
+        diffusion_model="krea/krea2_turbo_fp8.safetensors",
+        text_encoder="qwen3vl_4b_fp8_scaled.safetensors",
+        vae="qwen_image_vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="ignored",
+        width=1344,
+        height=2048,
+        seed=123,
+        settings=settings,
+        sampler=settings["sampler"],
+        scheduler=settings["scheduler"],
+        loaded_model="patched_model",
+        loaded_clip="patched_clip",
+    )
+
+    assert image == "image"
+    assert latent == {"samples": "latent"}
+    assert positive == "positive"
+    assert negative == "negative"
+    assert calls["steps"] == 8
+    assert calls["cfg"] == 1.0
+    assert calls["sampler"] == "er_sde"
+    assert calls["scheduler"] == "simple"
     assert calls["positive_prompt"] == "prompt"
     assert calls["loaded_model"] == "patched_model"
     assert calls["loaded_clip"] == "patched_clip"
@@ -374,6 +425,35 @@ def test_ideogram4_negative_prompt_returns_warning():
     ]
 
 
+def test_krea2_validation_rejects_unsupported_inputs_and_warns_for_negative_prompt():
+    adapter = Krea2Adapter()
+    base = {
+        "diffusion_model": "krea/krea2_turbo_fp8.safetensors",
+        "text_encoder": "qwen3vl_4b_fp8_scaled.safetensors",
+        "vae": "qwen_image_vae.safetensors",
+        "positive_prompt": "prompt",
+        "negative_prompt": "",
+        "width": 1344,
+        "height": 2048,
+        "settings": {"family": "krea2"},
+    }
+
+    with pytest.raises(ValueError, match="positive_prompt is required"):
+        adapter.validate_inputs(**{**base, "positive_prompt": ""})
+    with pytest.raises(ValueError, match="reference_image was connected"):
+        adapter.validate_inputs(**base, reference_inputs=ReferenceInputs(images=("first",)))
+    with pytest.raises(ValueError, match="mask was connected"):
+        adapter.validate_inputs(**base, reference_inputs=ReferenceInputs(images=(), mask="mask"))
+    with pytest.raises(ValueError, match="GGUF"):
+        adapter.validate_inputs(**{**base, "diffusion_model": "model.gguf"})
+
+    warnings = adapter.validate_inputs(**{**base, "negative_prompt": "ignored"})
+    assert warnings == [
+        "Krea 2 profile does not use negative prompts by default; "
+        "negative_prompt was ignored."
+    ]
+
+
 def test_ideogram4_resolve_settings_uses_presets_and_workflow_scheduler():
     default_settings = Ideogram4Adapter().resolve_settings(
         model_settings={
@@ -483,3 +563,22 @@ def test_flux2_distilled_defaults_to_four_steps():
     )
 
     assert settings["steps"] == 4
+
+
+def test_krea2_resolve_settings_uses_workflow_defaults():
+    settings = Krea2Adapter().resolve_settings(
+        model_settings={"family": "krea2"},
+        width=1344,
+        height=2048,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+    )
+
+    assert settings["steps"] == 8
+    assert settings["cfg"] == 1.0
+    assert settings["sampler"] == "er_sde"
+    assert settings["scheduler"] == "simple"
+    assert settings["width"] == 1344
+    assert settings["height"] == 2048

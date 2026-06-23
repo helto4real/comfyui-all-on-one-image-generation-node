@@ -11,12 +11,16 @@ class FakeModel:
         self.label = label
         self.model_options = {"transformer_options": {}}
         self.clones = clones if clones is not None else []
+        self.callbacks = []
 
     def clone(self, disable_dynamic=False):
         cloned = FakeModel(load_device=self.load_device.type, label=f"{self.label}+clone", clones=self.clones)
         cloned.model_options = {"transformer_options": dict(self.model_options["transformer_options"])}
         self.clones.append(disable_dynamic)
         return cloned
+
+    def add_callback(self, event, callback):
+        self.callbacks.append((event, callback))
 
 
 def install_fake_attention(monkeypatch, available):
@@ -136,3 +140,33 @@ def test_compile_on_uses_comfy_compile_wrapper(monkeypatch):
     assert calls["backend"] == "cudagraphs"
     assert settings["resolved_torch_compile_mode"] == "on"
     assert settings["resolved_torch_compile_backend"] == "cudagraphs"
+
+
+def test_fp16_accumulation_registers_pre_run_and_cleanup_callbacks(monkeypatch):
+    fake_matmul = SimpleNamespace(allow_fp16_accumulation=False)
+    fake_torch = SimpleNamespace(
+        backends=SimpleNamespace(cuda=SimpleNamespace(matmul=fake_matmul)),
+        cuda=SimpleNamespace(is_available=lambda: False),
+    )
+    fake_comfy = ModuleType("comfy")
+    fake_patcher_extension = ModuleType("comfy.patcher_extension")
+    fake_patcher_extension.CallbacksMP = SimpleNamespace(
+        ON_PRE_RUN="pre_run",
+        ON_CLEANUP="cleanup",
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "comfy", fake_comfy)
+    monkeypatch.setitem(sys.modules, "comfy.patcher_extension", fake_patcher_extension)
+    settings = {"fp16_accumulation_enabled": True}
+    model = FakeModel()
+
+    patched = performance.apply_performance_settings(model=model, settings=settings)
+
+    assert patched is not model
+    assert model.clones == [False]
+    assert [event for event, _ in patched.callbacks] == ["pre_run", "cleanup"]
+    patched.callbacks[0][1](patched)
+    assert fake_matmul.allow_fp16_accumulation is True
+    patched.callbacks[1][1](patched)
+    assert fake_matmul.allow_fp16_accumulation is False
+    assert settings["resolved_fp16_accumulation_enabled"] is True

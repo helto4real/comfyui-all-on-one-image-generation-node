@@ -13,6 +13,7 @@ Clone or copy this folder into `ComfyUI/custom_nodes`, then restart ComfyUI. The
 - `FLUX.2 Klein 9B Settings`
 - `Ideogram 4 Prompt Builder`
 - `Ideogram 4 Settings`
+- `Krea 2 Settings`
 - `AIO LoRA Configuration`
 - `AIO Load Pipeline Models`
 
@@ -23,6 +24,7 @@ All nodes appear under `AIO/Image`.
 - `z_image_turbo`: text-to-image generation, defaults to 8 steps and CFG 1.0. Negative prompts are ignored by default and reported in `run_info.warnings`.
 - `flux2_klein_9b`: text-to-image and reference-image generation, distilled defaults to 4 steps and CFG 1.0. Reference mode is inferred from how many reference images are connected.
 - `ideogram4`: local open-weight Ideogram 4 text-to-image generation, defaults to the official 20-step Ideogram scheduler preset with dual-model CFG 7.0. Negative prompts are ignored by default and reported in `run_info.warnings`.
+- `krea2`: local Krea 2 text-to-image generation, defaults to the provided workflow's 8-step `er_sde` / `simple` sampler path, CFG 1.0, and 1344x2048 canvas. Negative prompts are ignored by default through zeroed positive conditioning.
 
 ## Supported Formats
 
@@ -51,6 +53,12 @@ Ideogram 4 expects the conditional diffusion model, unconditional diffusion mode
 - text encoder: `qwen3vl_8b_fp8_scaled.safetensors`
 - VAE: `flux.2/flux2-vae.safetensors`
 
+Krea 2 expects a Krea 2 diffusion model, a Krea 2 compatible Qwen3-VL text encoder, and the Qwen Image VAE. The workflow defaults are:
+
+- diffusion model: `krea/krea2_turbo_fp8.safetensors`
+- text encoder: `qwen3vl_4b_fp8_scaled.safetensors`
+- VAE: `qwen_image_vae.safetensors`
+
 The dropdown may prefix values with their category when multiple folders are searched.
 
 ## Basic Usage
@@ -75,6 +83,8 @@ The node is not an output node, so it is safe for API-mode workflows.
 
 `Ideogram 4 Settings` returns an `AIO_MODEL_SETTINGS` dict with the unconditional model toggle and model path, sampling preset, dual CFG, final CFG override window, AuraFlow sampling shift, precision policy, attention backend, Torch compile, and performance-apply timing. The official presets use Ideogram 4 sigmas; `Workflow Compatible` uses the saved workflow's simple scheduler path. Disable `run_unconditional_model` for turbo LoRA workflows that should skip the separate unconditional diffusion model and run the guider with the conditional model only.
 
+`Krea 2 Settings` returns an `AIO_MODEL_SETTINGS` dict with conditioning rebalance controls, precision policy, attention backend, Torch compile, performance-apply timing, and CUDA fp16 accumulation callbacks. The default rebalance multiplier is `4.0`, with workflow layer weights `1.0,1.0,1.0,1.0,1.0,1.0,1.0,2.5,5.0,1.1,4.0,1.0`.
+
 `Ideogram 4 Prompt Builder` returns an `AIO_IDEOGRAM4_PROMPT` payload plus convenience `prompt`, `preview`, `bboxes`, `width`, and `height` outputs. Connect its first output to `Ideogram 4 Settings`. When connected, the generated JSON prompt replaces the main node's `positive_prompt`, and the builder's resolved dimensions replace the main node's size controls for Ideogram 4 only. The builder uses the same `max side`, `aspect ratio`, and `multiple value` calculation as `AIO Image Generate`; it does not expose raw width/height inputs.
 
 The prompt builder's JSON output is KJ-compatible: compact output uses the same key order, bbox normalization, palette casing, and compact separators as `Ideogram4PromptBuilderKJ`.
@@ -86,6 +96,8 @@ The prompt builder's JSON output is KJ-compatible: compact output uses the same 
 Encrypted workflows require the same local privacy key to decrypt. If the key is missing or different, the node keeps a locked/error state instead of restoring private text as clear text.
 
 All settings nodes expose `attention_mode` (`auto`, `off`, `sage`, `sage3`, `flash`, `xformers`, `pytorch`, `split`, `sub_quad`), `torch_compile_mode` (`auto`, `off`, `on`), `torch_compile_backend` (`inductor`, `cudagraphs`), and `performance_apply_timing` (`after_loras`, `before_loras`). `auto` attention selects the best installed compatible backend, `off` leaves ComfyUI defaults untouched, and `after_loras` applies attention/compile patches to the final LoRA-patched model.
+
+Krea 2 additionally exposes `fp16_accumulation_enabled`, matching the provided workflow's torch matmul setting behavior when the runtime supports ComfyUI model callbacks.
 
 The main node rejects mismatched settings, for example connecting FLUX settings while `model_type` is `z_image_turbo`.
 
@@ -104,6 +116,8 @@ The LoRA info button is also implemented locally. It reads safetensors metadata,
 The LoRA configuration node and LoRA info dialog are inspired by and partially adapted from [rgthree-comfy](https://github.com/rgthree/rgthree-comfy), especially its Power LoRA Loader UI and model-info dialog. rgthree-comfy is copyright Regis Gaughan, III (rgthree) and is distributed under the MIT License.
 
 The Ideogram 4 prompt builder backend formatting and editor behavior are adapted from [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)' `Ideogram4PromptBuilderKJ`, which is distributed under GPL-3.0. See `THIRD_PARTY_NOTICES.md`.
+
+The Krea 2 conditioning rebalance helper is adapted from [ComfyUI-ConditioningKrea2Rebalance](https://github.com/nova452/ComfyUI-ConditioningKrea2Rebalance), which is distributed under Apache-2.0. See `THIRD_PARTY_NOTICES.md`.
 
 API workflows can pass rgthree-style dynamic row payloads directly:
 
@@ -139,6 +153,8 @@ When both `model` and `clip` are connected, the main node treats them as already
 - FLUX.2 Klein accepts a mask with `image 1`, but inpaint behavior is staged for a later adapter pass.
 - Ideogram 4 supports text-to-image only in this adapter. Reference images, masks, negative prompts, and GGUF model files are not implemented for Ideogram 4.
 - Ideogram 4 output dimensions must be multiples of 16, between 256 and 2048 pixels per side, with aspect ratio no wider than 6:1.
+- Krea 2 supports text-to-image only in this adapter. Reference images, masks, inpaint, negative prompts, and GGUF model files are not implemented for Krea 2.
+- Krea 2 output dimensions must be multiples of 16.
 - Z-Image reference-image and mask paths are staged for a later adapter pass.
 
 ## Adapter Implementation Notes
@@ -153,7 +169,9 @@ Local ComfyUI source was inspected before implementing the generation pipeline. 
 - `/home/thhel/git/ComfyUI/comfy_extras/nodes_custom_sampler.py`: `DualModelGuider`, `CFGOverride`, `RandomNoise`, `KSamplerSelect`, `SamplerCustomAdvanced`, `BasicScheduler`
 - `/home/thhel/git/ComfyUI/comfy_extras/nodes_model_advanced.py`: `ModelSamplingAuraFlow`
 - `/home/thhel/git/ComfyUI/comfy_extras/nodes_zimage.py`: Z-Image conditioning node patterns
-- `/home/thhel/git/ComfyUI/comfy/supported_models.py`: `Flux2`, `Ideogram4`, and `ZImage` model-family detection
+- `/home/thhel/git/ComfyUI/comfy/text_encoders/krea2.py`: Krea 2 flattened text-conditioning shape
+- `/home/thhel/git/ComfyUI/comfy/model_base.py`: Krea 2 extra conditioning fields
+- `/home/thhel/git/ComfyUI/comfy/supported_models.py`: `Flux2`, `Ideogram4`, `Krea2`, and `ZImage` model-family detection
 - `/home/thhel/git/ComfyUI/nodes.py`: `LoraLoader.load_lora`, `LoraLoaderModelOnly`, `CLIPTextEncode`
 - `/home/thhel/git/ComfyUI/custom_nodes/rgthree-comfy/py/power_lora_loader.py`: Power LoRA dynamic backend payload shape
 - `/home/thhel/git/ComfyUI/custom_nodes/rgthree-comfy/web/comfyui/power_lora_loader.js`: Power LoRA frontend interaction model
@@ -183,5 +201,7 @@ This pack uses classic nodes for broad community compatibility. The contracts ar
 The original AIO code is distributed under the MIT License. Because the LoRA UI intentionally adapts behavior and styling from rgthree-comfy, MIT matches rgthree-comfy's license, keeps the same permissive terms, and preserves the original rgthree MIT copyright and permission notice in `THIRD_PARTY_NOTICES.md`.
 
 The Ideogram 4 prompt-builder implementation includes code and behavior adapted from GPL-3.0 KJNodes sources. Treat those derived prompt-builder portions as GPL-3.0-covered material, comply with GPL-3.0 when redistributing them, and keep the KJNodes notice intact.
+
+The Krea 2 conditioning rebalance implementation includes code and behavior adapted from Apache-2.0 ComfyUI-ConditioningKrea2Rebalance sources. Preserve the Apache-2.0 attribution and notice when redistributing those derived rebalance portions.
 
 For new code that does not derive from GPL sources, MIT remains the simplest and most community-friendly fit for this ComfyUI node pack.

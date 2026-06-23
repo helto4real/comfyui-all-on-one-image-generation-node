@@ -5,6 +5,7 @@ from .flux2_klein_settings import AIOFlux2Klein9BSettings
 from .ideogram4_prompt_builder import AIOIdeogram4PromptBuilder
 from .ideogram4_settings import AIOIdeogram4Settings
 from .inpaint import AIOInpaint
+from .krea2_settings import AIOKrea2Settings
 from .lora_configuration import AIOLoraConfiguration
 from .pipeline_models import AIOLoadPipelineModels
 from .z_image_settings import AIOZImageTurboSettings
@@ -15,6 +16,7 @@ __all__ = [
     "AIOIdeogram4Settings",
     "AIOImageGenerate",
     "AIOInpaint",
+    "AIOKrea2Settings",
     "AIOLoraConfiguration",
     "AIOLoadPipelineModels",
     "AIOZImageTurboSettings",

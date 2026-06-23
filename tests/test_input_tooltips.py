@@ -1,5 +1,6 @@
 from nodes.aio_generate import AIOImageGenerate
 from nodes.flux2_klein_settings import AIOFlux2Klein9BSettings
+from nodes.krea2_settings import AIOKrea2Settings
 from nodes.lora_configuration import AIOLoraConfiguration
 from nodes.z_image_settings import AIOZImageTurboSettings
 
@@ -7,6 +8,7 @@ from nodes.z_image_settings import AIOZImageTurboSettings
 NODE_CLASSES = (
     AIOImageGenerate,
     AIOFlux2Klein9BSettings,
+    AIOKrea2Settings,
     AIOLoraConfiguration,
     AIOZImageTurboSettings,
 )

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 try:
-    from ..adapters import Flux2Klein9BAdapter, Ideogram4Adapter, ZImageTurboAdapter  # noqa: F401
+    from ..adapters import Flux2Klein9BAdapter, Ideogram4Adapter, Krea2Adapter, ZImageTurboAdapter  # noqa: F401
     from ..services import pipeline, privacy
     from ..services.dimensions import (
         ASPECT_RATIOS,
@@ -34,7 +34,7 @@ try:
         validate_settings_family,
     )
 except ImportError:  # pragma: no cover - direct test imports
-    from adapters import Flux2Klein9BAdapter, Ideogram4Adapter, ZImageTurboAdapter  # noqa: F401
+    from adapters import Flux2Klein9BAdapter, Ideogram4Adapter, Krea2Adapter, ZImageTurboAdapter  # noqa: F401
     from services import pipeline, privacy
     from services.dimensions import (
         ASPECT_RATIOS,
@@ -67,6 +67,26 @@ except ImportError:  # pragma: no cover - direct test imports
 DEFAULT_PROMPT = "A luminous studio portrait, crisp details, natural color, soft light"
 PID_LATENT_OUTPUT_INDEX = 6
 PID_SIGMA_OUTPUT_INDEX = 7
+AIO_GENERATE_SERIALIZED_WIDGET_NAMES = (
+    "model_type",
+    "diffusion_model",
+    "text_encoder",
+    "vae",
+    "positive_prompt",
+    "negative_prompt",
+    "privacy_mode",
+    "size mode",
+    "max side",
+    "aspect ratio",
+    "multiple value",
+    "seed",
+    "steps",
+    "cfg",
+    "sampler",
+    "scheduler",
+    "pid_capture_step",
+)
+MASKED_PROMPT_VALUE = "Private prompt - hover to reveal"
 
 
 def _filename_list(category: str) -> list[str]:
@@ -114,6 +134,84 @@ def _is_link(value: Any) -> bool:
         and len(value) == 2
         and isinstance(value[1], int)
     )
+
+
+def _prompt_input_is_link(prompt: Any, unique_id: str | None, input_name: str) -> bool:
+    if not isinstance(prompt, dict) or unique_id is None:
+        return False
+    node = prompt.get(str(unique_id))
+    if not isinstance(node, dict):
+        node = prompt.get(unique_id)
+    if not isinstance(node, dict):
+        return False
+    inputs = node.get("inputs", {})
+    if not isinstance(inputs, dict):
+        return False
+    return _is_link(inputs.get(input_name))
+
+
+def _workflow_node(extra_pnginfo: Any, unique_id: str | None) -> dict[str, Any] | None:
+    if unique_id is None or not isinstance(extra_pnginfo, dict):
+        return None
+    workflow = extra_pnginfo.get("workflow")
+    if not isinstance(workflow, dict):
+        return None
+    target_id = str(unique_id)
+    for node in workflow.get("nodes", []) or []:
+        if isinstance(node, dict) and str(node.get("id")) == target_id:
+            return node
+    return None
+
+
+def _workflow_widget_names(node: dict[str, Any]) -> tuple[str, ...]:
+    inputs = node.get("inputs")
+    names: list[str] = []
+    if isinstance(inputs, list):
+        for item in inputs:
+            if not isinstance(item, dict):
+                continue
+            widget = item.get("widget")
+            if not isinstance(widget, dict):
+                continue
+            name = widget.get("name")
+            if isinstance(name, str) and name:
+                names.append(name)
+    return tuple(names) or AIO_GENERATE_SERIALIZED_WIDGET_NAMES
+
+
+def _workflow_widget_value(extra_pnginfo: Any, unique_id: str | None, widget_name: str) -> Any:
+    node = _workflow_node(extra_pnginfo, unique_id)
+    if node is None:
+        return None
+    values = node.get("widgets_values")
+    if not isinstance(values, list):
+        return None
+    names = _workflow_widget_names(node)
+    try:
+        index = names.index(widget_name)
+    except ValueError:
+        return None
+    if index < 0 or index >= len(values):
+        return None
+    return values[index]
+
+
+def _resolve_prompt_text(
+    *,
+    value: Any,
+    input_name: str,
+    prompt: Any,
+    extra_pnginfo: Any,
+    unique_id: str | None,
+) -> str:
+    resolved = privacy.decrypt_text_if_encrypted(value)
+    if resolved.strip() or _prompt_input_is_link(prompt, unique_id, input_name):
+        return resolved
+    fallback = _workflow_widget_value(extra_pnginfo, unique_id, input_name)
+    if fallback in (None, MASKED_PROMPT_VALUE):
+        return resolved
+    fallback_text = privacy.decrypt_text_if_encrypted(fallback)
+    return fallback_text if fallback_text.strip() else resolved
 
 
 def _class_is_output_node(class_type: str) -> bool:
@@ -456,8 +554,20 @@ class AIOImageGenerate:
         **reference_values: Any,
     ):
         del weight_format
-        resolved_positive_prompt = privacy.decrypt_text_if_encrypted(positive_prompt)
-        resolved_negative_prompt = privacy.decrypt_text_if_encrypted(negative_prompt)
+        resolved_positive_prompt = _resolve_prompt_text(
+            value=positive_prompt,
+            input_name="positive_prompt",
+            prompt=prompt,
+            extra_pnginfo=extra_pnginfo,
+            unique_id=unique_id,
+        )
+        resolved_negative_prompt = _resolve_prompt_text(
+            value=negative_prompt,
+            input_name="negative_prompt",
+            prompt=prompt,
+            extra_pnginfo=extra_pnginfo,
+            unique_id=unique_id,
+        )
 
         image_connected = output_is_connected(prompt, extra_pnginfo, unique_id, 0, default=True)
         vae_connected = output_is_connected(prompt, extra_pnginfo, unique_id, 5)

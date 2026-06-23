@@ -13,6 +13,7 @@ try:
     from ..loaders import gguf_backend, safetensors_backend
     from .dimensions import parse_multiple_value, round_to_multiple
     from . import inpaint as inpaint_service
+    from . import krea2_rebalance
     from .lora_application import apply_lora_config
     from .lora_config import normalize_lora_config
     from .model_resolution import infer_model_format, strip_category_prefix
@@ -21,6 +22,7 @@ except ImportError:  # pragma: no cover - direct test imports
     from loaders import gguf_backend, safetensors_backend
     from services.dimensions import parse_multiple_value, round_to_multiple
     from services import inpaint as inpaint_service
+    from services import krea2_rebalance
     from services.lora_application import apply_lora_config
     from services.lora_config import normalize_lora_config
     from services.model_resolution import infer_model_format, strip_category_prefix
@@ -152,6 +154,8 @@ def text_encoder_clip_type(model_type: str) -> str:
         return "ideogram4"
     if model_type == "flux2_klein_9b":
         return "flux2"
+    if model_type == "krea2":
+        return "krea2"
     return "stable_diffusion"
 
 
@@ -181,6 +185,12 @@ def encode_flux2_prompt(*, clip: Any, prompt: str, guidance: float):
 
 
 def encode_ideogram4_prompt(*, clip: Any, prompt: str):
+    import nodes  # type: ignore
+
+    return nodes.CLIPTextEncode().encode(clip, prompt)[0]
+
+
+def encode_krea2_prompt(*, clip: Any, prompt: str):
     import nodes  # type: ignore
 
     return nodes.CLIPTextEncode().encode(clip, prompt)[0]
@@ -260,6 +270,12 @@ def make_empty_ideogram4_latent(*, width: int, height: int):
     from comfy_extras.nodes_flux import EmptyFlux2LatentImage  # type: ignore
 
     return _node_output_first(EmptyFlux2LatentImage.execute(width=width, height=height, batch_size=1))
+
+
+def make_empty_krea2_latent(*, width: int, height: int):
+    import nodes  # type: ignore
+
+    return nodes.EmptyLatentImage().generate(width, height, batch_size=1)[0]
 
 
 def resolve_pid_capture_step(capture_step: int | None, steps: int) -> int | None:
@@ -833,6 +849,86 @@ def generate_z_image_turbo_t2i(
     positive = encode_z_image_prompt(clip=clip, prompt=positive_prompt)
     negative = encode_z_image_prompt(clip=clip, prompt="")
     latent = make_empty_z_image_latent(width=width, height=height)
+    _phase(progress, "sampling")
+    sampled_latent = sample_with_comfy_ksampler(
+        model=model,
+        seed=seed,
+        steps=steps,
+        cfg=cfg,
+        sampler=sampler,
+        scheduler=scheduler,
+        positive=positive,
+        negative=negative,
+        latent=latent,
+        pid_capture_step=pid_capture_step,
+    )
+    image = None
+    loaded_vae = None
+    if decode_image or return_vae:
+        _phase(progress, "loading vae")
+        loaded_vae = load_vae(vae=vae)
+    if decode_image:
+        _phase(progress, "decoding")
+        image = decode_latent(vae=loaded_vae, latent=sampled_latent)
+    return image, sampled_latent, positive, negative, loaded_vae
+
+
+def generate_krea2_t2i(
+    *,
+    diffusion_model: str,
+    text_encoder: str,
+    vae: str,
+    positive_prompt: str,
+    width: int,
+    height: int,
+    seed: int,
+    steps: int,
+    cfg: float,
+    sampler: str,
+    scheduler: str,
+    settings: dict[str, Any],
+    lora_config: dict[str, Any] | None = None,
+    loaded_model: Any = None,
+    loaded_clip: Any = None,
+    decode_image: bool = True,
+    return_vae: bool = False,
+    pid_capture_step: int | None = None,
+    progress: Any = None,
+):
+    using_connected_model_pair = loaded_model is not None and loaded_clip is not None
+    model = loaded_model
+    if model is None:
+        _phase(progress, "loading diffusion model")
+        model = load_diffusion_model(
+            diffusion_model=diffusion_model,
+            precision_policy=settings.get("precision_policy"),
+        )
+    clip = loaded_clip
+    if clip is None:
+        _phase(progress, "loading text encoder")
+        clip = load_text_encoder(
+            text_encoder=text_encoder,
+            clip_type=text_encoder_clip_type("krea2"),
+        )
+    apply_timing = normalize_performance_apply_timing(settings)
+    if apply_timing == "before_loras":
+        model = _apply_model_performance_if_configured(model=model, settings=settings, progress=progress)
+    if not using_connected_model_pair:
+        _phase(progress, "applying loras")
+        model, clip, _ = apply_lora_config(model=model, clip=clip, lora_config=lora_config)
+    if apply_timing == "after_loras":
+        model = _apply_model_performance_if_configured(model=model, settings=settings, progress=progress)
+    _phase(progress, "encoding prompts")
+    positive = encode_krea2_prompt(clip=clip, prompt=positive_prompt)
+    negative = zero_out_conditioning(positive)
+    if settings.get("rebalance_enabled", True):
+        _phase(progress, "rebalancing conditioning")
+        positive = krea2_rebalance.rebalance_conditioning(
+            positive,
+            multiplier=float(settings.get("rebalance_multiplier", 4.0)),
+            per_layer_weights=settings.get("rebalance_per_layer_weights"),
+        )
+    latent = make_empty_krea2_latent(width=width, height=height)
     _phase(progress, "sampling")
     sampled_latent = sample_with_comfy_ksampler(
         model=model,

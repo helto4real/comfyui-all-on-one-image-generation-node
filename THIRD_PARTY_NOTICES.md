@@ -40,3 +40,14 @@ visual editor interaction model.
 ComfyUI-KJNodes is licensed under the GNU General Public License version 3.0.
 The full license text is available from the upstream project and at
 <https://www.gnu.org/licenses/gpl-3.0.html>.
+
+## ComfyUI-ConditioningKrea2Rebalance
+
+The AIO Krea 2 conditioning rebalance helper is adapted from
+[ComfyUI-ConditioningKrea2Rebalance](https://github.com/nova452/ComfyUI-ConditioningKrea2Rebalance),
+including the per-layer weight parsing and recursive conditioning tensor scaling
+behavior used by the `Conditioning Krea2 Rebalance` node.
+
+ComfyUI-ConditioningKrea2Rebalance is licensed under the Apache License 2.0.
+The full license text is available from the upstream project and at
+<https://www.apache.org/licenses/LICENSE-2.0>.

@@ -357,6 +357,175 @@ def test_z_image_pipeline_skips_vae_when_image_decode_disabled(monkeypatch):
     assert loaded_vae is None
 
 
+def test_krea2_pipeline_rebalances_positive_after_zeroing_negative(monkeypatch):
+    events = []
+    captured = {}
+
+    def fake_load_model(**kwargs):
+        captured["load_model"] = kwargs
+        events.append("load_model")
+        return "model"
+
+    def fake_load_clip(**kwargs):
+        captured["load_clip"] = kwargs
+        events.append("load_clip")
+        return "clip"
+
+    def fake_apply_loras(**kwargs):
+        events.append("apply_loras")
+        return "model+lora", "clip+lora", [{"name": "style"}]
+
+    def fake_performance(**kwargs):
+        captured["performance_settings"] = dict(kwargs["settings"])
+        events.append(f"performance:{kwargs['model']}")
+        return f"{kwargs['model']}+perf"
+
+    def fake_encode(**kwargs):
+        captured["encode"] = kwargs
+        events.append(f"encode:{kwargs['clip']}")
+        return "positive"
+
+    def fake_zero(conditioning):
+        captured["zero"] = conditioning
+        events.append("zero_negative")
+        return "zeroed_negative"
+
+    def fake_rebalance(conditioning, *, multiplier, per_layer_weights):
+        captured["rebalance"] = {
+            "conditioning": conditioning,
+            "multiplier": multiplier,
+            "per_layer_weights": per_layer_weights,
+        }
+        events.append("rebalance_positive")
+        return "rebalanced_positive"
+
+    def fake_sample(**kwargs):
+        captured["sample"] = kwargs
+        events.append("sample")
+        return {"samples": "sampled"}
+
+    monkeypatch.setattr(pipeline, "load_diffusion_model", fake_load_model)
+    monkeypatch.setattr(pipeline, "load_text_encoder", fake_load_clip)
+    monkeypatch.setattr(pipeline, "apply_lora_config", fake_apply_loras)
+    monkeypatch.setattr(pipeline, "apply_model_performance", fake_performance)
+    monkeypatch.setattr(pipeline, "encode_krea2_prompt", fake_encode)
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", fake_zero)
+    monkeypatch.setattr(pipeline.krea2_rebalance, "rebalance_conditioning", fake_rebalance)
+    monkeypatch.setattr(pipeline, "make_empty_krea2_latent", lambda **kwargs: events.append("latent") or {"samples": "empty"})
+    monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", fake_sample)
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: events.append("load_vae") or "vae")
+    monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: events.append("decode") or "image")
+
+    image, latent, positive, negative, loaded_vae = pipeline.generate_krea2_t2i(
+        diffusion_model="krea/krea2_turbo_fp8.safetensors",
+        text_encoder="qwen3vl_4b_fp8_scaled.safetensors",
+        vae="qwen_image_vae.safetensors",
+        positive_prompt="prompt",
+        width=1344,
+        height=2048,
+        seed=0,
+        steps=8,
+        cfg=1.0,
+        sampler="er_sde",
+        scheduler="simple",
+        settings={
+            "precision_policy": "fp8",
+            "attention_mode": "off",
+            "fp16_accumulation_enabled": True,
+            "rebalance_enabled": True,
+            "rebalance_multiplier": 4.0,
+            "rebalance_per_layer_weights": "1.0,2.0",
+        },
+        lora_config={"loras": [{"enabled": True, "name": "style"}]},
+    )
+
+    assert image == "image"
+    assert latent == {"samples": "sampled"}
+    assert positive == "rebalanced_positive"
+    assert negative == "zeroed_negative"
+    assert loaded_vae == "vae"
+    assert events == [
+        "load_model",
+        "load_clip",
+        "apply_loras",
+        "performance:model+lora",
+        "encode:clip+lora",
+        "zero_negative",
+        "rebalance_positive",
+        "latent",
+        "sample",
+        "load_vae",
+        "decode",
+    ]
+    assert captured["load_model"] == {
+        "diffusion_model": "krea/krea2_turbo_fp8.safetensors",
+        "precision_policy": "fp8",
+    }
+    assert captured["load_clip"] == {
+        "text_encoder": "qwen3vl_4b_fp8_scaled.safetensors",
+        "clip_type": "krea2",
+    }
+    assert captured["performance_settings"]["fp16_accumulation_enabled"] is True
+    assert captured["zero"] == "positive"
+    assert captured["rebalance"] == {
+        "conditioning": "positive",
+        "multiplier": 4.0,
+        "per_layer_weights": "1.0,2.0",
+    }
+    assert captured["sample"]["model"] == "model+lora+perf"
+    assert captured["sample"]["positive"] == "rebalanced_positive"
+    assert captured["sample"]["negative"] == "zeroed_negative"
+    assert captured["sample"]["sampler"] == "er_sde"
+    assert captured["sample"]["scheduler"] == "simple"
+
+
+def test_krea2_pipeline_can_disable_rebalance_and_decode(monkeypatch):
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model", "clip", []))
+    monkeypatch.setattr(pipeline, "encode_krea2_prompt", lambda **kwargs: "positive")
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "zeroed_negative")
+    monkeypatch.setattr(
+        pipeline.krea2_rebalance,
+        "rebalance_conditioning",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("rebalance should be disabled")),
+    )
+    monkeypatch.setattr(pipeline, "make_empty_krea2_latent", lambda **kwargs: {"samples": "empty"})
+    monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", lambda **kwargs: {"samples": "sampled"})
+    monkeypatch.setattr(
+        pipeline,
+        "load_vae",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("vae should not load")),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "decode_latent",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("latent should not decode")),
+    )
+
+    image, latent, positive, negative, loaded_vae = pipeline.generate_krea2_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        width=1344,
+        height=2048,
+        seed=0,
+        steps=8,
+        cfg=1.0,
+        sampler="er_sde",
+        scheduler="simple",
+        settings={"rebalance_enabled": False},
+        decode_image=False,
+    )
+
+    assert image is None
+    assert latent == {"samples": "sampled"}
+    assert positive == "positive"
+    assert negative == "zeroed_negative"
+    assert loaded_vae is None
+
+
 def test_ideogram4_pipeline_uses_dual_model_flow_and_ideogram_sigmas(monkeypatch):
     calls = {"models": []}
 

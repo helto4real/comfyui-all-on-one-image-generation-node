@@ -16,6 +16,8 @@ PERFORMANCE_KEYS = (
     "resolved_torch_compile_mode",
     "resolved_torch_compile_backend",
     "performance_apply_timing",
+    "fp16_accumulation_enabled",
+    "resolved_fp16_accumulation_enabled",
     "performance_warnings",
 )
 SENSITIVE_SETTINGS_KEYS = (
@@ -49,6 +51,9 @@ def performance_info_from_settings(settings: dict[str, Any]) -> dict[str, Any]:
     }
     if "performance_warnings" in settings:
         info["warnings"] = settings["performance_warnings"]
+    if "fp16_accumulation_enabled" in settings or "resolved_fp16_accumulation_enabled" in settings:
+        info["fp16_accumulation_enabled"] = bool(settings.get("fp16_accumulation_enabled", False))
+        info["resolved_fp16_accumulation_enabled"] = bool(settings.get("resolved_fp16_accumulation_enabled", False))
     return info
 
 

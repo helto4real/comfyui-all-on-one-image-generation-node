@@ -411,6 +411,120 @@ def test_main_node_decrypts_private_prompt_widgets(monkeypatch, tmp_path):
     assert captured["generated"]["negative_prompt"] == "private negative"
 
 
+def _workflow_node_with_prompt_widget(prompt_value):
+    names = list(AIOImageGenerate.INPUT_TYPES()["required"])
+    values = [""] * len(names)
+    values[names.index("positive_prompt")] = prompt_value
+    return {
+        "id": 221,
+        "type": "AIOImageGenerate",
+        "inputs": [{"name": name, "widget": {"name": name}} for name in names],
+        "widgets_values": values,
+    }
+
+
+def test_main_node_recovers_unlinked_prompt_from_workflow_widget_values(monkeypatch):
+    from nodes import aio_generate
+
+    captured = {}
+
+    class FakeAdapter:
+        version = "test"
+
+        def resolve_settings(self, **kwargs):
+            return {
+                "width": kwargs["width"],
+                "height": kwargs["height"],
+                "steps": 8,
+                "cfg": 1.0,
+                "sampler": "auto",
+                "scheduler": "auto",
+            }
+
+        def validate_inputs(self, **kwargs):
+            captured["validated"] = kwargs
+            return []
+
+        def generate(self, **kwargs):
+            captured["generated"] = kwargs
+            return "image", {"samples": "latent"}, "positive", "negative", "vae"
+
+    monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
+
+    AIOImageGenerate().generate(
+        model_type="z_image_turbo",
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="",
+        negative_prompt="",
+        width=1024,
+        height=1024,
+        seed=0,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+        unique_id="221",
+        prompt={"221": {"inputs": {"positive_prompt": ""}}},
+        extra_pnginfo={"workflow": {"nodes": [_workflow_node_with_prompt_widget("visible prompt")]}},
+    )
+
+    assert captured["validated"]["positive_prompt"] == "visible prompt"
+    assert captured["generated"]["positive_prompt"] == "visible prompt"
+
+
+def test_main_node_does_not_recover_prompt_when_input_is_linked(monkeypatch):
+    from nodes import aio_generate
+
+    captured = {}
+
+    class FakeAdapter:
+        version = "test"
+
+        def resolve_settings(self, **kwargs):
+            return {
+                "width": kwargs["width"],
+                "height": kwargs["height"],
+                "steps": 8,
+                "cfg": 1.0,
+                "sampler": "auto",
+                "scheduler": "auto",
+            }
+
+        def validate_inputs(self, **kwargs):
+            captured["validated"] = kwargs
+            return []
+
+        def generate(self, **kwargs):
+            captured["generated"] = kwargs
+            return "image", {"samples": "latent"}, "positive", "negative", "vae"
+
+    monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
+
+    AIOImageGenerate().generate(
+        model_type="z_image_turbo",
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="",
+        negative_prompt="",
+        width=1024,
+        height=1024,
+        seed=0,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+        unique_id="221",
+        prompt={"221": {"inputs": {"positive_prompt": ["17", 0]}}},
+        extra_pnginfo={"workflow": {"nodes": [_workflow_node_with_prompt_widget("visible prompt")]}},
+    )
+
+    assert captured["validated"]["positive_prompt"] == ""
+    assert captured["generated"]["positive_prompt"] == ""
+
+
 def test_ideogram_prompt_builder_overrides_prompt_and_dimensions(monkeypatch):
     from nodes import aio_generate
 

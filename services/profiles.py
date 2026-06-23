@@ -89,6 +89,27 @@ PROFILES: dict[str, ModelProfile] = {
             "Mask input is reserved for future inpaint behavior."
         ),
     ),
+    "krea2": ModelProfile(
+        key="krea2",
+        display_name="Krea 2",
+        family="krea2",
+        default_steps=8,
+        default_cfg=1.0,
+        default_width=1344,
+        default_height=2048,
+        default_sampler="er_sde",
+        default_scheduler="simple",
+        supports_negative_prompt=False,
+        supports_reference_image=False,
+        supports_mask=False,
+        supports_inpaint=False,
+        supports_gguf=False,
+        required_components=("diffusion_model", "text_encoder", "vae"),
+        notes=(
+            "Local open-weight Krea 2 text-to-image profile using Krea2 "
+            "Qwen3-VL conditioning and optional per-layer conditioning rebalance."
+        ),
+    ),
 }
 
 

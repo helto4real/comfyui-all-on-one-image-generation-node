@@ -2,7 +2,9 @@ import pytest
 
 from nodes.flux2_klein_settings import AIOFlux2Klein9BSettings
 from nodes.ideogram4_settings import AIOIdeogram4Settings, DEFAULT_UNCONDITIONAL_MODEL
+from nodes.krea2_settings import AIOKrea2Settings
 from nodes.z_image_settings import AIOZImageTurboSettings
+from services.krea2_rebalance import DEFAULT_KREA2_REBALANCE_WEIGHTS
 from services import privacy
 import sys
 
@@ -56,6 +58,26 @@ def test_flux_settings_returns_family_dict():
     assert settings["torch_compile_mode"] == "off"
     assert settings["torch_compile_backend"] == "inductor"
     assert settings["performance_apply_timing"] == "after_loras"
+
+
+def test_krea2_settings_returns_workflow_defaults():
+    settings = AIOKrea2Settings().build_settings(
+        True,
+        4.0,
+        DEFAULT_KREA2_REBALANCE_WEIGHTS,
+        "auto",
+    )[0]
+
+    assert settings["family"] == "krea2"
+    assert settings["rebalance_enabled"] is True
+    assert settings["rebalance_multiplier"] == 4.0
+    assert settings["rebalance_per_layer_weights"] == DEFAULT_KREA2_REBALANCE_WEIGHTS
+    assert settings["precision_policy"] == "auto"
+    assert settings["attention_mode"] == "auto"
+    assert settings["torch_compile_mode"] == "off"
+    assert settings["torch_compile_backend"] == "inductor"
+    assert settings["performance_apply_timing"] == "after_loras"
+    assert settings["fp16_accumulation_enabled"] is True
 
 
 def test_ideogram4_settings_returns_default_family_dict():
@@ -246,6 +268,17 @@ def test_settings_can_override_performance_controls():
         "inductor",
         "before_loras",
     )[0]
+    krea_settings = AIOKrea2Settings().build_settings(
+        False,
+        2.0,
+        "1.0,2.0",
+        "bf16",
+        "pytorch",
+        "auto",
+        "cudagraphs",
+        "before_loras",
+        False,
+    )[0]
 
     assert z_settings["attention_mode"] == "sage"
     assert z_settings["torch_compile_mode"] == "on"
@@ -255,6 +288,14 @@ def test_settings_can_override_performance_controls():
     assert flux_settings["torch_compile_mode"] == "auto"
     assert flux_settings["torch_compile_backend"] == "inductor"
     assert flux_settings["performance_apply_timing"] == "before_loras"
+    assert krea_settings["rebalance_enabled"] is False
+    assert krea_settings["rebalance_multiplier"] == 2.0
+    assert krea_settings["precision_policy"] == "bf16"
+    assert krea_settings["attention_mode"] == "pytorch"
+    assert krea_settings["torch_compile_mode"] == "auto"
+    assert krea_settings["torch_compile_backend"] == "cudagraphs"
+    assert krea_settings["performance_apply_timing"] == "before_loras"
+    assert krea_settings["fp16_accumulation_enabled"] is False
 
 
 def test_flux_settings_ignores_legacy_reference_strength_argument():

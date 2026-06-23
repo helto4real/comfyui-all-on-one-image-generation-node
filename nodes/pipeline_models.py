@@ -5,14 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 try:
-    from ..adapters import Flux2Klein9BAdapter, Ideogram4Adapter, ZImageTurboAdapter  # noqa: F401
+    from ..adapters import Flux2Klein9BAdapter, Ideogram4Adapter, Krea2Adapter, ZImageTurboAdapter  # noqa: F401
     from ..services import pipeline
     from ..services.lora_config import normalize_lora_config
     from ..services.registry import list_model_types
     from ..services.validation import validate_model_type, validate_settings_family
     from .aio_generate import _combined_filenames
 except ImportError:  # pragma: no cover - direct test imports
-    from adapters import Flux2Klein9BAdapter, Ideogram4Adapter, ZImageTurboAdapter  # noqa: F401
+    from adapters import Flux2Klein9BAdapter, Ideogram4Adapter, Krea2Adapter, ZImageTurboAdapter  # noqa: F401
     from services import pipeline
     from services.lora_config import normalize_lora_config
     from services.registry import list_model_types
@@ -54,7 +54,7 @@ class AIOLoadPipelineModels:
             "optional": {
                 "model_settings": (
                     "AIO_MODEL_SETTINGS",
-                    {"tooltip": "Optional matching settings object. Currently used for precision policy while loading."},
+                    {"tooltip": "Optional matching settings object used for precision policy and model performance patches."},
                 ),
                 "lora_config": (
                     "AIO_LORA_CONFIG",
