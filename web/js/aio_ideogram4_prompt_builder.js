@@ -5,6 +5,10 @@ import { ensureHeltoTokens, HELTO } from "./aio_helto_theme.js";
 const NODE_NAME = "AIOIdeogram4PromptBuilder";
 const MIN_WIDTH = 620;
 const EDITOR_HEIGHT = 520;
+const EDITOR_MIN_HEIGHT = EDITOR_HEIGHT;
+const EDITOR_NODE_MARGIN = 10;
+const MIN_NODE_WIDTH = MIN_WIDTH + EDITOR_NODE_MARGIN * 2;
+const EDITOR_INITIAL_NODE_HEIGHT = 760 + EDITOR_NODE_MARGIN * 2;
 const DEFAULT_COLOR = "#8ca8ff";
 // Selection highlight on the canvas = Helto gold accent (selection/active).
 const ACTIVE_COLOR = HELTO.accent;
@@ -45,6 +49,11 @@ const STATE_WIDGET_NAMES = [
   "bg_brightness",
   "import_json",
 ];
+
+function editorWidgetHeight(editorHeight = EDITOR_HEIGHT) {
+  return Math.ceil(editorHeight + EDITOR_NODE_MARGIN * 2);
+}
+
 const ICONS = {
   library: `<svg viewBox="0 0 24 24"><path d="M5 5h6v14H5z"/><path d="M13 5h6v14h-6z"/><path d="M7 8h2M15 8h2M7 12h2M15 12h2"/></svg>`,
   save: `<svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>`,
@@ -746,7 +755,7 @@ function createEditor(node) {
     const nodeHeight = Number(node.size?.[1] || 0);
     const widgetY = Number(domWidget?.last_y || domWidget?.y || 0);
     if (nodeHeight > 0 && widgetY > 0) {
-      return Math.max(EDITOR_HEIGHT, Math.floor(nodeHeight - widgetY - 12));
+      return Math.max(EDITOR_MIN_HEIGHT, Math.floor(nodeHeight - widgetY - EDITOR_NODE_MARGIN * 2));
     }
     return EDITOR_HEIGHT;
   }
@@ -754,9 +763,22 @@ function createEditor(node) {
   function nodeDrivenEditorWidth() {
     const nodeWidth = Number(node.size?.[0] || 0);
     if (nodeWidth > 0) {
-      return Math.max(MIN_WIDTH, Math.floor(nodeWidth - 16));
+      return Math.max(MIN_WIDTH, Math.floor(nodeWidth - EDITOR_NODE_MARGIN * 2));
     }
     return MIN_WIDTH;
+  }
+
+  function ensureNodeFitsEditor(editorHeight = currentEditorHeight) {
+    if (!Array.isArray(node.size)) return;
+    const widgetY = Number(domWidget?.last_y || domWidget?.y || 0);
+    const requiredHeight =
+      widgetY > 0 ? Math.ceil(widgetY + editorWidgetHeight(editorHeight)) : EDITOR_INITIAL_NODE_HEIGHT;
+    const requiredWidth = MIN_NODE_WIDTH;
+    const nextWidth = Math.max(Number(node.size[0]) || 0, requiredWidth);
+    const nextHeight = Math.max(Number(node.size[1]) || 0, requiredHeight);
+    if (nextWidth > node.size[0] + 0.5 || nextHeight > node.size[1] + 0.5) {
+      node.setSize?.([nextWidth, nextHeight]);
+    }
   }
 
   function syncEditorSize({ fromNodeResize = false } = {}) {
@@ -764,6 +786,7 @@ function createEditor(node) {
       currentEditorWidth = nodeDrivenEditorWidth();
       currentEditorHeight = nodeDrivenEditorHeight();
     }
+    ensureNodeFitsEditor();
     wrap.style.setProperty("--aio-ideo-editor-width", `${currentEditorWidth}px`);
     wrap.style.setProperty("--aio-ideo-editor-height", `${currentEditorHeight}px`);
     if (domWidget?.element?.style) {
@@ -1917,7 +1940,9 @@ function createEditor(node) {
   };
 
   requestAnimationFrame(() => {
-    if (node.size?.[0] < MIN_WIDTH) node.setSize?.([MIN_WIDTH, Math.max(node.size?.[1] || 0, 760)]);
+    if (node.size?.[0] < MIN_NODE_WIDTH) {
+      node.setSize?.([MIN_NODE_WIDTH, Math.max(node.size?.[1] || 0, EDITOR_INITIAL_NODE_HEIGHT)]);
+    }
     syncEditorSize({ fromNodeResize: true });
     fitCanvas();
     updatePrivacyClasses();
@@ -1961,9 +1986,10 @@ app.registerExtension({
       const domWidget = this.addDOMWidget("aio_ideogram4_prompt_builder", "AIOIdeogram4PromptBuilder", editor, {
         serialize: false,
         hideOnZoom: false,
-        getMinHeight: () => EDITOR_HEIGHT,
-        getMaxHeight: () => this._aioIdeogram4EditorHeight?.() ?? EDITOR_HEIGHT,
-        getHeight: () => this._aioIdeogram4EditorHeight?.() ?? EDITOR_HEIGHT,
+        margin: EDITOR_NODE_MARGIN,
+        getMinHeight: () => editorWidgetHeight(EDITOR_MIN_HEIGHT),
+        getMaxHeight: () => editorWidgetHeight(this._aioIdeogram4EditorHeight?.() ?? EDITOR_HEIGHT),
+        getHeight: () => editorWidgetHeight(this._aioIdeogram4EditorHeight?.() ?? EDITOR_HEIGHT),
       });
       this._aioIdeogram4SetDomWidget?.(
         domWidget || this.widgets?.find((widget) => widget.name === "aio_ideogram4_prompt_builder"),
