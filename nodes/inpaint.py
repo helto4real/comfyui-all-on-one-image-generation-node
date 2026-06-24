@@ -35,7 +35,7 @@ class AIOInpaint:
                 "mask_grow": (
                     "INT",
                     {
-                        "default": 6,
+                        "default": 16,
                         "min": 0,
                         "max": 64,
                         "step": 1,
@@ -45,7 +45,7 @@ class AIOInpaint:
                 "mask_feather": (
                     "INT",
                     {
-                        "default": 16,
+                        "default": 24,
                         "min": 0,
                         "max": 256,
                         "step": 1,
@@ -69,8 +69,73 @@ class AIOInpaint:
                         "tooltip": "Composite the decoded result over the source image using the feathered mask.",
                     },
                 ),
+                "crop_target_width": (
+                    "INT",
+                    {
+                        "default": 1024,
+                        "min": 64,
+                        "max": 16384,
+                        "step": 1,
+                        "advanced": True,
+                        "tooltip": "Working crop width for optional crop/stitch inpaint.",
+                    },
+                ),
+                "crop_target_height": (
+                    "INT",
+                    {
+                        "default": 1024,
+                        "min": 64,
+                        "max": 16384,
+                        "step": 1,
+                        "advanced": True,
+                        "tooltip": "Working crop height for optional crop/stitch inpaint.",
+                    },
+                ),
+                "context_from_mask_extend_factor": (
+                    "FLOAT",
+                    {
+                        "default": 1.6,
+                        "min": 1.0,
+                        "max": 100.0,
+                        "step": 0.01,
+                        "advanced": True,
+                        "tooltip": "Grow the crop context area around the processed mask.",
+                    },
+                ),
+                "crop_output_padding": (
+                    ["0", "8", "16", "32", "64", "128", "256", "512"],
+                    {
+                        "default": "64",
+                        "advanced": True,
+                        "tooltip": "Pad crop target dimensions to this multiple.",
+                    },
+                ),
+                "mask_fill_holes": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "advanced": True,
+                        "tooltip": "Fill enclosed holes in the crop/stitch mask.",
+                    },
+                ),
+                "mask_hipass_filter": (
+                    "FLOAT",
+                    {
+                        "default": 0.1,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "advanced": True,
+                        "tooltip": "Ignore low mask values before crop/stitch processing.",
+                    },
+                ),
             },
-            "optional": {},
+            "optional": {
+                "context_mask": (
+                    "MASK",
+                    {"tooltip": "Optional extra area to include as crop/stitch context."},
+                ),
+            },
             "hidden": {},
         }
 
@@ -79,10 +144,17 @@ class AIOInpaint:
         image: Any = None,
         mask: Any = None,
         mask_invert: bool = False,
-        mask_grow: int = 6,
-        mask_feather: int = 16,
+        mask_grow: int = 16,
+        mask_feather: int = 24,
         denoise: float = 1.0,
         final_blend: bool = True,
+        crop_target_width: int = 1024,
+        crop_target_height: int = 1024,
+        context_from_mask_extend_factor: float = 1.6,
+        crop_output_padding: str = "64",
+        mask_fill_holes: bool = True,
+        mask_hipass_filter: float = 0.1,
+        context_mask: Any = None,
     ):
         return (
             normalize_inpaint_config(
@@ -93,5 +165,12 @@ class AIOInpaint:
                 mask_feather=mask_feather,
                 denoise=denoise,
                 final_blend=final_blend,
+                context_mask=context_mask,
+                crop_target_width=crop_target_width,
+                crop_target_height=crop_target_height,
+                context_from_mask_extend_factor=context_from_mask_extend_factor,
+                crop_output_padding=crop_output_padding,
+                mask_fill_holes=mask_fill_holes,
+                mask_hipass_filter=mask_hipass_filter,
             ),
         )

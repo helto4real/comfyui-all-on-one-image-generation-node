@@ -1309,6 +1309,8 @@ def test_flux2_pipeline_uses_inpaint_latent_and_final_blend(monkeypatch):
             mask="cropped_mask",
             stitcher="stitcher",
             used_crop=True,
+            width=1024,
+            height=1024,
         ),
     )
     monkeypatch.setattr(pipeline, "encode_image_to_latent", lambda **kwargs: {"samples": "source_ref"})
@@ -1323,7 +1325,11 @@ def test_flux2_pipeline_uses_inpaint_latent_and_final_blend(monkeypatch):
 
     monkeypatch.setattr(pipeline, "apply_reference_latents_to_conditioning", fake_apply_references)
     monkeypatch.setattr(pipeline.inpaint_service, "apply_inpaint_model_conditioning", fake_inpaint_conditioning)
-    monkeypatch.setattr(pipeline, "flux2_sigmas", lambda **kwargs: "sigmas")
+    def fake_flux2_sigmas(**kwargs):
+        calls["sigmas"] = kwargs
+        return "sigmas"
+
+    monkeypatch.setattr(pipeline, "flux2_sigmas", fake_flux2_sigmas)
 
     def fake_denoise(sigmas, denoise):
         calls["denoise"] = {"sigmas": sigmas, "denoise": denoise}
@@ -1378,6 +1384,7 @@ def test_flux2_pipeline_uses_inpaint_latent_and_final_blend(monkeypatch):
     assert calls["reference_latents"] == [{"samples": "source_ref"}]
     assert calls["conditioning"]["image"] == "cropped_image"
     assert calls["conditioning"]["mask"] == "cropped_mask"
+    assert calls["sigmas"] == {"steps": 4, "width": 1024, "height": 1024}
     assert calls["denoise"] == {"sigmas": "sigmas", "denoise": 0.75}
     assert calls["sample"]["latent"] == {"samples": "inpaint", "noise_mask": "mask"}
     assert calls["sample"]["sigmas"] == "trimmed_sigmas"

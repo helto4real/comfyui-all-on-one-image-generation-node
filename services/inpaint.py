@@ -15,6 +15,10 @@ except ImportError:  # pragma: no cover - direct test imports
 
 INPAINT_CONFIG_VERSION = 1
 INPAINT_SIZE_MODE = "use inpaint image size"
+CROP_INPAINT_MASK_GROW = 16
+CROP_INPAINT_MASK_FEATHER = 24
+CROP_INPAINT_TARGET_WIDTH = 1024
+CROP_INPAINT_TARGET_HEIGHT = 1024
 CROP_INPAINT_CONTEXT_FACTOR = 1.6
 CROP_INPAINT_OUTPUT_PADDING = "64"
 CROP_INPAINT_DEVICE_MODE = "gpu (much faster)"
@@ -27,10 +31,18 @@ class InpaintSource:
     noise_mask: Any = None
     stitcher: Any = None
     used_crop: bool = False
+    width: int | None = None
+    height: int | None = None
 
     @property
     def sampling_mask(self) -> Any:
         return self.noise_mask if self.noise_mask is not None else self.mask
+
+    def working_dimensions(self, *, fallback_width: int, fallback_height: int) -> tuple[int, int]:
+        return (
+            int(self.width) if self.width is not None else int(fallback_width),
+            int(self.height) if self.height is not None else int(fallback_height),
+        )
 
 
 FluxInpaintSource = InpaintSource
@@ -46,6 +58,13 @@ def normalize_inpaint_config(
     mask_feather: int | None = None,
     denoise: float | None = None,
     final_blend: bool | None = None,
+    context_mask: Any = None,
+    crop_target_width: int | None = None,
+    crop_target_height: int | None = None,
+    context_from_mask_extend_factor: float | None = None,
+    crop_output_padding: str | None = None,
+    mask_fill_holes: bool | None = None,
+    mask_hipass_filter: float | None = None,
 ) -> dict[str, Any]:
     source = dict(config or {})
     resolved_image = image if image is not None else source.get("image")
@@ -60,14 +79,47 @@ def normalize_inpaint_config(
         "image": resolved_image,
         "mask": resolved_mask,
         "mask_invert": bool(_get_value(source, "mask_invert", mask_invert, False)),
-        "mask_grow": _validate_int(_get_value(source, "mask_grow", mask_grow, 6), "mask_grow", 0, 64),
-        "mask_feather": _validate_int(_get_value(source, "mask_feather", mask_feather, 16), "mask_feather", 0, 256),
+        "mask_grow": _validate_int(
+            _get_value(source, "mask_grow", mask_grow, CROP_INPAINT_MASK_GROW),
+            "mask_grow",
+            0,
+            64,
+        ),
+        "mask_feather": _validate_int(
+            _get_value(source, "mask_feather", mask_feather, CROP_INPAINT_MASK_FEATHER),
+            "mask_feather",
+            0,
+            256,
+        ),
         "denoise": _validate_float(_get_value(source, "denoise", denoise, 1.0), "denoise", 0.0, 1.0),
         "final_blend": bool(_get_value(source, "final_blend", final_blend, True)),
-        "mask_fill_holes": bool(source.get("mask_fill_holes", True)),
-        "mask_hipass_filter": _validate_float(source.get("mask_hipass_filter", 0.1), "mask_hipass_filter", 0.0, 1.0),
+        "context_mask": context_mask if context_mask is not None else source.get("context_mask"),
+        "crop_target_width": _validate_int(
+            _get_value(source, "crop_target_width", crop_target_width, CROP_INPAINT_TARGET_WIDTH),
+            "crop_target_width",
+            64,
+            16384,
+        ),
+        "crop_target_height": _validate_int(
+            _get_value(source, "crop_target_height", crop_target_height, CROP_INPAINT_TARGET_HEIGHT),
+            "crop_target_height",
+            64,
+            16384,
+        ),
+        "mask_fill_holes": bool(_get_value(source, "mask_fill_holes", mask_fill_holes, True)),
+        "mask_hipass_filter": _validate_float(
+            _get_value(source, "mask_hipass_filter", mask_hipass_filter, 0.1),
+            "mask_hipass_filter",
+            0.0,
+            1.0,
+        ),
         "context_from_mask_extend_factor": _validate_float(
-            source.get("context_from_mask_extend_factor", CROP_INPAINT_CONTEXT_FACTOR),
+            _get_value(
+                source,
+                "context_from_mask_extend_factor",
+                context_from_mask_extend_factor,
+                CROP_INPAINT_CONTEXT_FACTOR,
+            ),
             "context_from_mask_extend_factor",
             1.0,
             100.0,
@@ -75,7 +127,9 @@ def normalize_inpaint_config(
         "crop_source_reference": bool(source.get("crop_source_reference", True)),
         "crop_downscale_algorithm": str(source.get("crop_downscale_algorithm", "bilinear")),
         "crop_upscale_algorithm": str(source.get("crop_upscale_algorithm", "bicubic")),
-        "crop_output_padding": str(source.get("crop_output_padding", CROP_INPAINT_OUTPUT_PADDING)),
+        "crop_output_padding": str(
+            _get_value(source, "crop_output_padding", crop_output_padding, CROP_INPAINT_OUTPUT_PADDING)
+        ),
         "crop_device_mode": str(source.get("crop_device_mode", CROP_INPAINT_DEVICE_MODE)),
     }
 
@@ -91,6 +145,13 @@ def inpaint_image_dimensions(config: Mapping[str, Any]) -> tuple[int, int]:
     shape = getattr(image, "shape", None)
     if shape is None or len(shape) < 3:
         raise ValueError("inpaint image must be an IMAGE tensor with shape [B, H, W, C].")
+    return int(shape[2]), int(shape[1])
+
+
+def _image_dimensions(image: Any, *, fallback_width: int, fallback_height: int) -> tuple[int, int]:
+    shape = getattr(image, "shape", None)
+    if shape is None or len(shape) < 3:
+        return int(fallback_width), int(fallback_height)
     return int(shape[2]), int(shape[1])
 
 
@@ -139,6 +200,8 @@ def prepare_inpaint_source(
     height: int,
 ) -> InpaintSource:
     normalized = normalize_inpaint_config(config)
+    crop_target_width = int(normalized["crop_target_width"])
+    crop_target_height = int(normalized["crop_target_height"])
     crop_cls = _optional_node_class("InpaintCropImproved")
     if crop_cls is not None:
         stitcher, cropped_image, cropped_mask = crop_cls().inpaint_crop(
@@ -163,25 +226,32 @@ def prepare_inpaint_source(
             mask_blend_pixels=int(normalized["mask_feather"]),
             context_from_mask_extend_factor=float(normalized["context_from_mask_extend_factor"]),
             output_resize_to_target_size=True,
-            output_target_width=int(width),
-            output_target_height=int(height),
+            output_target_width=crop_target_width,
+            output_target_height=crop_target_height,
             output_padding=str(normalized["crop_output_padding"]),
             device_mode=str(normalized["crop_device_mode"]),
             mask=normalized["mask"],
-            optional_context_mask=config.get("context_mask"),
+            optional_context_mask=normalized.get("context_mask"),
         )[:3]
+        source_width, source_height = _image_dimensions(
+            cropped_image,
+            fallback_width=crop_target_width,
+            fallback_height=crop_target_height,
+        )
         return InpaintSource(
             image=cropped_image,
             mask=cropped_mask,
             noise_mask=cropped_mask,
             stitcher=stitcher,
             used_crop=True,
+            width=source_width,
+            height=source_height,
         )
 
     image = resize_image_to_dimensions(normalized["image"], width=width, height=height)
     mask = prepare_inpaint_mask(normalized, width=width, height=height)
     noise_mask = grow_inpaint_mask(mask, int(normalized["mask_grow"]))
-    return InpaintSource(image=image, mask=mask, noise_mask=noise_mask)
+    return InpaintSource(image=image, mask=mask, noise_mask=noise_mask, width=int(width), height=int(height))
 
 
 def prepare_flux_inpaint_source(

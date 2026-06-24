@@ -757,6 +757,11 @@ def generate_ideogram4_t2i(
     else:
         inpaint_source = None
         latent = make_empty_ideogram4_latent(width=width, height=height)
+    sampling_width, sampling_height = (
+        inpaint_source.working_dimensions(fallback_width=width, fallback_height=height)
+        if inpaint_source is not None
+        else (width, height)
+    )
     _phase(progress, "preparing guider")
     guider = build_dual_model_guider(
         model=model,
@@ -770,8 +775,8 @@ def generate_ideogram4_t2i(
     else:
         sigmas = ideogram4_sigmas(
             steps=steps,
-            width=width,
-            height=height,
+            width=sampling_width,
+            height=sampling_height,
             mu=float(settings.get("mu", 0.0)),
             std=float(settings.get("std", 1.75)),
         )
@@ -813,7 +818,7 @@ def generate_ideogram4_t2i(
                     source_image=inpaint_source.image,
                     generated_image=image,
                     mask=inpaint_source.mask,
-                    feather=int(inpaint_config.get("mask_feather", 16)),
+                    feather=int(inpaint_config.get("mask_feather", 24)),
                 )
     return image, sampled_latent, positive, negative, loaded_vae
 
@@ -1115,7 +1120,12 @@ def generate_flux2_klein_t2i(
     if inpaint_config is not None and inpaint_denoise <= 0.0:
         sampled_latent = latent
     elif scheduler == "auto":
-        sigmas = flux2_sigmas(steps=steps, width=width, height=height)
+        sigma_width, sigma_height = (
+            flux_inpaint_source.working_dimensions(fallback_width=width, fallback_height=height)
+            if flux_inpaint_source is not None
+            else (width, height)
+        )
+        sigmas = flux2_sigmas(steps=steps, width=sigma_width, height=sigma_height)
         if inpaint_config is not None:
             sigmas = inpaint_service.apply_denoise_to_sigmas(sigmas, inpaint_denoise)
         _phase(progress, "sampling")
@@ -1167,6 +1177,6 @@ def generate_flux2_klein_t2i(
                     source_image=flux_inpaint_source.image,
                     generated_image=image,
                     mask=flux_inpaint_source.mask,
-                    feather=int(inpaint_config.get("mask_feather", 16)),
+                    feather=int(inpaint_config.get("mask_feather", 24)),
                 )
     return image, sampled_latent, positive, negative, loaded_vae
