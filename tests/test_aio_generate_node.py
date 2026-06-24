@@ -20,6 +20,15 @@ class FakeGeneratedImage:
     shape = (1, 769, 513, 3)
 
 
+def _inpaint_config(monkeypatch, **kwargs):
+    del monkeypatch
+    torch = pytest.importorskip("torch")
+    image = torch.rand((1, 768, 512, 3))
+    mask = torch.zeros((1, 768, 512))
+    mask[:, 256:512, 192:320] = 1.0
+    return AIOInpaint().configure(image=image, mask=mask, **kwargs)[0]
+
+
 def test_main_node_exposes_core_inputs():
     inputs = AIOImageGenerate.INPUT_TYPES()
     required = inputs["required"]
@@ -264,13 +273,7 @@ def test_main_node_passes_inpaint_config_and_uses_source_dimensions(monkeypatch)
     from nodes import aio_generate
 
     captured = {}
-    inpaint_config = AIOInpaint().configure(
-        image=FakeImage(),
-        mask=FakeImage(),
-        mask_grow=8,
-        mask_feather=24,
-        denoise=0.75,
-    )[0]
+    inpaint_config = _inpaint_config(monkeypatch, mask_grow=8, mask_feather=24, denoise=0.75)
 
     class FakeAdapter:
         version = "test"
@@ -390,7 +393,7 @@ def test_main_node_rejects_inpaint_for_unsupported_profile(monkeypatch):
     from adapters import z_image_turbo
 
     monkeypatch.setattr(z_image_turbo.gguf_backend, "is_available", lambda: True)
-    inpaint_config = AIOInpaint().configure(image=FakeImage(), mask=FakeImage())[0]
+    inpaint_config = _inpaint_config(monkeypatch)
 
     with pytest.raises(ValueError, match="z_image_turbo does not currently support inpaint"):
         AIOImageGenerate().generate(

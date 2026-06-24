@@ -254,6 +254,143 @@ def prepare_inpaint_source(
     return InpaintSource(image=image, mask=mask, noise_mask=noise_mask, width=int(width), height=int(height))
 
 
+def prepare_inpaint_output_mask(config: Mapping[str, Any]) -> Any:
+    normalized = normalize_inpaint_config(config)
+    width, height = inpaint_image_dimensions(normalized)
+    source = prepare_inpaint_source(config=normalized, width=width, height=height)
+    if source.used_crop:
+        blend_mask = stitcher_blend_mask(source.stitcher, restore_original_size=True)
+        return blend_mask if blend_mask is not None else source.mask
+    return feather_inpaint_mask(source.sampling_mask, int(normalized["mask_feather"]))
+
+
+def stitcher_blend_mask(stitcher: Any, *, restore_original_size: bool = False) -> Any:
+    if not isinstance(stitcher, Mapping):
+        return None
+    masks = stitcher.get("cropped_mask_for_blend")
+    if masks is None:
+        return None
+    if hasattr(masks, "shape"):
+        normalized = [masks.reshape((-1, masks.shape[-2], masks.shape[-1]))]
+    elif isinstance(masks, (list, tuple)) and masks:
+        normalized = [mask.reshape((-1, mask.shape[-2], mask.shape[-1])) for mask in masks]
+    else:
+        return None
+
+    if restore_original_size:
+        restored = [_restore_stitcher_mask_to_original(stitcher, mask, index) for index, mask in enumerate(normalized)]
+        restored = [mask for mask in restored if mask is not None]
+        if not restored:
+            return None
+        if len(restored) == 1:
+            return restored[0]
+
+        import torch  # type: ignore
+
+        return torch.cat(restored, dim=0)
+
+    if len(normalized) == 1:
+        return normalized[0]
+
+    import torch  # type: ignore
+
+    return torch.cat(normalized, dim=0)
+
+
+def _restore_stitcher_mask_to_original(stitcher: Mapping[str, Any], mask: Any, index: int) -> Any:
+    import torch  # type: ignore
+
+    ctc_x = _stitcher_int(stitcher, "cropped_to_canvas_x", index)
+    ctc_y = _stitcher_int(stitcher, "cropped_to_canvas_y", index)
+    ctc_w = _stitcher_int(stitcher, "cropped_to_canvas_w", index)
+    ctc_h = _stitcher_int(stitcher, "cropped_to_canvas_h", index)
+    cto_x = _stitcher_int(stitcher, "canvas_to_orig_x", index)
+    cto_y = _stitcher_int(stitcher, "canvas_to_orig_y", index)
+    cto_w = _stitcher_int(stitcher, "canvas_to_orig_w", index)
+    cto_h = _stitcher_int(stitcher, "canvas_to_orig_h", index)
+    if None in {ctc_x, ctc_y, ctc_w, ctc_h, cto_x, cto_y, cto_w, cto_h}:
+        return None
+
+    canvas = _stitcher_item(stitcher, "canvas_image", index)
+    if hasattr(canvas, "shape") and len(canvas.shape) >= 3:
+        canvas_h = int(canvas.shape[1])
+        canvas_w = int(canvas.shape[2])
+    else:
+        canvas_w = max(int(ctc_x) + int(ctc_w), int(cto_x) + int(cto_w))
+        canvas_h = max(int(ctc_y) + int(ctc_h), int(cto_y) + int(cto_h))
+
+    resized = _resize_mask_to_dimensions(
+        mask,
+        width=int(ctc_w),
+        height=int(ctc_h),
+        algorithm=_stitcher_resize_algorithm(stitcher, mask, int(ctc_w), int(ctc_h)),
+    )
+    canvas_mask = torch.zeros(
+        (int(resized.shape[0]), canvas_h, canvas_w),
+        dtype=resized.dtype,
+        device=resized.device,
+    )
+
+    dst_x0 = max(0, int(ctc_x))
+    dst_y0 = max(0, int(ctc_y))
+    dst_x1 = min(canvas_w, int(ctc_x) + int(ctc_w))
+    dst_y1 = min(canvas_h, int(ctc_y) + int(ctc_h))
+    if dst_x1 <= dst_x0 or dst_y1 <= dst_y0:
+        return canvas_mask[:, int(cto_y) : int(cto_y) + int(cto_h), int(cto_x) : int(cto_x) + int(cto_w)]
+
+    src_x0 = dst_x0 - int(ctc_x)
+    src_y0 = dst_y0 - int(ctc_y)
+    src_x1 = src_x0 + (dst_x1 - dst_x0)
+    src_y1 = src_y0 + (dst_y1 - dst_y0)
+    canvas_mask[:, dst_y0:dst_y1, dst_x0:dst_x1] = resized[:, src_y0:src_y1, src_x0:src_x1]
+    return canvas_mask[:, int(cto_y) : int(cto_y) + int(cto_h), int(cto_x) : int(cto_x) + int(cto_w)]
+
+
+def _resize_mask_to_dimensions(mask: Any, *, width: int, height: int, algorithm: str) -> Any:
+    import torch  # type: ignore
+    import torch.nn.functional as F  # type: ignore
+
+    prepared = mask.float().reshape((-1, 1, mask.shape[-2], mask.shape[-1]))
+    mode = str(algorithm).lower()
+    if int(prepared.shape[-1]) == int(width) and int(prepared.shape[-2]) == int(height):
+        return torch.clamp(prepared[:, 0, :, :], 0.0, 1.0)
+    if mode == "nearest":
+        resized = F.interpolate(prepared, size=(int(height), int(width)), mode="nearest")
+    elif mode in {"bilinear", "bicubic"}:
+        resized = F.interpolate(prepared, size=(int(height), int(width)), mode=mode, align_corners=False)
+    elif mode == "area":
+        resized = F.interpolate(prepared, size=(int(height), int(width)), mode="area")
+    else:
+        resized = F.interpolate(prepared, size=(int(height), int(width)), mode="bilinear", align_corners=False)
+    return torch.clamp(resized[:, 0, :, :], 0.0, 1.0)
+
+
+def _stitcher_resize_algorithm(stitcher: Mapping[str, Any], mask: Any, width: int, height: int) -> str:
+    if int(width) > int(mask.shape[-1]) or int(height) > int(mask.shape[-2]):
+        return str(stitcher.get("upscale_algorithm", "bicubic"))
+    return str(stitcher.get("downscale_algorithm", "bilinear"))
+
+
+def _stitcher_int(stitcher: Mapping[str, Any], key: str, index: int) -> int | None:
+    value = _stitcher_item(stitcher, key, index)
+    if value is None:
+        return None
+    if hasattr(value, "item"):
+        value = value.item()
+    return int(value)
+
+
+def _stitcher_item(stitcher: Mapping[str, Any], key: str, index: int) -> Any:
+    value = stitcher.get(key)
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return None
+        if index < len(value):
+            return value[index]
+        return value[0]
+    return value
+
+
 def prepare_flux_inpaint_source(
     *,
     config: Mapping[str, Any],
@@ -330,6 +467,19 @@ def grow_inpaint_mask(mask: Any, grow_mask_by: int):
     padding = math.ceil((amount - 1) / 2)
     grown = torch.clamp(F.conv2d(prepared, kernel, padding=padding), 0, 1)
     return grown[:, :, : mask.shape[-2], : mask.shape[-1]][:, 0, :, :]
+
+
+def feather_inpaint_mask(mask: Any, feather: int):
+    import torch  # type: ignore
+    import torch.nn.functional as F  # type: ignore
+
+    prepared = mask.float().reshape((-1, 1, mask.shape[-2], mask.shape[-1]))
+    radius = int(feather)
+    if radius <= 0:
+        return torch.clamp(prepared[:, 0, :, :], 0.0, 1.0)
+    kernel = radius * 2 + 1
+    feathered = F.avg_pool2d(prepared, kernel_size=kernel, stride=1, padding=radius)
+    return torch.clamp(feathered[:, 0, :, :], 0.0, 1.0)
 
 
 def resize_image_to_dimensions(image: Any, *, width: int, height: int):

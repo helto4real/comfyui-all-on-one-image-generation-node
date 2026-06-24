@@ -7,14 +7,17 @@ from nodes.inpaint import AIOInpaint
 from services.inpaint import (
     apply_inpaint_model_conditioning,
     encode_inpaint_source_latent,
+    feather_inpaint_mask,
     grow_inpaint_mask,
     InpaintSource,
     normalize_inpaint_config,
     prepare_inpaint_latent,
     prepare_inpaint_mask,
+    prepare_inpaint_output_mask,
     prepare_inpaint_source,
     resolve_dimensions_from_inpaint_config,
     stitch_inpaint_image,
+    stitcher_blend_mask,
 )
 
 
@@ -35,6 +38,8 @@ def test_inpaint_node_exposes_config_schema():
     inputs = schema["required"]
     optional = schema["optional"]
 
+    assert AIOInpaint.RETURN_TYPES == ("AIO_INPAINT_CONFIG", "MASK")
+    assert AIOInpaint.RETURN_NAMES == ("inpaint", "final_mask")
     assert inputs["image"][0] == "IMAGE"
     assert inputs["mask"][0] == "MASK"
     assert inputs["mask_invert"][1]["default"] is False
@@ -75,11 +80,17 @@ def test_inpaint_config_normalizes_defaults():
     assert config["context_mask"] is None
 
 
-def test_inpaint_config_preserves_controls():
+def test_inpaint_config_preserves_controls(monkeypatch):
+    torch = pytest.importorskip("torch")
+    image = torch.rand((1, 4, 4, 3))
+    mask = torch.zeros((1, 4, 4))
     context_mask = FakeMask()
-    config = AIOInpaint().configure(
-        image=FakeImage(),
-        mask=FakeMask(),
+
+    monkeypatch.setitem(sys.modules, "nodes", SimpleNamespace(NODE_CLASS_MAPPINGS={}))
+
+    config, output_mask = AIOInpaint().configure(
+        image=image,
+        mask=mask,
         mask_invert=True,
         mask_grow=6,
         mask_feather=16,
@@ -92,9 +103,11 @@ def test_inpaint_config_preserves_controls():
         mask_fill_holes=False,
         mask_hipass_filter=0.25,
         context_mask=context_mask,
-    )[0]
+    )
 
     assert config["mask_invert"] is True
+    assert config["image"] is image
+    assert config["mask"] is mask
     assert config["mask_grow"] == 6
     assert config["mask_feather"] == 16
     assert config["denoise"] == 0.45
@@ -106,6 +119,7 @@ def test_inpaint_config_preserves_controls():
     assert config["mask_fill_holes"] is False
     assert config["mask_hipass_filter"] == 0.25
     assert config["context_mask"] is context_mask
+    assert output_mask.shape == (1, 4, 4)
 
 
 def test_inpaint_config_requires_image_and_mask():
@@ -164,6 +178,41 @@ def test_grow_inpaint_mask_expands_rounded_active_area():
     assert grown.shape == (1, 5, 5)
     assert int(grown.sum().item()) == 9
     assert grown[0, 1:4, 1:4].min().item() == 1.0
+
+
+def test_feather_inpaint_mask_softens_active_area():
+    torch = pytest.importorskip("torch")
+    mask = torch.zeros((1, 5, 5))
+    mask[:, 1:4, 1:4] = 1.0
+
+    feathered = feather_inpaint_mask(mask, 2)
+
+    assert feathered.shape == (1, 5, 5)
+    assert feathered.max().item() < 1.0
+    assert 0.0 < feathered[0, 0, 0].item() < feathered[0, 2, 2].item()
+
+
+def test_inpaint_node_outputs_processed_mask_with_grow_and_feather(monkeypatch):
+    torch = pytest.importorskip("torch")
+    image = torch.rand((1, 7, 7, 3))
+    mask = torch.zeros((1, 7, 7))
+    mask[:, 3, 3] = 1.0
+
+    monkeypatch.setitem(sys.modules, "nodes", SimpleNamespace(NODE_CLASS_MAPPINGS={}))
+
+    config, output_mask = AIOInpaint().configure(
+        image=image,
+        mask=mask,
+        mask_grow=3,
+        mask_feather=2,
+    )
+
+    assert config["mask"] is mask
+    assert output_mask.shape == (1, 7, 7)
+    assert int(mask.sum().item()) == 1
+    assert output_mask.sum().item() > 1.0
+    assert (output_mask > 0.0).sum().item() > 9
+    assert torch.any((output_mask > 0.0) & (output_mask < 1.0))
 
 
 def test_prepare_inpaint_latent_encodes_clean_image_and_attaches_noise_mask(monkeypatch):
@@ -260,6 +309,73 @@ def test_prepare_inpaint_source_uses_crop_node_when_available(monkeypatch):
     assert captured["output_target_height"] == 768
     assert captured["output_padding"] == "128"
     assert captured["device_mode"] == "gpu (much faster)"
+
+
+def test_prepare_inpaint_output_mask_uses_stitcher_blend_mask(monkeypatch):
+    torch = pytest.importorskip("torch")
+    captured = {}
+    blend_mask = torch.full((1, 4, 4), 0.25)
+
+    class SourceImage:
+        shape = (1, 6, 10, 3)
+
+    class SourceMask:
+        shape = (1, 6, 10)
+
+    class FakeCropNode:
+        def inpaint_crop(self, **kwargs):
+            captured.update(kwargs)
+            return (
+                {
+                    "downscale_algorithm": "bilinear",
+                    "upscale_algorithm": "bicubic",
+                    "canvas_image": [torch.zeros((1, 8, 12, 3))],
+                    "cropped_mask_for_blend": [blend_mask],
+                    "cropped_to_canvas_x": [3],
+                    "cropped_to_canvas_y": [2],
+                    "cropped_to_canvas_w": [4],
+                    "cropped_to_canvas_h": [4],
+                    "canvas_to_orig_x": [1],
+                    "canvas_to_orig_y": [1],
+                    "canvas_to_orig_w": [10],
+                    "canvas_to_orig_h": [6],
+                },
+                FakeCroppedImage(),
+                "cropped_sampling_mask",
+            )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "nodes",
+        SimpleNamespace(NODE_CLASS_MAPPINGS={"InpaintCropImproved": FakeCropNode}),
+    )
+
+    output_mask = prepare_inpaint_output_mask(
+        normalize_inpaint_config(
+            image=SourceImage(),
+            mask=SourceMask(),
+            mask_grow=18,
+            mask_feather=32,
+        )
+    )
+
+    expected = torch.zeros((1, 6, 10))
+    expected[:, 1:5, 2:6] = 0.25
+    assert torch.equal(output_mask, expected)
+    assert captured["mask_expand_pixels"] == 18
+    assert captured["mask_blend_pixels"] == 32
+
+
+def test_stitcher_blend_mask_concatenates_batch_masks():
+    torch = pytest.importorskip("torch")
+    mask_a = torch.zeros((1, 3, 4))
+    mask_b = torch.ones((1, 3, 4))
+
+    output = stitcher_blend_mask({"cropped_mask_for_blend": [mask_a, mask_b]})
+
+    assert output.shape == (2, 3, 4)
+    assert torch.equal(output[0], mask_a[0])
+    assert torch.equal(output[1], mask_b[0])
 
 
 def test_prepare_inpaint_source_falls_back_to_full_frame_mask(monkeypatch):

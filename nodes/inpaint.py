@@ -5,15 +5,15 @@ from __future__ import annotations
 from typing import Any
 
 try:
-    from ..services.inpaint import normalize_inpaint_config
+    from ..services.inpaint import normalize_inpaint_config, prepare_inpaint_output_mask
 except ImportError:  # pragma: no cover - direct test imports
-    from services.inpaint import normalize_inpaint_config
+    from services.inpaint import normalize_inpaint_config, prepare_inpaint_output_mask
 
 
 class AIOInpaint:
     CATEGORY = "AIO/Image"
-    RETURN_TYPES = ("AIO_INPAINT_CONFIG",)
-    RETURN_NAMES = ("inpaint",)
+    RETURN_TYPES = ("AIO_INPAINT_CONFIG", "MASK")
+    RETURN_NAMES = ("inpaint", "final_mask")
     FUNCTION = "configure"
 
     @classmethod
@@ -156,21 +156,20 @@ class AIOInpaint:
         mask_hipass_filter: float = 0.1,
         context_mask: Any = None,
     ):
-        return (
-            normalize_inpaint_config(
-                image=image,
-                mask=mask,
-                mask_invert=mask_invert,
-                mask_grow=mask_grow,
-                mask_feather=mask_feather,
-                denoise=denoise,
-                final_blend=final_blend,
-                context_mask=context_mask,
-                crop_target_width=crop_target_width,
-                crop_target_height=crop_target_height,
-                context_from_mask_extend_factor=context_from_mask_extend_factor,
-                crop_output_padding=crop_output_padding,
-                mask_fill_holes=mask_fill_holes,
-                mask_hipass_filter=mask_hipass_filter,
-            ),
+        config = normalize_inpaint_config(
+            image=image,
+            mask=mask,
+            mask_invert=mask_invert,
+            mask_grow=mask_grow,
+            mask_feather=mask_feather,
+            denoise=denoise,
+            final_blend=final_blend,
+            context_mask=context_mask,
+            crop_target_width=crop_target_width,
+            crop_target_height=crop_target_height,
+            context_from_mask_extend_factor=context_from_mask_extend_factor,
+            crop_output_padding=crop_output_padding,
+            mask_fill_holes=mask_fill_holes,
+            mask_hipass_filter=mask_hipass_filter,
         )
+        return (config, prepare_inpaint_output_mask(config))
