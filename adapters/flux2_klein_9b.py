@@ -6,12 +6,14 @@ from typing import Any
 
 try:
     from ..loaders import gguf_backend
+    from ..services import inpaint as inpaint_service
     from ..services import pipeline
     from ..services import validation
     from ..services.registry import register_adapter
     from .base import BaseImageAdapter
 except ImportError:  # pragma: no cover - direct test imports
     from loaders import gguf_backend
+    from services import inpaint as inpaint_service
     from services import pipeline
     from services import validation
     from services.registry import register_adapter
@@ -96,6 +98,13 @@ class Flux2Klein9BAdapter(BaseImageAdapter):
         active_mask = mask if mask is not None else getattr(reference_inputs, "mask", None)
         if active_mask is not None:
             warnings.append("mask is accepted for image 1 as a legacy no-op; use AIO Inpaint for inpaint.")
+        downscale_warning = inpaint_service.inpaint_full_frame_downscale_warning(
+            inpaint_config,
+            width=width,
+            height=height,
+        )
+        if downscale_warning is not None:
+            warnings.append(downscale_warning)
         return warnings
 
     def generate(self, **kwargs):

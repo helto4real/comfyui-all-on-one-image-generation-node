@@ -129,6 +129,28 @@ class AIOInpaint:
                         "tooltip": "Ignore low mask values before crop/stitch processing.",
                     },
                 ),
+                "max_full_frame_megapixels": (
+                    "FLOAT",
+                    {
+                        "default": 1.0,
+                        "min": 0.25,
+                        "max": 1024.0,
+                        "step": 0.25,
+                        "advanced": True,
+                        "tooltip": "Maximum full-frame fallback size in megapixels when crop/stitch is unavailable.",
+                    },
+                ),
+                "max_full_frame_side": (
+                    "INT",
+                    {
+                        "default": 1536,
+                        "min": 64,
+                        "max": 16384,
+                        "step": 1,
+                        "advanced": True,
+                        "tooltip": "Maximum full-frame fallback long side when crop/stitch is unavailable.",
+                    },
+                ),
             },
             "optional": {
                 "context_mask": (
@@ -154,6 +176,8 @@ class AIOInpaint:
         crop_output_padding: str = "64",
         mask_fill_holes: bool = True,
         mask_hipass_filter: float = 0.1,
+        max_full_frame_megapixels: float = 1.0,
+        max_full_frame_side: int = 1536,
         context_mask: Any = None,
     ):
         config = normalize_inpaint_config(
@@ -171,5 +195,7 @@ class AIOInpaint:
             crop_output_padding=crop_output_padding,
             mask_fill_holes=mask_fill_holes,
             mask_hipass_filter=mask_hipass_filter,
+            max_full_frame_megapixels=max_full_frame_megapixels,
+            max_full_frame_side=max_full_frame_side,
         )
         return (config, prepare_inpaint_output_mask(config))

@@ -1511,6 +1511,102 @@ def test_flux2_pipeline_passes_inpaint_denoise_to_ksampler_scheduler(monkeypatch
     assert calls["sample"]["denoise"] == 0.35
 
 
+def test_flux2_pipeline_downscales_no_crop_inpaint_before_sampling(monkeypatch):
+    torch = pytest.importorskip("torch")
+    calls = {}
+    image = torch.rand((1, 1024, 1024, 3))
+    mask = torch.zeros((1, 1024, 1024))
+    mask[:, 256:768, 256:768] = 1.0
+
+    fake_comfy = ModuleType("comfy")
+    fake_utils = ModuleType("comfy.utils")
+
+    def fake_common_upscale(samples, width, height, upscale_method, crop):
+        calls["resize"] = {
+            "width": width,
+            "height": height,
+            "upscale_method": upscale_method,
+            "crop": crop,
+        }
+        return torch.zeros((samples.shape[0], samples.shape[1], int(height), int(width)))
+
+    fake_utils.common_upscale = fake_common_upscale
+    fake_comfy.utils = fake_utils
+    monkeypatch.setitem(sys.modules, "comfy", fake_comfy)
+    monkeypatch.setitem(sys.modules, "comfy.utils", fake_utils)
+    monkeypatch.setitem(sys.modules, "nodes", SimpleNamespace(NODE_CLASS_MAPPINGS={}))
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model", "clip", []))
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
+    monkeypatch.setattr(pipeline, "encode_flux2_prompt", lambda **kwargs: "positive")
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "negative")
+
+    def fake_encode_image_to_latent(**kwargs):
+        calls["source_reference_shape"] = tuple(kwargs["image"].shape)
+        return {"samples": "source_ref"}
+
+    def fake_apply_references(**kwargs):
+        calls["reference_latents"] = kwargs["reference_latents"]
+        return "positive+ref", "unused"
+
+    def fake_inpaint_conditioning(**kwargs):
+        calls["conditioning_image_shape"] = tuple(kwargs["image"].shape)
+        calls["conditioning_mask_shape"] = tuple(kwargs["mask"].shape)
+        noise_mask = kwargs["mask"].reshape((-1, 1, kwargs["mask"].shape[-2], kwargs["mask"].shape[-1]))
+        return "inpaint_positive", "inpaint_negative", {"samples": "inpaint", "noise_mask": noise_mask}
+
+    def fake_sample(**kwargs):
+        calls["sample"] = kwargs
+        return {"samples": "sampled"}
+
+    monkeypatch.setattr(pipeline, "encode_image_to_latent", fake_encode_image_to_latent)
+    monkeypatch.setattr(pipeline, "apply_reference_latents_to_conditioning", fake_apply_references)
+    monkeypatch.setattr(pipeline.inpaint_service, "apply_inpaint_model_conditioning", fake_inpaint_conditioning)
+    monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", fake_sample)
+    monkeypatch.setattr(
+        pipeline,
+        "decode_latent",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("decode should not run")),
+    )
+
+    _, latent, _, _, _ = pipeline.generate_flux2_klein_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="negative",
+        width=1024,
+        height=1024,
+        seed=123,
+        steps=4,
+        cfg=1.0,
+        sampler="euler",
+        scheduler="normal",
+        settings={},
+        inpaint_config={
+            "image": image,
+            "mask": mask,
+            "denoise": 1.0,
+            "max_full_frame_megapixels": 0.25,
+            "max_full_frame_side": 512,
+        },
+        decode_image=False,
+    )
+
+    assert latent == {"samples": "sampled"}
+    assert calls["resize"] == {
+        "width": 512,
+        "height": 512,
+        "upscale_method": "bilinear",
+        "crop": "center",
+    }
+    assert calls["source_reference_shape"] == (1, 512, 512, 3)
+    assert calls["conditioning_image_shape"] == (1, 512, 512, 3)
+    assert calls["conditioning_mask_shape"] == (1, 512, 512)
+    assert calls["sample"]["latent"]["noise_mask"].shape == (1, 1, 512, 512)
+
+
 def test_flux2_pipeline_skips_sampling_when_inpaint_denoise_is_zero(monkeypatch):
     monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
     monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")

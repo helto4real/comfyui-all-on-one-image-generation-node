@@ -22,6 +22,10 @@ CROP_INPAINT_TARGET_HEIGHT = 1024
 CROP_INPAINT_CONTEXT_FACTOR = 1.6
 CROP_INPAINT_OUTPUT_PADDING = "64"
 CROP_INPAINT_DEVICE_MODE = "gpu (much faster)"
+CROP_INPAINT_CPU_CROP_THRESHOLD_MEGAPIXELS = 8.0
+CROP_INPAINT_MAX_FULL_FRAME_MEGAPIXELS = 1.0
+CROP_INPAINT_MAX_FULL_FRAME_SIDE = 1536
+CPU_CROP_DEVICE_MODE = "cpu (compatible)"
 
 
 @dataclass(frozen=True)
@@ -65,6 +69,8 @@ def normalize_inpaint_config(
     crop_output_padding: str | None = None,
     mask_fill_holes: bool | None = None,
     mask_hipass_filter: float | None = None,
+    max_full_frame_megapixels: float | None = None,
+    max_full_frame_side: int | None = None,
 ) -> dict[str, Any]:
     source = dict(config or {})
     resolved_image = image if image is not None else source.get("image")
@@ -131,6 +137,34 @@ def normalize_inpaint_config(
             _get_value(source, "crop_output_padding", crop_output_padding, CROP_INPAINT_OUTPUT_PADDING)
         ),
         "crop_device_mode": str(source.get("crop_device_mode", CROP_INPAINT_DEVICE_MODE)),
+        "large_image_cpu_crop_threshold_megapixels": _validate_float(
+            source.get("large_image_cpu_crop_threshold_megapixels", CROP_INPAINT_CPU_CROP_THRESHOLD_MEGAPIXELS),
+            "large_image_cpu_crop_threshold_megapixels",
+            0.0,
+            1024.0,
+        ),
+        "max_full_frame_megapixels": _validate_float(
+            _get_value(
+                source,
+                "max_full_frame_megapixels",
+                max_full_frame_megapixels,
+                CROP_INPAINT_MAX_FULL_FRAME_MEGAPIXELS,
+            ),
+            "max_full_frame_megapixels",
+            0.25,
+            1024.0,
+        ),
+        "max_full_frame_side": _validate_int(
+            _get_value(
+                source,
+                "max_full_frame_side",
+                max_full_frame_side,
+                CROP_INPAINT_MAX_FULL_FRAME_SIDE,
+            ),
+            "max_full_frame_side",
+            64,
+            16384,
+        ),
     }
 
 
@@ -198,6 +232,8 @@ def prepare_inpaint_source(
     config: Mapping[str, Any],
     width: int,
     height: int,
+    force_cpu_crop: bool = False,
+    allow_full_frame_downscale: bool = True,
 ) -> InpaintSource:
     normalized = normalize_inpaint_config(config)
     crop_target_width = int(normalized["crop_target_width"])
@@ -229,7 +265,7 @@ def prepare_inpaint_source(
             output_target_width=crop_target_width,
             output_target_height=crop_target_height,
             output_padding=str(normalized["crop_output_padding"]),
-            device_mode=str(normalized["crop_device_mode"]),
+            device_mode=_resolve_crop_device_mode(normalized, force_cpu=force_cpu_crop),
             mask=normalized["mask"],
             optional_context_mask=normalized.get("context_mask"),
         )[:3]
@@ -248,16 +284,34 @@ def prepare_inpaint_source(
             height=source_height,
         )
 
-    image = resize_image_to_dimensions(normalized["image"], width=width, height=height)
-    mask = prepare_inpaint_mask(normalized, width=width, height=height)
+    source_width, source_height = _fallback_full_frame_dimensions(
+        normalized,
+        width=int(width),
+        height=int(height),
+        allow_downscale=allow_full_frame_downscale,
+    )
+    image = resize_image_to_dimensions(normalized["image"], width=source_width, height=source_height)
+    mask = prepare_inpaint_mask(normalized, width=source_width, height=source_height)
     noise_mask = grow_inpaint_mask(mask, int(normalized["mask_grow"]))
-    return InpaintSource(image=image, mask=mask, noise_mask=noise_mask, width=int(width), height=int(height))
+    return InpaintSource(
+        image=image,
+        mask=mask,
+        noise_mask=noise_mask,
+        width=source_width,
+        height=source_height,
+    )
 
 
 def prepare_inpaint_output_mask(config: Mapping[str, Any]) -> Any:
     normalized = normalize_inpaint_config(config)
     width, height = inpaint_image_dimensions(normalized)
-    source = prepare_inpaint_source(config=normalized, width=width, height=height)
+    source = prepare_inpaint_source(
+        config=normalized,
+        width=width,
+        height=height,
+        force_cpu_crop=True,
+        allow_full_frame_downscale=False,
+    )
     if source.used_crop:
         blend_mask = stitcher_blend_mask(source.stitcher, restore_original_size=True)
         return blend_mask if blend_mask is not None else source.mask
@@ -400,6 +454,30 @@ def prepare_flux_inpaint_source(
     return prepare_inpaint_source(config=config, width=width, height=height)
 
 
+def inpaint_full_frame_downscale_warning(
+    config: Mapping[str, Any] | None,
+    *,
+    width: int,
+    height: int,
+) -> str | None:
+    if config is None or _optional_node_class("InpaintCropImproved") is not None:
+        return None
+    normalized = normalize_inpaint_config(config)
+    limited_width, limited_height = _fallback_full_frame_dimensions(
+        normalized,
+        width=int(width),
+        height=int(height),
+        allow_downscale=True,
+    )
+    if limited_width == int(width) and limited_height == int(height):
+        return None
+    return (
+        "AIO Inpaint crop/stitch is unavailable; full-frame inpaint input will be "
+        f"downscaled from {int(width)}x{int(height)} to {limited_width}x{limited_height} "
+        "to reduce Flux VRAM use."
+    )
+
+
 def encode_inpaint_source_latent(
     *,
     vae: Any,
@@ -493,6 +571,62 @@ def resize_image_to_dimensions(image: Any, *, width: int, height: int):
     return resized.movedim(1, -1)
 
 
+def _resolve_crop_device_mode(config: Mapping[str, Any], *, force_cpu: bool = False) -> str:
+    if force_cpu:
+        return CPU_CROP_DEVICE_MODE
+    configured = str(config.get("crop_device_mode", CROP_INPAINT_DEVICE_MODE))
+    if configured == CPU_CROP_DEVICE_MODE:
+        return CPU_CROP_DEVICE_MODE
+    threshold = float(
+        config.get("large_image_cpu_crop_threshold_megapixels", CROP_INPAINT_CPU_CROP_THRESHOLD_MEGAPIXELS)
+    )
+    if threshold <= 0.0:
+        return configured
+    width, height = _image_dimensions(
+        config["image"],
+        fallback_width=int(config.get("crop_target_width", CROP_INPAINT_TARGET_WIDTH)),
+        fallback_height=int(config.get("crop_target_height", CROP_INPAINT_TARGET_HEIGHT)),
+    )
+    if width * height > threshold * 1024 * 1024:
+        return CPU_CROP_DEVICE_MODE
+    return configured
+
+
+def _fallback_full_frame_dimensions(
+    config: Mapping[str, Any],
+    *,
+    width: int,
+    height: int,
+    allow_downscale: bool,
+) -> tuple[int, int]:
+    width = int(width)
+    height = int(height)
+    if not allow_downscale:
+        return width, height
+
+    max_megapixels = float(config.get("max_full_frame_megapixels", CROP_INPAINT_MAX_FULL_FRAME_MEGAPIXELS))
+    max_side = int(config.get("max_full_frame_side", CROP_INPAINT_MAX_FULL_FRAME_SIDE))
+    max_pixels = max_megapixels * 1024 * 1024
+    scale = 1.0
+    current_pixels = max(1, width * height)
+    if max_pixels > 0 and current_pixels > max_pixels:
+        scale = min(scale, math.sqrt(max_pixels / current_pixels))
+    if max_side > 0 and max(width, height) > max_side:
+        scale = min(scale, max_side / max(width, height))
+    if scale >= 1.0:
+        return width, height
+
+    return (
+        _floor_to_multiple(width * scale, 16),
+        _floor_to_multiple(height * scale, 16),
+    )
+
+
+def _floor_to_multiple(value: float, multiple: int) -> int:
+    multiple = max(1, int(multiple))
+    return max(multiple, int(math.floor(float(value) / multiple)) * multiple)
+
+
 def apply_denoise_to_sigmas(sigmas: Any, denoise: float):
     value = float(denoise)
     if value >= 1.0:
@@ -535,7 +669,10 @@ def blend_inpaint_image(
 
 
 def _optional_node_class(name: str):
-    import nodes  # type: ignore
+    try:
+        import nodes  # type: ignore
+    except ImportError:
+        return None
 
     mappings = getattr(nodes, "NODE_CLASS_MAPPINGS", {}) or {}
     if name in mappings:

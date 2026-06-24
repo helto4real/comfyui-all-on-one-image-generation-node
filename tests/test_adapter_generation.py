@@ -1,4 +1,6 @@
 import json
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -320,6 +322,30 @@ def test_flux2_adapter_accepts_inpaint_and_passes_config_to_pipeline(monkeypatch
     assert warnings == []
     assert settings["edit_mode"] == "inpaint"
     assert calls["inpaint_config"] is inpaint_config
+
+
+def test_flux2_adapter_warns_when_no_crop_inpaint_will_downscale(monkeypatch):
+    monkeypatch.setattr(flux2_klein_9b.gguf_backend, "is_available", lambda: True)
+    monkeypatch.setitem(sys.modules, "nodes", SimpleNamespace(NODE_CLASS_MAPPINGS={}))
+    adapter = Flux2Klein9BAdapter()
+    settings = {"steps": 4, "cfg": 1.0}
+
+    warnings = adapter.validate_inputs(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="negative",
+        width=2048,
+        height=2048,
+        settings=settings,
+        inpaint_config={"image": "image", "mask": "mask"},
+    )
+
+    assert warnings == [
+        "AIO Inpaint crop/stitch is unavailable; full-frame inpaint input will be "
+        "downscaled from 2048x2048 to 1024x1024 to reduce Flux VRAM use."
+    ]
 
 
 def test_adapters_pass_decode_image_and_return_vae_to_pipeline(monkeypatch):
