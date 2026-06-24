@@ -348,6 +348,31 @@ def test_flux2_adapter_warns_when_no_crop_inpaint_will_downscale(monkeypatch):
     ]
 
 
+def test_flux2_adapter_warns_when_reference_duplicates_inpaint_source(monkeypatch):
+    monkeypatch.setattr(flux2_klein_9b.gguf_backend, "is_available", lambda: True)
+    adapter = Flux2Klein9BAdapter()
+    settings = {"steps": 4, "cfg": 1.0}
+    image = object()
+
+    warnings = adapter.validate_inputs(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="negative",
+        width=1024,
+        height=1024,
+        settings=settings,
+        reference_inputs=ReferenceInputs(images=(image,)),
+        inpaint_config={"image": image, "mask": "mask"},
+    )
+
+    assert warnings == [
+        "connected Flux reference image duplicates the AIO Inpaint source; "
+        "using the cropped inpaint reference instead."
+    ]
+
+
 def test_adapters_pass_decode_image_and_return_vae_to_pipeline(monkeypatch):
     calls = {}
 

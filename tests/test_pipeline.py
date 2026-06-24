@@ -1394,6 +1394,205 @@ def test_flux2_pipeline_uses_inpaint_latent_and_final_blend(monkeypatch):
     }
 
 
+def test_flux2_pipeline_skips_duplicate_inpaint_source_reference(monkeypatch):
+    source_image = object()
+    encoded_images = []
+    settings = {}
+
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model", "clip", []))
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
+    monkeypatch.setattr(pipeline, "encode_flux2_prompt", lambda **kwargs: "positive")
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "negative")
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "prepare_inpaint_source",
+        lambda **kwargs: pipeline.inpaint_service.InpaintSource(image="crop", mask="mask", stitcher="stitcher"),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "scale_image_to_total_pixels",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("duplicate full source should not scale")),
+    )
+
+    def fake_encode_image_to_latent(**kwargs):
+        encoded_images.append(kwargs["image"])
+        return {"samples": f"ref:{kwargs['image']}"}
+
+    monkeypatch.setattr(pipeline, "encode_image_to_latent", fake_encode_image_to_latent)
+    monkeypatch.setattr(pipeline, "apply_reference_latents_to_conditioning", lambda **kwargs: ("positive+ref", "unused"))
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "apply_inpaint_model_conditioning",
+        lambda **kwargs: ("inpaint_positive", "inpaint_negative", {"samples": "inpaint", "noise_mask": "mask"}),
+    )
+    monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", lambda **kwargs: {"samples": "sampled"})
+    monkeypatch.setattr(
+        pipeline,
+        "decode_latent",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("decode should not run")),
+    )
+
+    _, latent, _, _, _ = pipeline.generate_flux2_klein_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="negative",
+        width=512,
+        height=768,
+        seed=123,
+        steps=4,
+        cfg=1.0,
+        sampler="euler",
+        scheduler="normal",
+        settings=settings,
+        reference_inputs=SimpleNamespace(images=(source_image,)),
+        inpaint_config={"image": source_image, "mask": "mask", "denoise": 1.0},
+        decode_image=False,
+    )
+
+    assert latent == {"samples": "sampled"}
+    assert encoded_images == ["crop"]
+    assert settings["duplicate_inpaint_reference_skipped"] is True
+    assert settings["duplicate_inpaint_reference_count"] == 1
+
+
+def test_flux2_pipeline_preserves_distinct_references_with_inpaint(monkeypatch):
+    source_image = object()
+    reference_image = object()
+    events = []
+    settings = {
+        "reference_megapixels": 2.0,
+        "reference_upscale_method": "lanczos",
+        "reference_resolution_steps": 4,
+        "multiple_value": "16",
+    }
+
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model", "clip", []))
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
+    monkeypatch.setattr(pipeline, "encode_flux2_prompt", lambda **kwargs: "positive")
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "negative")
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "prepare_inpaint_source",
+        lambda **kwargs: pipeline.inpaint_service.InpaintSource(
+            image="crop",
+            mask="mask",
+            stitcher="stitcher",
+            width=1024,
+            height=1024,
+        ),
+    )
+
+    def fake_scale(**kwargs):
+        events.append(
+            (
+                "scale",
+                kwargs["image"],
+                kwargs["megapixels"],
+                kwargs["upscale_method"],
+                kwargs["resolution_steps"],
+                kwargs["multiple_value"],
+            )
+        )
+        return "scaled_reference"
+
+    def fake_encode_image_to_latent(**kwargs):
+        events.append(("encode", kwargs["image"]))
+        return {"samples": f"ref:{kwargs['image']}"}
+
+    monkeypatch.setattr(pipeline, "scale_image_to_total_pixels", fake_scale)
+    monkeypatch.setattr(pipeline, "encode_image_to_latent", fake_encode_image_to_latent)
+    monkeypatch.setattr(pipeline, "apply_reference_latents_to_conditioning", lambda **kwargs: ("positive+ref", "unused"))
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "apply_inpaint_model_conditioning",
+        lambda **kwargs: ("inpaint_positive", "inpaint_negative", {"samples": "inpaint", "noise_mask": "mask"}),
+    )
+    monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", lambda **kwargs: {"samples": "sampled"})
+    monkeypatch.setattr(
+        pipeline,
+        "decode_latent",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("decode should not run")),
+    )
+
+    _, latent, _, _, _ = pipeline.generate_flux2_klein_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="negative",
+        width=512,
+        height=768,
+        seed=123,
+        steps=4,
+        cfg=1.0,
+        sampler="euler",
+        scheduler="normal",
+        settings=settings,
+        reference_inputs=SimpleNamespace(images=(reference_image,)),
+        inpaint_config={"image": source_image, "mask": "mask", "denoise": 1.0},
+        decode_image=False,
+    )
+
+    assert latent == {"samples": "sampled"}
+    assert events == [
+        ("scale", reference_image, 2.0, "lanczos", 4, "16"),
+        ("encode", "scaled_reference"),
+        ("encode", "crop"),
+    ]
+    assert "duplicate_inpaint_reference_skipped" not in settings
+    assert settings["reference_megapixels"] == 2.0
+
+
+def test_flux2_pipeline_applies_memory_policy_before_sampling(monkeypatch):
+    events = []
+    settings = {"memory_policy": "balanced"}
+
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model", "clip", []))
+    monkeypatch.setattr(pipeline, "encode_flux2_prompt", lambda **kwargs: "positive")
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "negative")
+    monkeypatch.setattr(pipeline, "make_empty_flux2_latent", lambda **kwargs: {"samples": "empty"})
+    monkeypatch.setattr(pipeline, "apply_memory_policy_before_sampling", lambda value: events.append(("memory", value)))
+
+    def fake_sample(**kwargs):
+        events.append(("sample", kwargs["latent"]))
+        return {"samples": "sampled"}
+
+    monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", fake_sample)
+    monkeypatch.setattr(
+        pipeline,
+        "decode_latent",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("decode should not run")),
+    )
+
+    _, latent, _, _, _ = pipeline.generate_flux2_klein_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="negative",
+        width=512,
+        height=768,
+        seed=123,
+        steps=4,
+        cfg=1.0,
+        sampler="euler",
+        scheduler="normal",
+        settings=settings,
+        decode_image=False,
+    )
+
+    assert latent == {"samples": "sampled"}
+    assert events == [("memory", settings), ("sample", {"samples": "empty"})]
+
+
 def test_flux2_pipeline_skips_decode_and_blend_for_latent_only_inpaint(monkeypatch):
     monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
     monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")

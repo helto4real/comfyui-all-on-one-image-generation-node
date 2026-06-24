@@ -15,14 +15,14 @@ except ImportError:  # pragma: no cover - direct test imports
 
 INPAINT_CONFIG_VERSION = 1
 INPAINT_SIZE_MODE = "use inpaint image size"
-CROP_INPAINT_MASK_GROW = 16
+CROP_INPAINT_MASK_GROW_PERCENT = 8.0
+CROP_INPAINT_MASK_GROW_MAX_PIXELS = 1024
 CROP_INPAINT_MASK_FEATHER = 24
 CROP_INPAINT_TARGET_WIDTH = 1024
 CROP_INPAINT_TARGET_HEIGHT = 1024
 CROP_INPAINT_CONTEXT_FACTOR = 1.6
 CROP_INPAINT_OUTPUT_PADDING = "64"
 CROP_INPAINT_DEVICE_MODE = "gpu (much faster)"
-CROP_INPAINT_CPU_CROP_THRESHOLD_MEGAPIXELS = 8.0
 CROP_INPAINT_MAX_FULL_FRAME_MEGAPIXELS = 1.0
 CROP_INPAINT_MAX_FULL_FRAME_SIDE = 1536
 CPU_CROP_DEVICE_MODE = "cpu (compatible)"
@@ -58,7 +58,7 @@ def normalize_inpaint_config(
     image: Any = None,
     mask: Any = None,
     mask_invert: bool | None = None,
-    mask_grow: int | None = None,
+    mask_grow_percent: float | None = None,
     mask_feather: int | None = None,
     denoise: float | None = None,
     final_blend: bool | None = None,
@@ -85,11 +85,11 @@ def normalize_inpaint_config(
         "image": resolved_image,
         "mask": resolved_mask,
         "mask_invert": bool(_get_value(source, "mask_invert", mask_invert, False)),
-        "mask_grow": _validate_int(
-            _get_value(source, "mask_grow", mask_grow, CROP_INPAINT_MASK_GROW),
-            "mask_grow",
-            0,
-            64,
+        "mask_grow_percent": _validate_float(
+            _get_value(source, "mask_grow_percent", mask_grow_percent, CROP_INPAINT_MASK_GROW_PERCENT),
+            "mask_grow_percent",
+            0.0,
+            100.0,
         ),
         "mask_feather": _validate_int(
             _get_value(source, "mask_feather", mask_feather, CROP_INPAINT_MASK_FEATHER),
@@ -137,12 +137,6 @@ def normalize_inpaint_config(
             _get_value(source, "crop_output_padding", crop_output_padding, CROP_INPAINT_OUTPUT_PADDING)
         ),
         "crop_device_mode": str(source.get("crop_device_mode", CROP_INPAINT_DEVICE_MODE)),
-        "large_image_cpu_crop_threshold_megapixels": _validate_float(
-            source.get("large_image_cpu_crop_threshold_megapixels", CROP_INPAINT_CPU_CROP_THRESHOLD_MEGAPIXELS),
-            "large_image_cpu_crop_threshold_megapixels",
-            0.0,
-            1024.0,
-        ),
         "max_full_frame_megapixels": _validate_float(
             _get_value(
                 source,
@@ -221,7 +215,8 @@ def prepare_inpaint_latent(
     mask = prepare_inpaint_mask(normalized, width=width, height=height)
     latent = nodes.VAEEncode().encode(vae, image)[0]
     latent = latent.copy()
-    latent["noise_mask"] = grow_inpaint_mask(mask, int(normalized["mask_grow"])).reshape(
+    grow_pixels = resolve_mask_grow_pixels(normalized, mask=mask, width=width, height=height)
+    latent["noise_mask"] = grow_inpaint_mask(mask, grow_pixels).reshape(
         (-1, 1, mask.shape[-2], mask.shape[-1])
     )
     return latent, image, mask
@@ -240,6 +235,16 @@ def prepare_inpaint_source(
     crop_target_height = int(normalized["crop_target_height"])
     crop_cls = _optional_node_class("InpaintCropImproved")
     if crop_cls is not None:
+        source_input_width, source_input_height = _image_dimensions(
+            normalized["image"],
+            fallback_width=int(width),
+            fallback_height=int(height),
+        )
+        mask_grow_pixels = resolve_mask_grow_pixels(
+            normalized,
+            width=source_input_width,
+            height=source_input_height,
+        )
         stitcher, cropped_image, cropped_mask = crop_cls().inpaint_crop(
             image=normalized["image"],
             downscale_algorithm=normalized["crop_downscale_algorithm"],
@@ -257,7 +262,7 @@ def prepare_inpaint_source(
             extend_right_factor=1.0,
             mask_hipass_filter=float(normalized["mask_hipass_filter"]),
             mask_fill_holes=bool(normalized["mask_fill_holes"]),
-            mask_expand_pixels=int(normalized["mask_grow"]),
+            mask_expand_pixels=mask_grow_pixels,
             mask_invert=bool(normalized["mask_invert"]),
             mask_blend_pixels=int(normalized["mask_feather"]),
             context_from_mask_extend_factor=float(normalized["context_from_mask_extend_factor"]),
@@ -292,7 +297,8 @@ def prepare_inpaint_source(
     )
     image = resize_image_to_dimensions(normalized["image"], width=source_width, height=source_height)
     mask = prepare_inpaint_mask(normalized, width=source_width, height=source_height)
-    noise_mask = grow_inpaint_mask(mask, int(normalized["mask_grow"]))
+    grow_pixels = resolve_mask_grow_pixels(normalized, mask=mask, width=source_width, height=source_height)
+    noise_mask = grow_inpaint_mask(mask, grow_pixels)
     return InpaintSource(
         image=image,
         mask=mask,
@@ -533,6 +539,65 @@ def prepare_inpaint_mask(config: Mapping[str, Any], *, width: int, height: int):
     return torch.clamp(mask[:, 0, :, :], 0.0, 1.0)
 
 
+def resolve_mask_grow_pixels(
+    config: Mapping[str, Any],
+    *,
+    mask: Any | None = None,
+    width: int | None = None,
+    height: int | None = None,
+) -> int:
+    percent = float(config.get("mask_grow_percent", CROP_INPAINT_MASK_GROW_PERCENT))
+    if percent <= 0.0:
+        return 0
+
+    source_mask = mask if mask is not None else config.get("mask")
+    threshold = float(config.get("mask_hipass_filter", 0.0))
+    bbox_side = _mask_active_bbox_max_side(source_mask, threshold=threshold)
+    if bbox_side is None:
+        bbox_side = _mask_shape_max_side(source_mask)
+    if bbox_side is None and width is not None and height is not None:
+        bbox_side = max(int(width), int(height))
+    if bbox_side is None or bbox_side <= 0:
+        return 0
+
+    grow = int(math.ceil(float(bbox_side) * percent / 100.0))
+    return max(0, min(grow, CROP_INPAINT_MASK_GROW_MAX_PIXELS))
+
+
+def _mask_active_bbox_max_side(mask: Any, *, threshold: float) -> int | None:
+    if not hasattr(mask, "reshape") or not hasattr(mask, "float"):
+        return None
+    shape = getattr(mask, "shape", None)
+    if shape is None or len(shape) < 2:
+        return None
+
+    import torch  # type: ignore
+
+    prepared = mask.float().reshape((-1, shape[-2], shape[-1]))
+    active = prepared >= float(threshold) if threshold > 0.0 else prepared > 0.0
+    if not torch.any(active):
+        return 0
+
+    max_side = 0
+    for batch_mask in active:
+        coordinates = torch.nonzero(batch_mask, as_tuple=False)
+        if int(coordinates.numel()) == 0:
+            continue
+        y_values = coordinates[:, 0]
+        x_values = coordinates[:, 1]
+        bbox_width = int(x_values.max().item() - x_values.min().item() + 1)
+        bbox_height = int(y_values.max().item() - y_values.min().item() + 1)
+        max_side = max(max_side, bbox_width, bbox_height)
+    return max_side
+
+
+def _mask_shape_max_side(mask: Any) -> int | None:
+    shape = getattr(mask, "shape", None)
+    if shape is None or len(shape) < 2:
+        return None
+    return max(int(shape[-1]), int(shape[-2]))
+
+
 def grow_inpaint_mask(mask: Any, grow_mask_by: int):
     import torch  # type: ignore
     import torch.nn.functional as F  # type: ignore
@@ -577,19 +642,7 @@ def _resolve_crop_device_mode(config: Mapping[str, Any], *, force_cpu: bool = Fa
     configured = str(config.get("crop_device_mode", CROP_INPAINT_DEVICE_MODE))
     if configured == CPU_CROP_DEVICE_MODE:
         return CPU_CROP_DEVICE_MODE
-    threshold = float(
-        config.get("large_image_cpu_crop_threshold_megapixels", CROP_INPAINT_CPU_CROP_THRESHOLD_MEGAPIXELS)
-    )
-    if threshold <= 0.0:
-        return configured
-    width, height = _image_dimensions(
-        config["image"],
-        fallback_width=int(config.get("crop_target_width", CROP_INPAINT_TARGET_WIDTH)),
-        fallback_height=int(config.get("crop_target_height", CROP_INPAINT_TARGET_HEIGHT)),
-    )
-    if width * height > threshold * 1024 * 1024:
-        return CPU_CROP_DEVICE_MODE
-    return configured
+    return CROP_INPAINT_DEVICE_MODE
 
 
 def _fallback_full_frame_dimensions(

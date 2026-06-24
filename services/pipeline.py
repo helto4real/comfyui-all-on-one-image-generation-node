@@ -17,7 +17,12 @@ try:
     from .lora_application import apply_lora_config
     from .lora_config import normalize_lora_config
     from .model_resolution import infer_model_format, strip_category_prefix
-    from .performance import apply_performance_settings, normalize_performance_apply_timing, performance_settings_present
+    from .performance import (
+        apply_memory_policy_before_sampling,
+        apply_performance_settings,
+        normalize_performance_apply_timing,
+        performance_settings_present,
+    )
 except ImportError:  # pragma: no cover - direct test imports
     from loaders import gguf_backend, safetensors_backend
     from services.dimensions import parse_multiple_value, round_to_multiple
@@ -26,7 +31,12 @@ except ImportError:  # pragma: no cover - direct test imports
     from services.lora_application import apply_lora_config
     from services.lora_config import normalize_lora_config
     from services.model_resolution import infer_model_format, strip_category_prefix
-    from services.performance import apply_performance_settings, normalize_performance_apply_timing, performance_settings_present
+    from services.performance import (
+        apply_memory_policy_before_sampling,
+        apply_performance_settings,
+        normalize_performance_apply_timing,
+        performance_settings_present,
+    )
 
 
 PID_CAPTURE_KEY = "pid_capture"
@@ -90,6 +100,37 @@ def _apply_model_performance_if_configured(
         reference_inputs=reference_inputs,
         inpaint_config=inpaint_config,
     )
+
+
+def _apply_memory_policy_before_sampling_if_configured(
+    *,
+    settings: dict[str, Any],
+    progress: Any = None,
+) -> None:
+    if "memory_policy" in settings:
+        _phase(progress, "applying memory policy")
+    apply_memory_policy_before_sampling(settings)
+
+
+def _filter_duplicate_inpaint_reference_images(
+    reference_images: tuple[Any, ...],
+    *,
+    inpaint_config: dict[str, Any] | None,
+    settings: dict[str, Any],
+) -> tuple[Any, ...]:
+    if inpaint_config is None or not reference_images:
+        return reference_images
+
+    inpaint_image = inpaint_config.get("image")
+    if inpaint_image is None:
+        return reference_images
+
+    filtered = tuple(reference for reference in reference_images if reference is not inpaint_image)
+    skipped_count = len(reference_images) - len(filtered)
+    if skipped_count > 0:
+        settings["duplicate_inpaint_reference_skipped"] = True
+        settings["duplicate_inpaint_reference_count"] = skipped_count
+    return filtered
 
 
 def _clip_type(name: str):
@@ -1043,7 +1084,11 @@ def generate_flux2_klein_t2i(
     negative = None
     if not zero_negative_conditioning:
         negative = encode_flux2_prompt(clip=clip, prompt=negative_prompt or "", guidance=guidance)
-    reference_images = tuple(getattr(reference_inputs, "images", ()) or ())
+    reference_images = _filter_duplicate_inpaint_reference_images(
+        tuple(getattr(reference_inputs, "images", ()) or ()),
+        inpaint_config=inpaint_config,
+        settings=settings,
+    )
     loaded_vae = None
     if reference_images or inpaint_config is not None:
         _phase(progress, "loading vae")
@@ -1119,44 +1164,46 @@ def generate_flux2_klein_t2i(
     inpaint_denoise = float(inpaint_config.get("denoise", 1.0)) if inpaint_config is not None else 1.0
     if inpaint_config is not None and inpaint_denoise <= 0.0:
         sampled_latent = latent
-    elif scheduler == "auto":
-        sigma_width, sigma_height = (
-            flux_inpaint_source.working_dimensions(fallback_width=width, fallback_height=height)
-            if flux_inpaint_source is not None
-            else (width, height)
-        )
-        sigmas = flux2_sigmas(steps=steps, width=sigma_width, height=sigma_height)
-        if inpaint_config is not None:
-            sigmas = inpaint_service.apply_denoise_to_sigmas(sigmas, inpaint_denoise)
-        _phase(progress, "sampling")
-        sampled_latent = sample_with_sigmas(
-            model=model,
-            seed=seed,
-            steps=steps,
-            cfg=cfg,
-            sampler=sampler,
-            scheduler="normal",
-            positive=positive,
-            negative=negative,
-            latent=latent,
-            sigmas=sigmas,
-            pid_capture_step=pid_capture_step,
-        )
     else:
-        _phase(progress, "sampling")
-        sampled_latent = sample_with_comfy_ksampler(
-            model=model,
-            seed=seed,
-            steps=steps,
-            cfg=cfg,
-            sampler=sampler,
-            scheduler=scheduler,
-            positive=positive,
-            negative=negative,
-            latent=latent,
-            denoise=inpaint_denoise,
-            pid_capture_step=pid_capture_step,
-        )
+        _apply_memory_policy_before_sampling_if_configured(settings=settings, progress=progress)
+        if scheduler == "auto":
+            sigma_width, sigma_height = (
+                flux_inpaint_source.working_dimensions(fallback_width=width, fallback_height=height)
+                if flux_inpaint_source is not None
+                else (width, height)
+            )
+            sigmas = flux2_sigmas(steps=steps, width=sigma_width, height=sigma_height)
+            if inpaint_config is not None:
+                sigmas = inpaint_service.apply_denoise_to_sigmas(sigmas, inpaint_denoise)
+            _phase(progress, "sampling")
+            sampled_latent = sample_with_sigmas(
+                model=model,
+                seed=seed,
+                steps=steps,
+                cfg=cfg,
+                sampler=sampler,
+                scheduler="normal",
+                positive=positive,
+                negative=negative,
+                latent=latent,
+                sigmas=sigmas,
+                pid_capture_step=pid_capture_step,
+            )
+        else:
+            _phase(progress, "sampling")
+            sampled_latent = sample_with_comfy_ksampler(
+                model=model,
+                seed=seed,
+                steps=steps,
+                cfg=cfg,
+                sampler=sampler,
+                scheduler=scheduler,
+                positive=positive,
+                negative=negative,
+                latent=latent,
+                denoise=inpaint_denoise,
+                pid_capture_step=pid_capture_step,
+            )
     image = None
     if (decode_image or return_vae) and loaded_vae is None:
         _phase(progress, "loading vae")

@@ -98,6 +98,12 @@ class Flux2Klein9BAdapter(BaseImageAdapter):
         active_mask = mask if mask is not None else getattr(reference_inputs, "mask", None)
         if active_mask is not None:
             warnings.append("mask is accepted for image 1 as a legacy no-op; use AIO Inpaint for inpaint.")
+        duplicate_count = _duplicate_inpaint_reference_count(reference_inputs, inpaint_config)
+        if duplicate_count > 0:
+            warnings.append(
+                "connected Flux reference image duplicates the AIO Inpaint source; "
+                "using the cropped inpaint reference instead."
+            )
         downscale_warning = inpaint_service.inpaint_full_frame_downscale_warning(
             inpaint_config,
             width=width,
@@ -135,3 +141,12 @@ class Flux2Klein9BAdapter(BaseImageAdapter):
             pid_capture_step=kwargs.get("pid_capture_step"),
             progress=progress,
         )
+
+
+def _duplicate_inpaint_reference_count(reference_inputs: Any = None, inpaint_config: dict[str, Any] | None = None) -> int:
+    if reference_inputs is None or inpaint_config is None:
+        return 0
+    inpaint_image = inpaint_config.get("image")
+    if inpaint_image is None:
+        return 0
+    return sum(1 for image in (getattr(reference_inputs, "images", ()) or ()) if image is inpaint_image)

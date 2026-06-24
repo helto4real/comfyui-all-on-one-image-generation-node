@@ -18,6 +18,12 @@ PERFORMANCE_KEYS = (
     "performance_apply_timing",
     "fp16_accumulation_enabled",
     "resolved_fp16_accumulation_enabled",
+    "memory_policy",
+    "resolved_memory_policy",
+    "memory_cleanup_applied",
+    "memory_reserved_vram_gb",
+    "duplicate_inpaint_reference_skipped",
+    "duplicate_inpaint_reference_count",
     "performance_warnings",
 )
 SENSITIVE_SETTINGS_KEYS = (
@@ -54,6 +60,14 @@ def performance_info_from_settings(settings: dict[str, Any]) -> dict[str, Any]:
     if "fp16_accumulation_enabled" in settings or "resolved_fp16_accumulation_enabled" in settings:
         info["fp16_accumulation_enabled"] = bool(settings.get("fp16_accumulation_enabled", False))
         info["resolved_fp16_accumulation_enabled"] = bool(settings.get("resolved_fp16_accumulation_enabled", False))
+    if "memory_policy" in settings or "resolved_memory_policy" in settings:
+        info["memory_policy"] = settings.get("memory_policy", "balanced")
+        info["resolved_memory_policy"] = settings.get("resolved_memory_policy", info["memory_policy"])
+        info["memory_cleanup_applied"] = bool(settings.get("memory_cleanup_applied", False))
+        info["memory_reserved_vram_gb"] = float(settings.get("memory_reserved_vram_gb", 0.0))
+    if settings.get("duplicate_inpaint_reference_skipped"):
+        info["duplicate_inpaint_reference_skipped"] = True
+        info["duplicate_inpaint_reference_count"] = int(settings.get("duplicate_inpaint_reference_count", 0))
     return info
 
 

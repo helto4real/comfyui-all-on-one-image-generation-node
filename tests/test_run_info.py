@@ -105,6 +105,46 @@ def test_run_info_reports_performance_defaults_when_settings_are_absent():
     }
 
 
+def test_run_info_reports_memory_policy_and_reference_dedupe():
+    run_info = build_run_info(
+        model_type="flux2_klein_9b",
+        display_name="FLUX.2 Klein 9B",
+        diffusion_model="diffusion_models/model.safetensors",
+        diffusion_model_format="safetensors",
+        text_encoder="text_encoders/text.safetensors",
+        text_encoder_format="safetensors",
+        vae="vae/vae.safetensors",
+        vae_format="safetensors",
+        width=1024,
+        height=1024,
+        seed=123,
+        steps=8,
+        cfg=1.0,
+        sampler="euler",
+        scheduler="beta",
+        settings={
+            "family": "flux2_klein_9b",
+            "memory_policy": "auto",
+            "resolved_memory_policy": "auto",
+            "memory_cleanup_applied": True,
+            "memory_reserved_vram_gb": 0.6,
+            "duplicate_inpaint_reference_skipped": True,
+            "duplicate_inpaint_reference_count": 1,
+        },
+        warnings=[],
+        adapter_version="0.1.0",
+    )
+
+    parsed = json.loads(to_json(run_info))
+
+    assert parsed["performance"]["memory_policy"] == "auto"
+    assert parsed["performance"]["resolved_memory_policy"] == "auto"
+    assert parsed["performance"]["memory_cleanup_applied"] is True
+    assert parsed["performance"]["memory_reserved_vram_gb"] == 0.6
+    assert parsed["performance"]["duplicate_inpaint_reference_skipped"] is True
+    assert parsed["performance"]["duplicate_inpaint_reference_count"] == 1
+
+
 @pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
 def test_run_info_encrypts_prompt_override_when_private(monkeypatch, tmp_path):
     monkeypatch.setattr(privacy, "config_dir", lambda: tmp_path)

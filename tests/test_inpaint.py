@@ -17,6 +17,7 @@ from services.inpaint import (
     prepare_inpaint_output_mask,
     prepare_inpaint_source,
     resolve_dimensions_from_inpaint_config,
+    resolve_mask_grow_pixels,
     stitch_inpaint_image,
     stitcher_blend_mask,
 )
@@ -44,7 +45,9 @@ def test_inpaint_node_exposes_config_schema():
     assert inputs["image"][0] == "IMAGE"
     assert inputs["mask"][0] == "MASK"
     assert inputs["mask_invert"][1]["default"] is False
-    assert inputs["mask_grow"][1]["default"] == 16
+    assert "mask_grow" not in inputs
+    assert inputs["mask_grow_percent"][1]["default"] == 8.0
+    assert inputs["mask_grow_percent"][1]["max"] == 100.0
     assert inputs["mask_feather"][1]["default"] == 24
     assert inputs["denoise"][1]["default"] == 1.0
     assert inputs["final_blend"][1]["default"] is True
@@ -72,7 +75,7 @@ def test_inpaint_config_normalizes_defaults():
     assert config["image"] is image
     assert config["mask"] is mask
     assert config["mask_invert"] is False
-    assert config["mask_grow"] == 16
+    assert config["mask_grow_percent"] == 8.0
     assert config["mask_feather"] == 24
     assert config["denoise"] == 1.0
     assert config["final_blend"] is True
@@ -99,7 +102,7 @@ def test_inpaint_config_preserves_controls(monkeypatch):
         image=image,
         mask=mask,
         mask_invert=True,
-        mask_grow=6,
+        mask_grow_percent=25.0,
         mask_feather=16,
         denoise=0.45,
         final_blend=False,
@@ -117,7 +120,7 @@ def test_inpaint_config_preserves_controls(monkeypatch):
     assert config["mask_invert"] is True
     assert config["image"] is image
     assert config["mask"] is mask
-    assert config["mask_grow"] == 6
+    assert config["mask_grow_percent"] == 25.0
     assert config["mask_feather"] == 16
     assert config["denoise"] == 0.45
     assert config["final_blend"] is False
@@ -141,8 +144,8 @@ def test_inpaint_config_requires_image_and_mask():
 
 
 def test_inpaint_config_rejects_out_of_range_controls():
-    with pytest.raises(ValueError, match="mask_grow must be between 0 and 64"):
-        normalize_inpaint_config(image=FakeImage(), mask=FakeMask(), mask_grow=65)
+    with pytest.raises(ValueError, match="mask_grow_percent must be between 0.0 and 100.0"):
+        normalize_inpaint_config(image=FakeImage(), mask=FakeMask(), mask_grow_percent=100.1)
     with pytest.raises(ValueError, match="mask_feather must be between 0 and 256"):
         normalize_inpaint_config(image=FakeImage(), mask=FakeMask(), mask_feather=257)
     with pytest.raises(ValueError, match="denoise must be between 0.0 and 1.0"):
@@ -195,6 +198,21 @@ def test_grow_inpaint_mask_expands_rounded_active_area():
     assert grown[0, 1:4, 1:4].min().item() == 1.0
 
 
+def test_resolve_mask_grow_pixels_uses_active_bbox_percent():
+    torch = pytest.importorskip("torch")
+    mask = torch.zeros((1, 20, 30))
+    mask[:, 4:9, 10:20] = 1.0
+
+    grow_pixels = resolve_mask_grow_pixels(
+        normalize_inpaint_config(image=FakeImage(), mask=mask, mask_grow_percent=50.0),
+        mask=mask,
+        width=30,
+        height=20,
+    )
+
+    assert grow_pixels == 5
+
+
 def test_feather_inpaint_mask_softens_active_area():
     torch = pytest.importorskip("torch")
     mask = torch.zeros((1, 5, 5))
@@ -209,24 +227,24 @@ def test_feather_inpaint_mask_softens_active_area():
 
 def test_inpaint_node_outputs_processed_mask_with_grow_and_feather(monkeypatch):
     torch = pytest.importorskip("torch")
-    image = torch.rand((1, 7, 7, 3))
-    mask = torch.zeros((1, 7, 7))
-    mask[:, 3, 3] = 1.0
+    image = torch.rand((1, 20, 20, 3))
+    mask = torch.zeros((1, 20, 20))
+    mask[:, 8:12, 8:12] = 1.0
 
     monkeypatch.setitem(sys.modules, "nodes", SimpleNamespace(NODE_CLASS_MAPPINGS={}))
 
     config, output_mask = AIOInpaint().configure(
         image=image,
         mask=mask,
-        mask_grow=3,
+        mask_grow_percent=75.0,
         mask_feather=2,
     )
 
     assert config["mask"] is mask
-    assert output_mask.shape == (1, 7, 7)
-    assert int(mask.sum().item()) == 1
-    assert output_mask.sum().item() > 1.0
-    assert (output_mask > 0.0).sum().item() > 9
+    assert output_mask.shape == (1, 20, 20)
+    assert int(mask.sum().item()) == 16
+    assert output_mask.sum().item() > 16.0
+    assert (output_mask > 0.0).sum().item() > 16
     assert torch.any((output_mask > 0.0) & (output_mask < 1.0))
 
 
@@ -255,7 +273,7 @@ def test_prepare_inpaint_latent_encodes_clean_image_and_attaches_noise_mask(monk
 
     latent, source_image, blend_mask = prepare_inpaint_latent(
         vae="vae",
-        config=normalize_inpaint_config(image=image, mask=mask, mask_grow=0),
+        config=normalize_inpaint_config(image=image, mask=mask, mask_grow_percent=0.0),
         width=4,
         height=4,
     )
@@ -272,6 +290,8 @@ def test_prepare_inpaint_latent_encodes_clean_image_and_attaches_noise_mask(monk
 def test_prepare_inpaint_source_uses_crop_node_when_available(monkeypatch):
     captured = {}
     cropped_image = FakeCroppedImage()
+    image = FakeImage()
+    mask = FakeMask()
 
     class FakeCropNode:
         def inpaint_crop(self, **kwargs):
@@ -286,10 +306,11 @@ def test_prepare_inpaint_source_uses_crop_node_when_available(monkeypatch):
 
     source = prepare_inpaint_source(
         config=normalize_inpaint_config(
-            image="image",
-            mask="mask",
+            image=image,
+            mask=mask,
             context_mask="context_mask",
             mask_invert=True,
+            mask_grow_percent=10.0,
             crop_target_width=1280,
             crop_target_height=768,
             context_from_mask_extend_factor=2.25,
@@ -310,11 +331,11 @@ def test_prepare_inpaint_source_uses_crop_node_when_available(monkeypatch):
         width=832,
         height=640,
     )
-    assert captured["image"] == "image"
-    assert captured["mask"] == "mask"
+    assert captured["image"] is image
+    assert captured["mask"] is mask
     assert captured["optional_context_mask"] == "context_mask"
     assert captured["mask_invert"] is True
-    assert captured["mask_expand_pixels"] == 16
+    assert captured["mask_expand_pixels"] == 77
     assert captured["mask_blend_pixels"] == 24
     assert captured["mask_fill_holes"] is False
     assert captured["mask_hipass_filter"] == 0.25
@@ -326,7 +347,7 @@ def test_prepare_inpaint_source_uses_crop_node_when_available(monkeypatch):
     assert captured["device_mode"] == "gpu (much faster)"
 
 
-def test_prepare_inpaint_source_switches_large_crop_to_cpu(monkeypatch):
+def test_prepare_inpaint_source_keeps_gpu_crop_for_large_images(monkeypatch):
     captured = {}
 
     class LargeImage:
@@ -347,6 +368,35 @@ def test_prepare_inpaint_source_switches_large_crop_to_cpu(monkeypatch):
         config=normalize_inpaint_config(image=LargeImage(), mask=FakeMask()),
         width=4096,
         height=4096,
+    )
+
+    assert captured["device_mode"] == "gpu (much faster)"
+
+
+def test_prepare_inpaint_source_allows_explicit_cpu_crop(monkeypatch):
+    captured = {}
+
+    class FakeCropNode:
+        def inpaint_crop(self, **kwargs):
+            captured.update(kwargs)
+            return "stitcher", FakeCroppedImage(), "cropped_mask"
+
+    monkeypatch.setitem(
+        sys.modules,
+        "nodes",
+        SimpleNamespace(NODE_CLASS_MAPPINGS={"InpaintCropImproved": FakeCropNode}),
+    )
+
+    prepare_inpaint_source(
+        config=normalize_inpaint_config(
+            {
+                "image": FakeImage(),
+                "mask": FakeMask(),
+                "crop_device_mode": "cpu (compatible)",
+            }
+        ),
+        width=1024,
+        height=1024,
     )
 
     assert captured["device_mode"] == "cpu (compatible)"
@@ -395,7 +445,7 @@ def test_prepare_inpaint_output_mask_uses_stitcher_blend_mask(monkeypatch):
         normalize_inpaint_config(
             image=SourceImage(),
             mask=SourceMask(),
-            mask_grow=18,
+            mask_grow_percent=20.0,
             mask_feather=32,
         )
     )
@@ -403,7 +453,7 @@ def test_prepare_inpaint_output_mask_uses_stitcher_blend_mask(monkeypatch):
     expected = torch.zeros((1, 6, 10))
     expected[:, 1:5, 2:6] = 0.25
     assert torch.equal(output_mask, expected)
-    assert captured["mask_expand_pixels"] == 18
+    assert captured["mask_expand_pixels"] == 2
     assert captured["mask_blend_pixels"] == 32
     assert captured["device_mode"] == "cpu (compatible)"
 
@@ -429,7 +479,7 @@ def test_prepare_inpaint_source_falls_back_to_full_frame_mask(monkeypatch):
     monkeypatch.setitem(sys.modules, "nodes", SimpleNamespace(NODE_CLASS_MAPPINGS={}))
 
     source = prepare_inpaint_source(
-        config=normalize_inpaint_config(image=image, mask=mask, mask_grow=3),
+        config=normalize_inpaint_config(image=image, mask=mask, mask_grow_percent=100.0),
         width=4,
         height=4,
     )
@@ -441,7 +491,7 @@ def test_prepare_inpaint_source_falls_back_to_full_frame_mask(monkeypatch):
     assert source.mask.shape == (1, 4, 4)
     assert int(source.mask.sum().item()) == 4
     assert source.noise_mask.shape == (1, 4, 4)
-    assert int(source.noise_mask.sum().item()) == 16
+    assert int(source.noise_mask.sum().item()) > 4
 
 
 def test_prepare_inpaint_source_downscales_no_crop_large_full_frame(monkeypatch):

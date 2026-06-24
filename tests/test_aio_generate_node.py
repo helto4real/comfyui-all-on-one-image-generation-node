@@ -273,7 +273,7 @@ def test_main_node_passes_inpaint_config_and_uses_source_dimensions(monkeypatch)
     from nodes import aio_generate
 
     captured = {}
-    inpaint_config = _inpaint_config(monkeypatch, mask_grow=8, mask_feather=24, denoise=0.75)
+    inpaint_config = _inpaint_config(monkeypatch, mask_grow_percent=12.5, mask_feather=24, denoise=0.75)
 
     class FakeAdapter:
         version = "test"
@@ -328,7 +328,7 @@ def test_main_node_passes_inpaint_config_and_uses_source_dimensions(monkeypatch)
 
     assert captured["resolved"]["width"] == 512
     assert captured["resolved"]["height"] == 768
-    assert captured["validated"]["inpaint_config"]["mask_grow"] == 8
+    assert captured["validated"]["inpaint_config"]["mask_grow_percent"] == 12.5
     assert captured["generated"]["inpaint_config"]["mask_feather"] == 24
     assert captured["generated"]["inpaint_config"]["denoise"] == 0.75
     assert (output_width, output_height) == (512, 768)

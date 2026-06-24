@@ -2,6 +2,8 @@ import sys
 from types import ModuleType
 from types import SimpleNamespace
 
+import pytest
+
 from services import performance
 
 
@@ -40,6 +42,26 @@ def install_fake_attention(monkeypatch, available):
     monkeypatch.setitem(sys.modules, "comfy.ldm", fake_ldm)
     monkeypatch.setitem(sys.modules, "comfy.ldm.modules", fake_modules)
     monkeypatch.setitem(sys.modules, "comfy.ldm.modules.attention", fake_attention)
+
+
+def install_fake_model_management(monkeypatch):
+    calls = []
+    fake_comfy = ModuleType("comfy")
+    fake_model_management = ModuleType("comfy.model_management")
+    fake_model_management.EXTRA_RESERVED_VRAM = 123
+
+    def unload_all_models():
+        calls.append("unload")
+
+    def soft_empty_cache():
+        calls.append("empty")
+
+    fake_model_management.unload_all_models = unload_all_models
+    fake_model_management.soft_empty_cache = soft_empty_cache
+    fake_comfy.model_management = fake_model_management
+    monkeypatch.setitem(sys.modules, "comfy", fake_comfy)
+    monkeypatch.setitem(sys.modules, "comfy.model_management", fake_model_management)
+    return fake_model_management, calls
 
 
 def test_auto_attention_selects_best_installed_unmasked(monkeypatch):
@@ -170,3 +192,57 @@ def test_fp16_accumulation_registers_pre_run_and_cleanup_callbacks(monkeypatch):
     patched.callbacks[1][1](patched)
     assert fake_matmul.allow_fp16_accumulation is False
     assert settings["resolved_fp16_accumulation_enabled"] is True
+
+
+@pytest.mark.parametrize("policy", ["auto", "low_vram"])
+def test_memory_policy_cleans_and_sets_conservative_reserved_vram(monkeypatch, policy):
+    fake_model_management, calls = install_fake_model_management(monkeypatch)
+    settings = {"memory_policy": policy}
+
+    performance.apply_memory_policy_before_sampling(settings)
+
+    assert calls == ["unload", "empty"]
+    assert fake_model_management.EXTRA_RESERVED_VRAM == int(0.6 * 1024 * 1024 * 1024)
+    assert settings["resolved_memory_policy"] == policy
+    assert settings["memory_cleanup_applied"] is True
+    assert settings["memory_reserved_vram_gb"] == 0.6
+
+
+def test_balanced_memory_policy_cleans_without_reserved_vram(monkeypatch):
+    fake_model_management, calls = install_fake_model_management(monkeypatch)
+    settings = {"memory_policy": "balanced"}
+
+    performance.apply_memory_policy_before_sampling(settings)
+
+    assert calls == ["unload", "empty"]
+    assert fake_model_management.EXTRA_RESERVED_VRAM == 123
+    assert settings["resolved_memory_policy"] == "balanced"
+    assert settings["memory_cleanup_applied"] is True
+    assert settings["memory_reserved_vram_gb"] == 0.0
+
+
+def test_high_vram_memory_policy_skips_cleanup_and_reserved_vram(monkeypatch):
+    fake_model_management, calls = install_fake_model_management(monkeypatch)
+    settings = {"memory_policy": "high_vram"}
+
+    performance.apply_memory_policy_before_sampling(settings)
+
+    assert calls == []
+    assert fake_model_management.EXTRA_RESERVED_VRAM == 123
+    assert settings["resolved_memory_policy"] == "high_vram"
+    assert settings["memory_cleanup_applied"] is False
+    assert settings["memory_reserved_vram_gb"] == 0.0
+
+
+def test_memory_policy_handles_missing_comfy_memory_api(monkeypatch):
+    fake_comfy = ModuleType("comfy")
+    monkeypatch.setitem(sys.modules, "comfy", fake_comfy)
+    monkeypatch.delitem(sys.modules, "comfy.model_management", raising=False)
+    settings = {"memory_policy": "auto"}
+
+    performance.apply_memory_policy_before_sampling(settings)
+
+    assert settings["resolved_memory_policy"] == "auto"
+    assert settings["memory_cleanup_applied"] is False
+    assert settings["memory_reserved_vram_gb"] == 0.0
+    assert "performance_warnings" in settings

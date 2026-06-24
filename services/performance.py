@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import logging
 from typing import Any, Callable
 
@@ -10,13 +11,18 @@ ATTENTION_MODES = ["auto", "off", "sage", "sage3", "flash", "xformers", "pytorch
 TORCH_COMPILE_MODES = ["auto", "off", "on"]
 TORCH_COMPILE_BACKENDS = ["inductor", "cudagraphs"]
 PERFORMANCE_APPLY_TIMINGS = ["after_loras", "before_loras"]
+MEMORY_POLICIES = ["auto", "low_vram", "balanced", "high_vram"]
 
 DEFAULT_ATTENTION_MODE = "auto"
 DEFAULT_TORCH_COMPILE_MODE = "off"
 DEFAULT_TORCH_COMPILE_BACKEND = "inductor"
 DEFAULT_PERFORMANCE_APPLY_TIMING = "after_loras"
+DEFAULT_MEMORY_POLICY = "balanced"
+CONSERVATIVE_RESERVED_VRAM_GB = 0.6
 
 INCOMPATIBLE_MASKED_ATTENTION_MODES = {"flash", "sage3"}
+MEMORY_CLEANUP_POLICIES = {"auto", "low_vram", "balanced"}
+MEMORY_RESERVED_POLICIES = {"auto", "low_vram"}
 
 
 def performance_settings_present(settings: dict[str, Any]) -> bool:
@@ -107,6 +113,90 @@ def apply_performance_settings(
     if warnings:
         settings["performance_warnings"] = warnings
     return patched_model
+
+
+def apply_memory_policy_before_sampling(settings: dict[str, Any]) -> None:
+    if "memory_policy" not in settings:
+        return
+
+    requested_policy = str(settings.get("memory_policy", DEFAULT_MEMORY_POLICY))
+    policy = requested_policy if requested_policy in MEMORY_POLICIES else DEFAULT_MEMORY_POLICY
+    warnings: list[str] = []
+    cleanup_applied = False
+    reserved_vram_gb = 0.0
+
+    if policy in MEMORY_CLEANUP_POLICIES:
+        cleanup_applied = _clean_comfy_gpu_memory(warnings)
+    if policy in MEMORY_RESERVED_POLICIES:
+        if _set_comfy_reserved_vram(CONSERVATIVE_RESERVED_VRAM_GB, warnings):
+            reserved_vram_gb = CONSERVATIVE_RESERVED_VRAM_GB
+
+    settings["memory_policy"] = policy
+    settings["resolved_memory_policy"] = policy
+    settings["memory_cleanup_applied"] = cleanup_applied
+    settings["memory_reserved_vram_gb"] = reserved_vram_gb
+    if warnings:
+        _append_performance_warnings(settings, warnings)
+
+
+def _clean_comfy_gpu_memory(warnings: list[str]) -> bool:
+    model_management = _import_comfy_model_management(warnings)
+    if model_management is None:
+        return False
+
+    called = False
+    try:
+        gc.collect()
+        unload_all_models = getattr(model_management, "unload_all_models", None)
+        if callable(unload_all_models):
+            unload_all_models()
+            called = True
+        soft_empty_cache = getattr(model_management, "soft_empty_cache", None)
+        if callable(soft_empty_cache):
+            soft_empty_cache()
+            called = True
+    except Exception as exc:  # pragma: no cover - depends on ComfyUI runtime
+        warnings.append(f"could not clean ComfyUI GPU memory before sampling: {exc}")
+        logging.warning("[AIO Image Generate] Could not clean ComfyUI GPU memory before sampling: %s", exc)
+        return False
+
+    if not called:
+        warnings.append("ComfyUI memory cleanup APIs were unavailable")
+    return called
+
+
+def _set_comfy_reserved_vram(reserved_gb: float, warnings: list[str]) -> bool:
+    model_management = _import_comfy_model_management(warnings)
+    if model_management is None:
+        return False
+
+    try:
+        model_management.EXTRA_RESERVED_VRAM = int(float(reserved_gb) * 1024 * 1024 * 1024)
+        return True
+    except Exception as exc:  # pragma: no cover - depends on ComfyUI runtime
+        warnings.append(f"could not set ComfyUI reserved VRAM before sampling: {exc}")
+        logging.warning("[AIO Image Generate] Could not set ComfyUI reserved VRAM before sampling: %s", exc)
+        return False
+
+
+def _import_comfy_model_management(warnings: list[str]):
+    try:
+        import comfy.model_management as model_management  # type: ignore
+
+        return model_management
+    except Exception as exc:  # pragma: no cover - depends on ComfyUI runtime
+        warnings.append(f"could not import ComfyUI memory management: {exc}")
+        return None
+
+
+def _append_performance_warnings(settings: dict[str, Any], warnings: list[str]) -> None:
+    existing = settings.get("performance_warnings")
+    if existing is None:
+        settings["performance_warnings"] = list(warnings)
+    elif isinstance(existing, list):
+        existing.extend(warnings)
+    else:
+        settings["performance_warnings"] = [str(existing), *warnings]
 
 
 def _resolve_attention(
