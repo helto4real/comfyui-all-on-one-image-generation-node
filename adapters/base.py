@@ -82,6 +82,7 @@ class BaseImageAdapter(ABC):
         reference_inputs: Any = None,
         mask: Any = None,
         inpaint_config: dict[str, Any] | None = None,
+        inpaint_previews: dict[str, Any] | None = None,
         lora_config: dict[str, Any] | None = None,
         loaded_model: Any = None,
         loaded_clip: Any = None,

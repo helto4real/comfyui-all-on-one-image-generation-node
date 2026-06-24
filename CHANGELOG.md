@@ -9,6 +9,7 @@
 - Added FLUX.2 Klein support for `AIO Inpaint` masked img2img with optional reference images, Flux inpaint conditioning, optional crop/stitch sampling, and original-canvas restoration for decoded image output.
 - Tuned shared `AIO Inpaint` crop/stitch controls toward the Flux crop/stitch workflow, including percent-based mask grow, 24px blend, and a 1024x1024 working crop target for new nodes.
 - Added an `AIO Inpaint` `final_mask` output that exposes the source-size blend mask after grow and feathering.
+- Added `AIO Image Generate` inpaint debug outputs for the working source image, decoded pre-blend sample, and working mask.
 - Made Flux inpaint safer for large sources by using CPU crop/stitch preparation for the `final_mask` preview, capping full-frame fallback inputs before sampling, and keeping crop/stitch generation on the original GPU path for workflow parity.
 - Added Ideogram 4 `AIO Inpaint` crop/stitch support using clean-source latent sampling with `noise_mask`.
 - Added runtime GGUF loader-node integration for diffusion and text encoder loading through compatible GGUF custom nodes.

@@ -653,6 +653,16 @@ def test_ideogram4_pipeline_uses_dual_model_flow_and_ideogram_sigmas(monkeypatch
 
 def test_ideogram4_pipeline_uses_crop_inpaint_latent_and_stitches_output(monkeypatch):
     calls = {}
+    previews = {
+        pipeline.INPAINT_PREVIEW_REQUESTED: {
+            pipeline.INPAINT_PREVIEW_SOURCE: True,
+            pipeline.INPAINT_PREVIEW_SAMPLE: True,
+            pipeline.INPAINT_PREVIEW_MASK: True,
+        },
+        pipeline.INPAINT_PREVIEW_SOURCE: None,
+        pipeline.INPAINT_PREVIEW_SAMPLE: None,
+        pipeline.INPAINT_PREVIEW_MASK: None,
+    }
 
     monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: f"model:{kwargs['diffusion_model']}")
     monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
@@ -739,6 +749,7 @@ def test_ideogram4_pipeline_uses_crop_inpaint_latent_and_stitches_output(monkeyp
             "final_blend": False,
             "mask_feather": 24,
         },
+        inpaint_previews=previews,
     )
 
     assert image == "stitched_image"
@@ -755,6 +766,9 @@ def test_ideogram4_pipeline_uses_crop_inpaint_latent_and_stitches_output(monkeyp
         "stitcher": "stitcher",
         "inpainted_image": "decoded_image",
     }
+    assert previews[pipeline.INPAINT_PREVIEW_SOURCE] == "cropped_image"
+    assert previews[pipeline.INPAINT_PREVIEW_SAMPLE] == "decoded_image"
+    assert previews[pipeline.INPAINT_PREVIEW_MASK] == "cropped_noise_mask"
 
 
 def test_ideogram4_pipeline_skips_final_blend_when_disabled(monkeypatch):
@@ -1289,6 +1303,16 @@ def test_flux2_pipeline_skips_vae_when_image_decode_disabled_without_references(
 
 def test_flux2_pipeline_uses_inpaint_latent_and_final_blend(monkeypatch):
     calls = {}
+    previews = {
+        pipeline.INPAINT_PREVIEW_REQUESTED: {
+            pipeline.INPAINT_PREVIEW_SOURCE: True,
+            pipeline.INPAINT_PREVIEW_SAMPLE: True,
+            pipeline.INPAINT_PREVIEW_MASK: True,
+        },
+        pipeline.INPAINT_PREVIEW_SOURCE: None,
+        pipeline.INPAINT_PREVIEW_SAMPLE: None,
+        pipeline.INPAINT_PREVIEW_MASK: None,
+    }
 
     monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
     monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
@@ -1307,6 +1331,7 @@ def test_flux2_pipeline_uses_inpaint_latent_and_final_blend(monkeypatch):
         lambda **kwargs: pipeline.inpaint_service.InpaintSource(
             image="cropped_image",
             mask="cropped_mask",
+            noise_mask="cropped_noise_mask",
             stitcher="stitcher",
             used_crop=True,
             width=1024,
@@ -1374,6 +1399,7 @@ def test_flux2_pipeline_uses_inpaint_latent_and_final_blend(monkeypatch):
             "final_blend": True,
             "mask_feather": 24,
         },
+        inpaint_previews=previews,
     )
 
     assert image == "stitched_image"
@@ -1383,7 +1409,7 @@ def test_flux2_pipeline_uses_inpaint_latent_and_final_blend(monkeypatch):
     assert loaded_vae == "vae"
     assert calls["reference_latents"] == [{"samples": "source_ref"}]
     assert calls["conditioning"]["image"] == "cropped_image"
-    assert calls["conditioning"]["mask"] == "cropped_mask"
+    assert calls["conditioning"]["mask"] == "cropped_noise_mask"
     assert calls["sigmas"] == {"steps": 4, "width": 1024, "height": 1024}
     assert calls["denoise"] == {"sigmas": "sigmas", "denoise": 0.75}
     assert calls["sample"]["latent"] == {"samples": "inpaint", "noise_mask": "mask"}
@@ -1392,6 +1418,9 @@ def test_flux2_pipeline_uses_inpaint_latent_and_final_blend(monkeypatch):
         "stitcher": "stitcher",
         "inpainted_image": "decoded_image",
     }
+    assert previews[pipeline.INPAINT_PREVIEW_SOURCE] == "cropped_image"
+    assert previews[pipeline.INPAINT_PREVIEW_SAMPLE] == "decoded_image"
+    assert previews[pipeline.INPAINT_PREVIEW_MASK] == "cropped_noise_mask"
 
 
 def test_flux2_pipeline_skips_duplicate_inpaint_source_reference(monkeypatch):
@@ -1652,6 +1681,76 @@ def test_flux2_pipeline_skips_decode_and_blend_for_latent_only_inpaint(monkeypat
     assert image is None
     assert latent == {"samples": "sampled"}
     assert loaded_vae == "vae"
+
+
+def test_flux2_pipeline_decodes_inpaint_sample_preview_without_final_image(monkeypatch):
+    previews = {
+        pipeline.INPAINT_PREVIEW_REQUESTED: {
+            pipeline.INPAINT_PREVIEW_SOURCE: False,
+            pipeline.INPAINT_PREVIEW_SAMPLE: True,
+            pipeline.INPAINT_PREVIEW_MASK: False,
+        },
+        pipeline.INPAINT_PREVIEW_SOURCE: None,
+        pipeline.INPAINT_PREVIEW_SAMPLE: None,
+        pipeline.INPAINT_PREVIEW_MASK: None,
+    }
+
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model", "clip", []))
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
+    monkeypatch.setattr(pipeline, "encode_flux2_prompt", lambda **kwargs: "positive")
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "negative")
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "prepare_inpaint_source",
+        lambda **kwargs: pipeline.inpaint_service.InpaintSource(image="crop", mask="mask", stitcher="stitcher"),
+    )
+    monkeypatch.setattr(pipeline, "encode_image_to_latent", lambda **kwargs: {"samples": "source_ref"})
+    monkeypatch.setattr(pipeline, "apply_reference_latents_to_conditioning", lambda **kwargs: ("positive+ref", "unused"))
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "apply_inpaint_model_conditioning",
+        lambda **kwargs: ("inpaint_positive", "inpaint_negative", {"samples": "inpaint", "noise_mask": "mask"}),
+    )
+    monkeypatch.setattr(pipeline, "flux2_sigmas", lambda **kwargs: "sigmas")
+    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", lambda sigmas, denoise: sigmas)
+    monkeypatch.setattr(pipeline, "sample_with_sigmas", lambda **kwargs: {"samples": "sampled"})
+    monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: "decoded_preview")
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "blend_inpaint_image",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("blend should not run")),
+    )
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "stitch_inpaint_image",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("stitch should not run")),
+    )
+
+    image, latent, _, _, loaded_vae = pipeline.generate_flux2_klein_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="negative",
+        width=512,
+        height=768,
+        seed=123,
+        steps=4,
+        cfg=1.0,
+        sampler="auto",
+        scheduler="auto",
+        settings={},
+        inpaint_config={"image": "image", "mask": "mask", "denoise": 1.0},
+        inpaint_previews=previews,
+        decode_image=False,
+    )
+
+    assert image is None
+    assert latent == {"samples": "sampled"}
+    assert loaded_vae == "vae"
+    assert previews[pipeline.INPAINT_PREVIEW_SAMPLE] == "decoded_preview"
 
 
 def test_flux2_pipeline_passes_inpaint_denoise_to_ksampler_scheduler(monkeypatch):

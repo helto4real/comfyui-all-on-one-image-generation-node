@@ -40,6 +40,22 @@ except ImportError:  # pragma: no cover - direct test imports
 
 
 PID_CAPTURE_KEY = "pid_capture"
+INPAINT_PREVIEW_SOURCE = "inpaint_source"
+INPAINT_PREVIEW_SAMPLE = "inpaint_sample"
+INPAINT_PREVIEW_MASK = "inpaint_mask"
+INPAINT_PREVIEW_REQUESTED = "requested"
+
+
+def _inpaint_preview_requested(previews: dict[str, Any] | None, name: str) -> bool:
+    if not isinstance(previews, dict):
+        return False
+    requested = previews.get(INPAINT_PREVIEW_REQUESTED)
+    return isinstance(requested, dict) and bool(requested.get(name))
+
+
+def _set_inpaint_preview(previews: dict[str, Any] | None, name: str, value: Any) -> None:
+    if _inpaint_preview_requested(previews, name):
+        previews[name] = value
 
 
 def _filename_only(filename: str) -> str:
@@ -723,6 +739,7 @@ def generate_ideogram4_t2i(
     loaded_model: Any = None,
     loaded_clip: Any = None,
     inpaint_config: dict[str, Any] | None = None,
+    inpaint_previews: dict[str, Any] | None = None,
     decode_image: bool = True,
     return_vae: bool = False,
     pid_capture_step: int | None = None,
@@ -790,6 +807,8 @@ def generate_ideogram4_t2i(
             width=width,
             height=height,
         )
+        _set_inpaint_preview(inpaint_previews, INPAINT_PREVIEW_SOURCE, inpaint_source.image)
+        _set_inpaint_preview(inpaint_previews, INPAINT_PREVIEW_MASK, inpaint_source.sampling_mask)
         _phase(progress, "encoding inpaint image")
         latent = inpaint_service.encode_inpaint_source_latent(
             vae=loaded_vae,
@@ -839,13 +858,20 @@ def generate_ideogram4_t2i(
             pid_capture_step=pid_capture_step,
         )
     image = None
-    if decode_image or return_vae:
+    decode_inpaint_sample = (
+        inpaint_config is not None
+        and _inpaint_preview_requested(inpaint_previews, INPAINT_PREVIEW_SAMPLE)
+    )
+    if decode_image or decode_inpaint_sample or return_vae:
         if loaded_vae is None:
             _phase(progress, "loading vae")
             loaded_vae = load_vae(vae=vae)
-    if decode_image:
+    if decode_image or decode_inpaint_sample:
         _phase(progress, "decoding")
-        image = decode_latent(vae=loaded_vae, latent=sampled_latent)
+        decoded_image = decode_latent(vae=loaded_vae, latent=sampled_latent)
+        _set_inpaint_preview(inpaint_previews, INPAINT_PREVIEW_SAMPLE, decoded_image)
+        image = decoded_image if decode_image else None
+    if decode_image:
         if inpaint_config is not None and inpaint_source is not None:
             if inpaint_source.stitcher is not None:
                 _phase(progress, "stitching inpaint")
@@ -1037,6 +1063,7 @@ def generate_flux2_klein_t2i(
     loaded_clip: Any = None,
     reference_inputs: Any = None,
     inpaint_config: dict[str, Any] | None = None,
+    inpaint_previews: dict[str, Any] | None = None,
     decode_image: bool = True,
     return_vae: bool = False,
     pid_capture_step: int | None = None,
@@ -1101,6 +1128,8 @@ def generate_flux2_klein_t2i(
             width=width,
             height=height,
         )
+        _set_inpaint_preview(inpaint_previews, INPAINT_PREVIEW_SOURCE, flux_inpaint_source.image)
+        _set_inpaint_preview(inpaint_previews, INPAINT_PREVIEW_MASK, flux_inpaint_source.sampling_mask)
     if reference_images:
         _phase(progress, "encoding reference images")
         reference_latents = []
@@ -1205,12 +1234,19 @@ def generate_flux2_klein_t2i(
                 pid_capture_step=pid_capture_step,
             )
     image = None
-    if (decode_image or return_vae) and loaded_vae is None:
+    decode_inpaint_sample = (
+        inpaint_config is not None
+        and _inpaint_preview_requested(inpaint_previews, INPAINT_PREVIEW_SAMPLE)
+    )
+    if (decode_image or decode_inpaint_sample or return_vae) and loaded_vae is None:
         _phase(progress, "loading vae")
         loaded_vae = load_vae(vae=vae)
-    if decode_image:
+    if decode_image or decode_inpaint_sample:
         _phase(progress, "decoding")
-        image = decode_latent(vae=loaded_vae, latent=sampled_latent)
+        decoded_image = decode_latent(vae=loaded_vae, latent=sampled_latent)
+        _set_inpaint_preview(inpaint_previews, INPAINT_PREVIEW_SAMPLE, decoded_image)
+        image = decoded_image if decode_image else None
+    if decode_image:
         if inpaint_config is not None and flux_inpaint_source is not None:
             if flux_inpaint_source.stitcher is not None:
                 _phase(progress, "stitching inpaint")

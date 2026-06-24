@@ -136,6 +136,7 @@ class Flux2Klein9BAdapter(BaseImageAdapter):
             loaded_clip=kwargs.get("loaded_clip"),
             reference_inputs=kwargs.get("reference_inputs"),
             inpaint_config=kwargs.get("inpaint_config"),
+            inpaint_previews=kwargs.get("inpaint_previews"),
             decode_image=kwargs.get("decode_image", True),
             return_vae=kwargs.get("return_vae", False),
             pid_capture_step=kwargs.get("pid_capture_step"),

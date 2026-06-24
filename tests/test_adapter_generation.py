@@ -255,6 +255,7 @@ def test_ideogram4_adapter_passes_inpaint_config_to_pipeline(monkeypatch):
     monkeypatch.setattr(ideogram4.pipeline, "generate_ideogram4_t2i", fake_generate)
     adapter = Ideogram4Adapter()
     inpaint_config = {"image": "image", "mask": "mask", "denoise": 1.0}
+    inpaint_previews = {"requested": {}}
 
     adapter.generate(
         diffusion_model="model.safetensors",
@@ -274,9 +275,11 @@ def test_ideogram4_adapter_passes_inpaint_config_to_pipeline(monkeypatch):
         sampler="euler",
         scheduler="ideogram4",
         inpaint_config=inpaint_config,
+        inpaint_previews=inpaint_previews,
     )
 
     assert calls["inpaint_config"] is inpaint_config
+    assert calls["inpaint_previews"] is inpaint_previews
 
 
 def test_flux2_adapter_accepts_inpaint_and_passes_config_to_pipeline(monkeypatch):
@@ -291,6 +294,7 @@ def test_flux2_adapter_accepts_inpaint_and_passes_config_to_pipeline(monkeypatch
     adapter = Flux2Klein9BAdapter()
     settings = {"steps": 4, "cfg": 1.0}
     inpaint_config = {"image": "image", "mask": "mask", "denoise": 0.8}
+    inpaint_previews = {"requested": {}}
 
     warnings = adapter.validate_inputs(
         diffusion_model="model.safetensors",
@@ -317,11 +321,13 @@ def test_flux2_adapter_accepts_inpaint_and_passes_config_to_pipeline(monkeypatch
         sampler="auto",
         scheduler="auto",
         inpaint_config=inpaint_config,
+        inpaint_previews=inpaint_previews,
     )
 
     assert warnings == []
     assert settings["edit_mode"] == "inpaint"
     assert calls["inpaint_config"] is inpaint_config
+    assert calls["inpaint_previews"] is inpaint_previews
 
 
 def test_flux2_adapter_warns_when_no_crop_inpaint_will_downscale(monkeypatch):
@@ -613,7 +619,7 @@ def test_z_image_negative_prompt_warning_is_in_run_info(monkeypatch):
 
     monkeypatch.setattr(z_image_turbo.pipeline, "generate_z_image_turbo_t2i", fake_generate)
 
-    image, latent, run_info, positive, negative, loaded_vae, pid_latent, pid_sigma, output_width, output_height = AIOImageGenerate().generate(
+    image, latent, run_info, positive, negative, loaded_vae, pid_latent, pid_sigma, output_width, output_height, *_debug_outputs = AIOImageGenerate().generate(
         model_type="z_image_turbo",
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",

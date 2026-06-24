@@ -67,6 +67,9 @@ except ImportError:  # pragma: no cover - direct test imports
 DEFAULT_PROMPT = "A luminous studio portrait, crisp details, natural color, soft light"
 PID_LATENT_OUTPUT_INDEX = 6
 PID_SIGMA_OUTPUT_INDEX = 7
+INPAINT_SOURCE_OUTPUT_INDEX = 10
+INPAINT_SAMPLE_OUTPUT_INDEX = 11
+INPAINT_MASK_OUTPUT_INDEX = 12
 AIO_GENERATE_SERIALIZED_WIDGET_NAMES = (
     "model_type",
     "diffusion_model",
@@ -346,6 +349,9 @@ class AIOImageGenerate:
         "FLOAT",
         "INT",
         "INT",
+        "IMAGE",
+        "IMAGE",
+        "MASK",
     )
     RETURN_NAMES = (
         "image",
@@ -358,6 +364,9 @@ class AIOImageGenerate:
         "pid_sigma",
         "width",
         "height",
+        "inpaint_source",
+        "inpaint_sample",
+        "inpaint_mask",
     )
     FUNCTION = "generate"
 
@@ -580,6 +589,9 @@ class AIOImageGenerate:
         vae_connected = output_is_connected(prompt, extra_pnginfo, unique_id, 5)
         pid_latent_connected = output_is_connected(prompt, extra_pnginfo, unique_id, PID_LATENT_OUTPUT_INDEX)
         pid_sigma_connected = output_is_connected(prompt, extra_pnginfo, unique_id, PID_SIGMA_OUTPUT_INDEX)
+        inpaint_source_connected = output_is_connected(prompt, extra_pnginfo, unique_id, INPAINT_SOURCE_OUTPUT_INDEX)
+        inpaint_sample_connected = output_is_connected(prompt, extra_pnginfo, unique_id, INPAINT_SAMPLE_OUTPUT_INDEX)
+        inpaint_mask_connected = output_is_connected(prompt, extra_pnginfo, unique_id, INPAINT_MASK_OUTPUT_INDEX)
         pid_capture_connected = pid_latent_connected or pid_sigma_connected
         decode_image = image_connected
         reference_inputs = normalize_reference_inputs(
@@ -594,6 +606,16 @@ class AIOImageGenerate:
         normalized_lora_config = normalize_lora_config(lora_config)
         lora_summary = summarize_loras(normalized_lora_config)
         normalized_inpaint_config = normalize_optional_inpaint_config(inpaint)
+        inpaint_previews = {
+            pipeline.INPAINT_PREVIEW_REQUESTED: {
+                pipeline.INPAINT_PREVIEW_SOURCE: normalized_inpaint_config is not None and inpaint_source_connected,
+                pipeline.INPAINT_PREVIEW_SAMPLE: normalized_inpaint_config is not None and inpaint_sample_connected,
+                pipeline.INPAINT_PREVIEW_MASK: normalized_inpaint_config is not None and inpaint_mask_connected,
+            },
+            pipeline.INPAINT_PREVIEW_SOURCE: None,
+            pipeline.INPAINT_PREVIEW_SAMPLE: None,
+            pipeline.INPAINT_PREVIEW_MASK: None,
+        }
 
         adapter = get_adapter(model_type)
         size_mode = reference_values.get("size mode")
@@ -694,6 +716,7 @@ class AIOImageGenerate:
             loaded_clip=clip,
             reference_inputs=reference_inputs,
             inpaint_config=normalized_inpaint_config,
+            inpaint_previews=inpaint_previews,
             decode_image=decode_image,
             return_vae=vae_connected,
             pid_capture_step=resolved_pid_capture_step,
@@ -743,4 +766,7 @@ class AIOImageGenerate:
             pid_sigma,
             output_width,
             output_height,
+            inpaint_previews[pipeline.INPAINT_PREVIEW_SOURCE],
+            inpaint_previews[pipeline.INPAINT_PREVIEW_SAMPLE],
+            inpaint_previews[pipeline.INPAINT_PREVIEW_MASK],
         )
