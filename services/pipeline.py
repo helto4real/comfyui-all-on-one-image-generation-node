@@ -740,19 +740,22 @@ def generate_ideogram4_t2i(
     positive = encode_ideogram4_prompt(clip=clip, prompt=positive_prompt)
     negative = zero_out_conditioning(positive)
     loaded_vae = None
-    inpaint_source_image = None
-    inpaint_mask = None
     if inpaint_config is not None:
         _phase(progress, "loading vae")
         loaded_vae = load_vae(vae=vae)
-        _phase(progress, "encoding inpaint image")
-        latent, inpaint_source_image, inpaint_mask = inpaint_service.prepare_inpaint_latent(
-            vae=loaded_vae,
+        _phase(progress, "preparing inpaint crop")
+        inpaint_source = inpaint_service.prepare_inpaint_source(
             config=inpaint_config,
             width=width,
             height=height,
         )
+        _phase(progress, "encoding inpaint image")
+        latent = inpaint_service.encode_inpaint_source_latent(
+            vae=loaded_vae,
+            source=inpaint_source,
+        )
     else:
+        inpaint_source = None
         latent = make_empty_ideogram4_latent(width=width, height=height)
     _phase(progress, "preparing guider")
     guider = build_dual_model_guider(
@@ -797,19 +800,21 @@ def generate_ideogram4_t2i(
     if decode_image:
         _phase(progress, "decoding")
         image = decode_latent(vae=loaded_vae, latent=sampled_latent)
-        if (
-            inpaint_config is not None
-            and bool(inpaint_config.get("final_blend", True))
-            and inpaint_source_image is not None
-            and inpaint_mask is not None
-        ):
-            _phase(progress, "blending inpaint")
-            image = inpaint_service.blend_inpaint_image(
-                source_image=inpaint_source_image,
-                generated_image=image,
-                mask=inpaint_mask,
-                feather=int(inpaint_config.get("mask_feather", 16)),
-            )
+        if inpaint_config is not None and inpaint_source is not None:
+            if inpaint_source.stitcher is not None:
+                _phase(progress, "stitching inpaint")
+                image = inpaint_service.stitch_inpaint_image(
+                    stitcher=inpaint_source.stitcher,
+                    inpainted_image=image,
+                )
+            elif bool(inpaint_config.get("final_blend", True)):
+                _phase(progress, "blending inpaint")
+                image = inpaint_service.blend_inpaint_image(
+                    source_image=inpaint_source.image,
+                    generated_image=image,
+                    mask=inpaint_source.mask,
+                    feather=int(inpaint_config.get("mask_feather", 16)),
+                )
     return image, sampled_latent, positive, negative, loaded_vae
 
 
@@ -1041,7 +1046,7 @@ def generate_flux2_klein_t2i(
     flux_inpaint_source = None
     if inpaint_config is not None:
         _phase(progress, "preparing inpaint crop")
-        flux_inpaint_source = inpaint_service.prepare_flux_inpaint_source(
+        flux_inpaint_source = inpaint_service.prepare_inpaint_source(
             config=inpaint_config,
             width=width,
             height=height,
@@ -1102,7 +1107,7 @@ def generate_flux2_klein_t2i(
             positive=positive,
             negative=negative,
             image=flux_inpaint_source.image,
-            mask=flux_inpaint_source.mask,
+            mask=flux_inpaint_source.sampling_mask,
         )
     else:
         latent = make_empty_flux2_latent(width=width, height=height)

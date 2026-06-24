@@ -6,12 +6,13 @@ import pytest
 from nodes.inpaint import AIOInpaint
 from services.inpaint import (
     apply_inpaint_model_conditioning,
-    FluxInpaintSource,
+    encode_inpaint_source_latent,
     grow_inpaint_mask,
+    InpaintSource,
     normalize_inpaint_config,
-    prepare_flux_inpaint_source,
     prepare_inpaint_latent,
     prepare_inpaint_mask,
+    prepare_inpaint_source,
     resolve_dimensions_from_inpaint_config,
     stitch_inpaint_image,
 )
@@ -162,7 +163,7 @@ def test_prepare_inpaint_latent_encodes_clean_image_and_attaches_noise_mask(monk
     assert torch.equal(latent["noise_mask"][:, 0], mask)
 
 
-def test_prepare_flux_inpaint_source_uses_crop_node_when_available(monkeypatch):
+def test_prepare_inpaint_source_uses_crop_node_when_available(monkeypatch):
     captured = {}
 
     class FakeCropNode:
@@ -176,7 +177,7 @@ def test_prepare_flux_inpaint_source_uses_crop_node_when_available(monkeypatch):
         SimpleNamespace(NODE_CLASS_MAPPINGS={"InpaintCropImproved": FakeCropNode}),
     )
 
-    source = prepare_flux_inpaint_source(
+    source = prepare_inpaint_source(
         config=normalize_inpaint_config(
             image="image",
             mask="mask",
@@ -188,9 +189,10 @@ def test_prepare_flux_inpaint_source_uses_crop_node_when_available(monkeypatch):
         height=1024,
     )
 
-    assert source == FluxInpaintSource(
+    assert source == InpaintSource(
         image="cropped_image",
         mask="cropped_mask",
+        noise_mask="cropped_mask",
         stitcher="stitcher",
         used_crop=True,
     )
@@ -209,7 +211,7 @@ def test_prepare_flux_inpaint_source_uses_crop_node_when_available(monkeypatch):
     assert captured["device_mode"] == "gpu (much faster)"
 
 
-def test_prepare_flux_inpaint_source_falls_back_to_full_frame_mask(monkeypatch):
+def test_prepare_inpaint_source_falls_back_to_full_frame_mask(monkeypatch):
     torch = pytest.importorskip("torch")
     image = torch.rand((1, 4, 4, 3))
     mask = torch.zeros((1, 4, 4))
@@ -217,7 +219,7 @@ def test_prepare_flux_inpaint_source_falls_back_to_full_frame_mask(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "nodes", SimpleNamespace(NODE_CLASS_MAPPINGS={}))
 
-    source = prepare_flux_inpaint_source(
+    source = prepare_inpaint_source(
         config=normalize_inpaint_config(image=image, mask=mask, mask_grow=3),
         width=4,
         height=4,
@@ -227,7 +229,44 @@ def test_prepare_flux_inpaint_source_falls_back_to_full_frame_mask(monkeypatch):
     assert source.used_crop is False
     assert source.image is image
     assert source.mask.shape == (1, 4, 4)
-    assert int(source.mask.sum().item()) == 16
+    assert int(source.mask.sum().item()) == 4
+    assert source.noise_mask.shape == (1, 4, 4)
+    assert int(source.noise_mask.sum().item()) == 16
+
+
+def test_encode_inpaint_source_latent_encodes_clean_source_and_attaches_noise_mask(monkeypatch):
+    torch = pytest.importorskip("torch")
+    image = torch.rand((1, 4, 4, 3))
+    blend_mask = torch.zeros((1, 4, 4))
+    noise_mask = torch.ones((1, 4, 4))
+    captured = {}
+
+    class FakeVAEEncode:
+        def encode(self, vae, pixels):
+            captured["vae"] = vae
+            captured["pixels"] = pixels
+            return ({"samples": "clean_source_latent"},)
+
+    class FakeVAEEncodeForInpaint:
+        def encode(self, *args, **kwargs):
+            raise AssertionError("gray-masked VAEEncodeForInpaint should not be used")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "nodes",
+        SimpleNamespace(VAEEncode=FakeVAEEncode, VAEEncodeForInpaint=FakeVAEEncodeForInpaint),
+    )
+
+    latent = encode_inpaint_source_latent(
+        vae="vae",
+        source=InpaintSource(image=image, mask=blend_mask, noise_mask=noise_mask),
+    )
+
+    assert captured["vae"] == "vae"
+    assert captured["pixels"] is image
+    assert latent["samples"] == "clean_source_latent"
+    assert latent["noise_mask"].shape == (1, 1, 4, 4)
+    assert torch.equal(latent["noise_mask"][:, 0], noise_mask)
 
 
 def test_apply_inpaint_model_conditioning_uses_comfy_node(monkeypatch):

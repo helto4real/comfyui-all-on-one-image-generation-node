@@ -15,17 +15,25 @@ except ImportError:  # pragma: no cover - direct test imports
 
 INPAINT_CONFIG_VERSION = 1
 INPAINT_SIZE_MODE = "use inpaint image size"
-FLUX_INPAINT_CONTEXT_FACTOR = 1.6
-FLUX_INPAINT_OUTPUT_PADDING = "64"
-FLUX_INPAINT_DEVICE_MODE = "gpu (much faster)"
+CROP_INPAINT_CONTEXT_FACTOR = 1.6
+CROP_INPAINT_OUTPUT_PADDING = "64"
+CROP_INPAINT_DEVICE_MODE = "gpu (much faster)"
 
 
 @dataclass(frozen=True)
-class FluxInpaintSource:
+class InpaintSource:
     image: Any
     mask: Any
+    noise_mask: Any = None
     stitcher: Any = None
     used_crop: bool = False
+
+    @property
+    def sampling_mask(self) -> Any:
+        return self.noise_mask if self.noise_mask is not None else self.mask
+
+
+FluxInpaintSource = InpaintSource
 
 
 def normalize_inpaint_config(
@@ -59,7 +67,7 @@ def normalize_inpaint_config(
         "mask_fill_holes": bool(source.get("mask_fill_holes", True)),
         "mask_hipass_filter": _validate_float(source.get("mask_hipass_filter", 0.1), "mask_hipass_filter", 0.0, 1.0),
         "context_from_mask_extend_factor": _validate_float(
-            source.get("context_from_mask_extend_factor", FLUX_INPAINT_CONTEXT_FACTOR),
+            source.get("context_from_mask_extend_factor", CROP_INPAINT_CONTEXT_FACTOR),
             "context_from_mask_extend_factor",
             1.0,
             100.0,
@@ -67,8 +75,8 @@ def normalize_inpaint_config(
         "crop_source_reference": bool(source.get("crop_source_reference", True)),
         "crop_downscale_algorithm": str(source.get("crop_downscale_algorithm", "bilinear")),
         "crop_upscale_algorithm": str(source.get("crop_upscale_algorithm", "bicubic")),
-        "crop_output_padding": str(source.get("crop_output_padding", FLUX_INPAINT_OUTPUT_PADDING)),
-        "crop_device_mode": str(source.get("crop_device_mode", FLUX_INPAINT_DEVICE_MODE)),
+        "crop_output_padding": str(source.get("crop_output_padding", CROP_INPAINT_OUTPUT_PADDING)),
+        "crop_device_mode": str(source.get("crop_device_mode", CROP_INPAINT_DEVICE_MODE)),
     }
 
 
@@ -124,12 +132,12 @@ def prepare_inpaint_latent(
     return latent, image, mask
 
 
-def prepare_flux_inpaint_source(
+def prepare_inpaint_source(
     *,
     config: Mapping[str, Any],
     width: int,
     height: int,
-) -> FluxInpaintSource:
+) -> InpaintSource:
     normalized = normalize_inpaint_config(config)
     crop_cls = _optional_node_class("InpaintCropImproved")
     if crop_cls is not None:
@@ -162,17 +170,41 @@ def prepare_flux_inpaint_source(
             mask=normalized["mask"],
             optional_context_mask=config.get("context_mask"),
         )[:3]
-        return FluxInpaintSource(
+        return InpaintSource(
             image=cropped_image,
             mask=cropped_mask,
+            noise_mask=cropped_mask,
             stitcher=stitcher,
             used_crop=True,
         )
 
     image = resize_image_to_dimensions(normalized["image"], width=width, height=height)
     mask = prepare_inpaint_mask(normalized, width=width, height=height)
-    mask = grow_inpaint_mask(mask, int(normalized["mask_grow"]))
-    return FluxInpaintSource(image=image, mask=mask)
+    noise_mask = grow_inpaint_mask(mask, int(normalized["mask_grow"]))
+    return InpaintSource(image=image, mask=mask, noise_mask=noise_mask)
+
+
+def prepare_flux_inpaint_source(
+    *,
+    config: Mapping[str, Any],
+    width: int,
+    height: int,
+) -> InpaintSource:
+    return prepare_inpaint_source(config=config, width=width, height=height)
+
+
+def encode_inpaint_source_latent(
+    *,
+    vae: Any,
+    source: InpaintSource,
+) -> dict[str, Any]:
+    import nodes  # type: ignore
+
+    mask = source.sampling_mask
+    latent = nodes.VAEEncode().encode(vae, source.image)[0]
+    latent = latent.copy()
+    latent["noise_mask"] = mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1]))
+    return latent
 
 
 def apply_inpaint_model_conditioning(

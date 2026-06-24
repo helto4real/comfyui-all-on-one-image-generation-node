@@ -155,7 +155,7 @@ When both `model` and `clip` are connected, the main node treats them as already
 - FLUX.2 Klein supports inpaint through the dedicated `AIO Inpaint` config node. With `ComfyUI-Inpaint-CropAndStitch` installed, the Flux path crops around the mask, uses ComfyUI `InpaintModelConditioning`, samples the crop, and stitches the decoded result back to the original image size. Without that optional node pack, it falls back to full-frame masked sampling and final blend.
 - FLUX.2 Klein latent-only inpaint output returns the sampled working latent; decoded image output is the path that restores the original canvas size.
 - The legacy `mask` input is still only accepted alongside `image 1` and is not the inpaint contract.
-- Ideogram 4 supports text-to-image and `AIO Inpaint` in this adapter. Reference images, legacy masks, negative prompts, and GGUF model files are not implemented for Ideogram 4.
+- Ideogram 4 supports text-to-image and `AIO Inpaint` in this adapter. With `ComfyUI-Inpaint-CropAndStitch` installed, Ideogram inpaint crops around the mask, samples a clean-source latent with `noise_mask`, and stitches the decoded crop back to the original image size; it does not use Flux `InpaintModelConditioning`. Reference images, legacy masks, negative prompts, and GGUF model files are not implemented for Ideogram 4.
 - Ideogram 4 output dimensions must be multiples of 16, between 256 and 2048 pixels per side, with aspect ratio no wider than 6:1.
 - Krea 2 supports text-to-image only in this adapter. Reference images, masks, inpaint, negative prompts, and GGUF model files are not implemented for Krea 2.
 - Krea 2 output dimensions must be multiples of 16.
