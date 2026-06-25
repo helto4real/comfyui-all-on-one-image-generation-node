@@ -93,9 +93,10 @@ def build_run_info(
     adapter_version: str,
     loras: list[dict[str, Any]] | None = None,
     privacy_mode: bool = False,
+    debug: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     settings_info = settings_info_from_settings(settings, privacy_mode=privacy_mode)
-    return {
+    info = {
         "model_type": model_type,
         "display_name": display_name,
         "diffusion_model": diffusion_model,
@@ -117,6 +118,9 @@ def build_run_info(
         "adapter_version": adapter_version,
         "loras": loras or [],
     }
+    if debug is not None:
+        info["debug"] = debug
+    return info
 
 
 def to_json(run_info: dict[str, Any]) -> str:

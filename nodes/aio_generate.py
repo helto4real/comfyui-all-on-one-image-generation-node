@@ -182,6 +182,14 @@ def _workflow_widget_names(node: dict[str, Any]) -> tuple[str, ...]:
     return tuple(names) or AIO_GENERATE_SERIALIZED_WIDGET_NAMES
 
 
+def _workflow_raw_widget_values(extra_pnginfo: Any, unique_id: str | None) -> list[Any]:
+    node = _workflow_node(extra_pnginfo, unique_id)
+    if node is None:
+        return []
+    values = node.get("widgets_values")
+    return values if isinstance(values, list) else []
+
+
 def _workflow_widget_value(extra_pnginfo: Any, unique_id: str | None, widget_name: str) -> Any:
     node = _workflow_node(extra_pnginfo, unique_id)
     if node is None:
@@ -204,6 +212,108 @@ def _image_dimensions(image: Any) -> tuple[int, int] | None:
     if shape is None or len(shape) < 3:
         return None
     return int(shape[2]), int(shape[1])
+
+
+def _shape_info(value: Any) -> list[Any] | None:
+    shape = getattr(value, "shape", None)
+    if shape is None:
+        return None
+    try:
+        return [int(item) for item in shape]
+    except Exception:
+        return [int(item) if isinstance(item, int) else str(item) for item in shape]
+
+
+def _debug_value(value: Any, *, depth: int = 0) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if depth > 4:
+        return {"type": type(value).__name__}
+    shape = _shape_info(value)
+    if shape is not None:
+        return {"type": type(value).__name__, "shape": shape}
+    if isinstance(value, dict):
+        return {str(key): _debug_value(item, depth=depth + 1) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_debug_value(item, depth=depth + 1) for item in value]
+    return {"type": type(value).__name__}
+
+
+def _prompt_node(prompt: Any, unique_id: str | None) -> dict[str, Any] | None:
+    if not isinstance(prompt, dict) or unique_id is None:
+        return None
+    node = prompt.get(str(unique_id))
+    if not isinstance(node, dict):
+        node = prompt.get(unique_id)
+    return node if isinstance(node, dict) else None
+
+
+def _workflow_widget_values(extra_pnginfo: Any, unique_id: str | None) -> dict[str, Any]:
+    node = _workflow_node(extra_pnginfo, unique_id)
+    if node is None:
+        return {}
+    values = node.get("widgets_values")
+    if not isinstance(values, list):
+        return {}
+    names = _workflow_widget_names(node)
+    return {
+        name: _debug_value(values[index])
+        for index, name in enumerate(names)
+        if index < len(values)
+    }
+
+
+def _workflow_raw_widget_values_debug(extra_pnginfo: Any, unique_id: str | None) -> list[dict[str, Any]]:
+    return [
+        {"index": index, "value": _debug_value(value)}
+        for index, value in enumerate(_workflow_raw_widget_values(extra_pnginfo, unique_id))
+    ]
+
+
+def _debug_prompt_payload(prompt: Any, extra_pnginfo: Any, unique_id: str | None) -> dict[str, Any]:
+    node = _prompt_node(prompt, unique_id)
+    inputs = node.get("inputs") if isinstance(node, dict) else None
+    return {
+        "unique_id": unique_id,
+        "class_type": node.get("class_type") if isinstance(node, dict) else None,
+        "inputs": _debug_value(inputs) if isinstance(inputs, dict) else {},
+        "workflow_widgets": _workflow_widget_values(extra_pnginfo, unique_id),
+        "workflow_widgets_raw": _workflow_raw_widget_values_debug(extra_pnginfo, unique_id),
+    }
+
+
+def _debug_reference_inputs(reference_inputs: Any) -> dict[str, Any]:
+    return {
+        "count": int(getattr(reference_inputs, "count", 0)),
+        "image_shapes": [_shape_info(image) for image in getattr(reference_inputs, "images", ())],
+        "mask_connected": getattr(reference_inputs, "mask", None) is not None,
+        "mask_shape": _shape_info(getattr(reference_inputs, "mask", None)),
+    }
+
+
+def _debug_inpaint_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    if config is None:
+        return {"connected": False}
+    info = {key: _debug_value(value) for key, value in config.items() if key not in {"image", "mask"}}
+    info.update(
+        {
+            "connected": True,
+            "image_shape": _shape_info(config.get("image")),
+            "mask_shape": _shape_info(config.get("mask")),
+        }
+    )
+    return info
+
+
+def _resolved_dimensions_debug(dimensions: ResolvedDimensions) -> dict[str, Any]:
+    return {
+        "width": int(dimensions.width),
+        "height": int(dimensions.height),
+        "max_side": int(dimensions.max_side),
+        "aspect_ratio": dimensions.aspect_ratio,
+        "size_mode": dimensions.size_mode,
+        "multiple_value": dimensions.multiple_value,
+    }
 
 
 def _resolve_prompt_text(
@@ -699,6 +809,103 @@ class AIOImageGenerate:
             pid_capture_step,
             effective_steps,
         ) if pid_capture_connected else None
+        debug_info = {
+            "node": {
+                "class_type": "AIOImageGenerate",
+                "unique_id": unique_id,
+            },
+            "prompt_payload": _debug_prompt_payload(prompt, extra_pnginfo, unique_id),
+            "models": {
+                "model_type": model_type,
+                "display_name": profile.display_name,
+                "diffusion_model": diffusion_model,
+                "diffusion_model_format": infer_model_format(diffusion_model),
+                "text_encoder": text_encoder,
+                "text_encoder_format": infer_model_format(text_encoder),
+                "vae": vae,
+                "vae_format": infer_model_format(vae),
+                "external_model_connected": model is not None,
+                "external_clip_connected": clip is not None,
+            },
+            "prompts": {
+                "input_positive_prompt": str(positive_prompt or ""),
+                "input_negative_prompt": str(negative_prompt or ""),
+                "resolved_positive_prompt": resolved_positive_prompt,
+                "resolved_negative_prompt": resolved_negative_prompt,
+                "effective_positive_prompt": effective_positive_prompt,
+                "effective_negative_prompt": resolved_negative_prompt,
+                "positive_prompt_override_present": bool(positive_prompt_override),
+                "positive_prompt_source": settings.get("positive_prompt_source", "node"),
+                "privacy_mode": bool(privacy_mode),
+                "run_info_privacy_mode": run_info_privacy_mode,
+                "lengths": {
+                    "input_positive_prompt": len(str(positive_prompt or "")),
+                    "input_negative_prompt": len(str(negative_prompt or "")),
+                    "resolved_positive_prompt": len(resolved_positive_prompt),
+                    "resolved_negative_prompt": len(resolved_negative_prompt),
+                    "effective_positive_prompt": len(effective_positive_prompt),
+                },
+            },
+            "sampling": {
+                "seed_input": int(seed),
+                "seed_received": int(seed),
+                "effective_seed": int(seed),
+                "steps_received": int(steps),
+                "cfg_received": float(cfg),
+                "sampler_received": sampler,
+                "scheduler_received": scheduler,
+                "effective_steps": effective_steps,
+                "effective_cfg": effective_cfg,
+                "effective_sampler": effective_sampler,
+                "effective_scheduler": effective_scheduler,
+            },
+            "dimensions": {
+                "legacy_width_input": width,
+                "legacy_height_input": height,
+                "controls": {
+                    "size_mode": size_mode,
+                    "max_side": reference_values.get("max side"),
+                    "aspect_ratio": reference_values.get("aspect ratio"),
+                    "multiple_value": reference_values.get("multiple value"),
+                },
+                "resolved": _resolved_dimensions_debug(dimensions),
+                "effective": {
+                    "width": effective_width,
+                    "height": effective_height,
+                },
+            },
+            "settings": _debug_value(settings),
+            "model_settings": _debug_value(model_settings or {}),
+            "loras": {
+                "normalized_config": _debug_value(normalized_lora_config),
+                "summary": _debug_value(lora_summary),
+                "count": len(lora_summary),
+            },
+            "inpaint": {
+                "config": _debug_inpaint_config(normalized_inpaint_config),
+                "previews_requested": _debug_value(inpaint_previews[pipeline.INPAINT_PREVIEW_REQUESTED]),
+            },
+            "references": _debug_reference_inputs(reference_inputs),
+            "outputs_requested": {
+                "image": image_connected,
+                "vae": vae_connected,
+                "pid_latent": pid_latent_connected,
+                "pid_sigma": pid_sigma_connected,
+                "inpaint_source": inpaint_source_connected,
+                "inpaint_sample": inpaint_sample_connected,
+                "inpaint_mask": inpaint_mask_connected,
+            },
+            "pid": {
+                "capture_requested": pid_capture_connected,
+                "pid_capture_step_input": int(pid_capture_step),
+                "resolved_pid_capture_step": resolved_pid_capture_step,
+            },
+            "adapter": {
+                "version": adapter.version,
+                "dimension_multiple": getattr(adapter, "dimension_multiple", None),
+            },
+            "warnings": list(warnings),
+        }
         image, latent, positive, negative, loaded_vae = adapter.generate(
             diffusion_model=diffusion_model,
             text_encoder=text_encoder,
@@ -732,6 +939,18 @@ class AIOImageGenerate:
         image_dimensions = _image_dimensions(image)
         if image_dimensions is not None:
             output_width, output_height = image_dimensions
+        debug_info["dimensions"]["output"] = {
+            "width": output_width,
+            "height": output_height,
+            "image_shape": _shape_info(image),
+            "latent_shape": _shape_info(latent.get("samples")) if isinstance(latent, dict) else _shape_info(latent),
+        }
+        debug_info["inpaint"]["previews_available"] = {
+            pipeline.INPAINT_PREVIEW_SOURCE: inpaint_previews[pipeline.INPAINT_PREVIEW_SOURCE] is not None,
+            pipeline.INPAINT_PREVIEW_SAMPLE: inpaint_previews[pipeline.INPAINT_PREVIEW_SAMPLE] is not None,
+            pipeline.INPAINT_PREVIEW_MASK: inpaint_previews[pipeline.INPAINT_PREVIEW_MASK] is not None,
+        }
+        debug_info["pid"]["capture_available"] = pid_capture is not None
 
         run_info = build_run_info(
             model_type=model_type,
@@ -754,6 +973,7 @@ class AIOImageGenerate:
             adapter_version=adapter.version,
             loras=lora_summary,
             privacy_mode=run_info_privacy_mode,
+            debug=debug_info,
         )
         return (
             image,

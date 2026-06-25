@@ -752,7 +752,7 @@ def test_ideogram_prompt_builder_overrides_prompt_and_dimensions(monkeypatch):
 
 
 @pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
-def test_ideogram_prompt_builder_privacy_marker_redacts_run_info(monkeypatch, tmp_path):
+def test_ideogram_prompt_builder_privacy_marker_redacts_settings_but_debug_exposes_prompt(monkeypatch, tmp_path):
     monkeypatch.setattr(privacy, "config_dir", lambda: tmp_path)
 
     captured = {}
@@ -821,11 +821,11 @@ def test_ideogram_prompt_builder_privacy_marker_redacts_run_info(monkeypatch, tm
     )
 
     assert captured["generated"]["positive_prompt"] == '{"secret":"private room"}'
-    assert "private room" not in run_info
     parsed = json.loads(run_info)
     encrypted = parsed["settings"]["positive_prompt_override"]
     assert privacy.is_encrypted_payload(encrypted)
     assert privacy.decrypt_text_if_encrypted(encrypted) == '{"secret":"private room"}'
+    assert parsed["debug"]["prompts"]["effective_positive_prompt"] == '{"secret":"private room"}'
 
 
 def test_main_node_skips_image_decode_for_latent_only_prompt(monkeypatch):
