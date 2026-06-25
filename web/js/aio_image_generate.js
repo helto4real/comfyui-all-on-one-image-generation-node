@@ -14,7 +14,11 @@ const FIXED_SEED_BUTTON_LABEL = "Generate fixed seed";
 const MIN_NODE_WIDTH = 560;
 const MAX_SIDE_MIN = 256;
 const MAX_SIDE_MAX = 4096;
-const SEED_MAX = 9223372036854775000;
+const SEED_MAX = Number.MAX_SAFE_INTEGER;
+const SEED_CONTROL_MODES = ["fixed", "increment", "decrement", "randomize"];
+const AIO_SEED_QUEUE_WRAPPER_KEY = "__aioGenerateSeedQueuePromptWrapper";
+const AIO_SEED_QUEUE_INSTALL_KEY = "__aioGenerateSeedQueuePromptInstallScheduled";
+const AIO_SEED_QUEUE_INSTALL_ATTEMPT_LIMIT = 80;
 const LORA_HEADER_TOOLTIP = "Toggle every configured LoRA row on or off.";
 const LORA_ROW_TOOLTIP = "LoRA row: choose a LoRA, toggle it, inspect metadata, and adjust strength.";
 const ADD_LORA_TOOLTIP = "Add a LoRA row filtered by the match field.";
@@ -96,6 +100,8 @@ function markNodeDirty(node) {
   } else {
     app.graph?.setDirtyCanvas?.(true, true);
   }
+  node?.graph?.setDirtyCanvas?.(true, true);
+  app.canvas?.setDirty?.(true, true);
 }
 
 function randomUnit53() {
@@ -108,7 +114,82 @@ function randomUnit53() {
 }
 
 function randomFixedSeed() {
-  return Math.floor(randomUnit53() * (SEED_MAX + 1));
+  return Math.floor(randomUnit53() * SEED_MAX) + 1;
+}
+
+function validSeedControlMode(value) {
+  return SEED_CONTROL_MODES.includes(value) ? value : null;
+}
+
+function isSeedControlWidget(widget, seedWidget = null) {
+  const values = widget?.options?.values;
+  const seedName = String(seedWidget?.name || "seed");
+  return (
+    widget?.name === "control_after_generate" ||
+    widget?.name === `${seedName}.control_after_generate` ||
+    widget?.name === `${seedName}_control_after_generate` ||
+    (Array.isArray(values) && SEED_CONTROL_MODES.every((value) => values.includes(value)))
+  );
+}
+
+function seedControlWidget(node, seedWidget = widgetByName(node, "seed")) {
+  for (const widget of seedWidget?.linkedWidgets || []) {
+    if (isSeedControlWidget(widget, seedWidget)) {
+      return widget;
+    }
+  }
+  return node?.widgets?.find((widget) => widget !== seedWidget && isSeedControlWidget(widget, seedWidget)) || null;
+}
+
+function liveSeedControlMode(node) {
+  const seedWidget = widgetByName(node, "seed");
+  const controlWidget = seedControlWidget(node, seedWidget);
+  return (
+    validSeedControlMode(controlWidget?.value) ??
+    validSeedControlMode(seedWidget?.control_after_generate) ??
+    validSeedControlMode(seedWidget?.options?.control_after_generate)
+  );
+}
+
+function writeWidgetValue(node, widget, value) {
+  if (!node || !widget) {
+    return false;
+  }
+  const previousValue = widget.value;
+  widget.value = value;
+  widget.callback?.(value, app.canvas, node, widget);
+  node.onWidgetChanged?.(widget.name ?? "", value, previousValue, widget);
+  node.graph?.incrementVersion?.();
+  markNodeDirty(node);
+  return true;
+}
+
+function writeSerializedWidgetValue(node, widget, value) {
+  const index = serializedWidgetIndex(node, widget);
+  for (const values of [node?.widgets_values, node?.last_serialization?.widgets_values]) {
+    if (Array.isArray(values) && index >= 0 && index < values.length) {
+      values[index] = value;
+    }
+  }
+}
+
+function writeAioSeedValue(node, seed) {
+  const seedWidget = widgetByName(node, "seed");
+  if (!writeWidgetValue(node, seedWidget, seed)) {
+    return false;
+  }
+  writeSerializedWidgetValue(node, seedWidget, seed);
+  return true;
+}
+
+function writeAioSeedControlMode(node, mode) {
+  const seedWidget = widgetByName(node, "seed");
+  const controlWidget = seedControlWidget(node, seedWidget);
+  if (!writeWidgetValue(node, controlWidget, mode)) {
+    return false;
+  }
+  writeSerializedWidgetValue(node, controlWidget, mode);
+  return true;
 }
 
 function ensureAioGenerateSeedButton(node) {
@@ -125,8 +206,8 @@ function ensureAioGenerateSeedButton(node) {
   if (!button) {
     button = node.addWidget("button", FIXED_SEED_BUTTON_LABEL, null, () => {
       const seed = randomFixedSeed();
-      seedWidget.value = seed;
-      seedWidget.callback?.(seed, app.canvas, node, seedWidget);
+      writeAioSeedValue(node, seed);
+      writeAioSeedControlMode(node, "fixed");
       markNodeDirty(node);
     });
     button._aioGenerateSeedButton = true;
@@ -145,6 +226,147 @@ function ensureAioGenerateSeedButton(node) {
   }
   const stepsIndex = widgets.indexOf(stepsWidget);
   widgets.splice(stepsIndex >= 0 ? stepsIndex : widgets.length, 0, button);
+}
+
+function defaultGraph() {
+  return app.rootGraph || app.graph;
+}
+
+function graphNodes(graph = defaultGraph()) {
+  const nodes = [];
+  const seenNodes = new Set();
+  const seenGraphs = new Set();
+
+  function visit(currentGraph) {
+    if (!currentGraph || seenGraphs.has(currentGraph)) {
+      return;
+    }
+    seenGraphs.add(currentGraph);
+    for (const node of currentGraph.nodes || currentGraph._nodes || []) {
+      if (!node || seenNodes.has(node)) {
+        continue;
+      }
+      seenNodes.add(node);
+      nodes.push(node);
+      if (node.subgraph) {
+        visit(node.subgraph);
+      }
+    }
+    for (const subgraph of currentGraph.subgraphs?.values?.() || []) {
+      visit(subgraph);
+    }
+  }
+
+  visit(graph);
+  return nodes;
+}
+
+function suspendSeedControlCallbacks(controlWidget) {
+  if (!controlWidget) {
+    return null;
+  }
+  const beforeQueued = controlWidget.beforeQueued;
+  const afterQueued = controlWidget.afterQueued;
+  const beforeQueuedNoop = () => {};
+  const afterQueuedNoop = () => {};
+  controlWidget.beforeQueued = beforeQueuedNoop;
+  controlWidget.afterQueued = afterQueuedNoop;
+  return {
+    controlWidget,
+    beforeQueued,
+    afterQueued,
+    beforeQueuedNoop,
+    afterQueuedNoop,
+  };
+}
+
+function restoreSeedControlCallbacks(suspended) {
+  for (const item of suspended) {
+    if (item.controlWidget.beforeQueued === item.beforeQueuedNoop) {
+      item.controlWidget.beforeQueued = item.beforeQueued;
+    }
+    if (item.controlWidget.afterQueued === item.afterQueuedNoop) {
+      item.controlWidget.afterQueued = item.afterQueued;
+    }
+  }
+}
+
+function randomizeAioSeedsBeforeQueue() {
+  const queuedSeeds = [];
+  for (const node of graphNodes()) {
+    if (!isAioGenerateNode(node) || liveSeedControlMode(node) !== "randomize") {
+      continue;
+    }
+    const seedWidget = widgetByName(node, "seed");
+    const controlWidget = seedControlWidget(node, seedWidget);
+    const seed = randomFixedSeed();
+    if (!writeAioSeedValue(node, seed)) {
+      continue;
+    }
+    node._aioGenerateQueuedSeed = { seed, at: Date.now() };
+    queuedSeeds.push({
+      node,
+      seed,
+      suspended: suspendSeedControlCallbacks(controlWidget),
+    });
+  }
+  return queuedSeeds;
+}
+
+function restoreQueuedAioSeeds(queuedSeeds) {
+  restoreSeedControlCallbacks(queuedSeeds.map((item) => item.suspended).filter(Boolean));
+  for (const { node, seed } of queuedSeeds) {
+    const queuedSeed = node?._aioGenerateQueuedSeed;
+    if (!queuedSeed || queuedSeed.seed !== seed || Date.now() - queuedSeed.at > 10000) {
+      continue;
+    }
+    if (Number(widgetByName(node, "seed")?.value) !== Number(seed)) {
+      writeAioSeedValue(node, seed);
+    }
+  }
+}
+
+function installAioSeedQueuePatch(source = "install") {
+  if (typeof app.queuePrompt !== "function") {
+    return false;
+  }
+  if (app.queuePrompt[AIO_SEED_QUEUE_WRAPPER_KEY]) {
+    return true;
+  }
+
+  const originalQueuePrompt = app.queuePrompt;
+  const wrappedQueuePrompt = async function (...args) {
+    const queuedSeeds = randomizeAioSeedsBeforeQueue();
+    try {
+      return await originalQueuePrompt.apply(this, args);
+    } finally {
+      restoreQueuedAioSeeds(queuedSeeds);
+    }
+  };
+  Object.defineProperty(wrappedQueuePrompt, AIO_SEED_QUEUE_WRAPPER_KEY, {
+    value: true,
+    configurable: true,
+  });
+  app.queuePrompt = wrappedQueuePrompt;
+  return true;
+}
+
+function scheduleAioSeedQueuePatch(source = "top-level") {
+  if (globalThis[AIO_SEED_QUEUE_INSTALL_KEY]) {
+    installAioSeedQueuePatch(`${source}:resync`);
+    return;
+  }
+  globalThis[AIO_SEED_QUEUE_INSTALL_KEY] = true;
+
+  let attempts = 0;
+  function attempt() {
+    attempts += 1;
+    installAioSeedQueuePatch(`${source}:${attempts}`);
+    if (attempts < AIO_SEED_QUEUE_INSTALL_ATTEMPT_LIMIT) {
+      setTimeout(attempt, 250);
+    }
+  }
+  attempt();
 }
 
 function widgetSerializesToWorkflow(widget) {
@@ -2264,9 +2486,12 @@ function patchAioGenerateNodeType(nodeType) {
   };
 }
 
+scheduleAioSeedQueuePatch();
+
 app.registerExtension({
   name: "aio.image.generate",
   setup() {
+    scheduleAioSeedQueuePatch("setup");
     requestAnimationFrame(() => {
       for (const node of app.graph?._nodes || []) {
         ensureLoraUi(node);

@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -10,6 +11,9 @@ from nodes.aio_generate import (
 )
 from nodes.inpaint import AIOInpaint
 from services import pipeline, privacy
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class FakeImage:
@@ -98,6 +102,32 @@ def test_main_node_exposes_core_inputs():
         "inpaint_sample",
         "inpaint_mask",
     )
+
+
+def test_aio_seed_frontend_randomizes_live_seed_before_queue():
+    source = (ROOT / "web/js/aio_image_generate.js").read_text(encoding="utf-8")
+
+    assert "const SEED_MAX = Number.MAX_SAFE_INTEGER;" in source
+    assert "function randomizeAioSeedsBeforeQueue()" in source
+    assert 'liveSeedControlMode(node) !== "randomize"' in source
+    assert "writeAioSeedValue(node, seed)" in source
+    assert "suspendSeedControlCallbacks(controlWidget)" in source
+    assert "restoreQueuedAioSeeds(queuedSeeds)" in source
+    assert "app.queuePrompt = wrappedQueuePrompt" in source
+    assert "scheduleAioSeedQueuePatch(\"setup\")" in source
+    assert "AIOSeedProbe" not in source
+
+
+def test_aio_fixed_seed_button_sets_control_back_to_fixed():
+    source = (ROOT / "web/js/aio_image_generate.js").read_text(encoding="utf-8")
+    start = source.index("function ensureAioGenerateSeedButton")
+    end = source.index("function defaultGraph", start)
+    block = source[start:end]
+
+    assert "button = node.addWidget" in block
+    assert "writeAioSeedValue(node, seed)" in block
+    assert 'writeAioSeedControlMode(node, "fixed")' in block
+    assert "markNodeDirty(node)" in block
 
 
 def test_image_output_is_required_for_connected_output_node(monkeypatch):
