@@ -1371,6 +1371,11 @@ def test_flux2_pipeline_uses_inpaint_latent_and_final_blend(monkeypatch):
     monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", fake_denoise)
     monkeypatch.setattr(pipeline, "sample_with_sigmas", fake_sample)
     monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: "decoded_image")
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "apply_inpaint_color_match",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("color match should be opt-in")),
+    )
     monkeypatch.setattr(pipeline.inpaint_service, "stitch_inpaint_image", fake_stitch)
     monkeypatch.setattr(
         pipeline.inpaint_service,
@@ -1421,6 +1426,140 @@ def test_flux2_pipeline_uses_inpaint_latent_and_final_blend(monkeypatch):
     assert previews[pipeline.INPAINT_PREVIEW_SOURCE] == "cropped_image"
     assert previews[pipeline.INPAINT_PREVIEW_SAMPLE] == "decoded_image"
     assert previews[pipeline.INPAINT_PREVIEW_MASK] == "cropped_noise_mask"
+
+
+def test_flux2_pipeline_applies_color_match_before_stitch(monkeypatch):
+    calls = {}
+    events = []
+
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model", "clip", []))
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
+    monkeypatch.setattr(pipeline, "encode_flux2_prompt", lambda **kwargs: "positive")
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "negative")
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "prepare_inpaint_source",
+        lambda **kwargs: pipeline.inpaint_service.InpaintSource(
+            image="cropped_image",
+            mask="cropped_mask",
+            noise_mask="cropped_noise_mask",
+            stitcher="stitcher",
+            width=1024,
+            height=1024,
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "apply_inpaint_model_conditioning",
+        lambda **kwargs: ("inpaint_positive", "inpaint_negative", {"samples": "inpaint", "noise_mask": "mask"}),
+    )
+    monkeypatch.setattr(pipeline, "flux2_sigmas", lambda **kwargs: "sigmas")
+    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", lambda sigmas, denoise: sigmas)
+    monkeypatch.setattr(pipeline, "sample_with_sigmas", lambda **kwargs: {"samples": "sampled"})
+    monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: events.append("decode") or "decoded_image")
+
+    def fake_color_match(**kwargs):
+        events.append("color_match")
+        calls["color_match"] = kwargs
+        return "matched_image"
+
+    def fake_stitch(**kwargs):
+        events.append("stitch")
+        calls["stitch"] = kwargs
+        return "stitched_image"
+
+    monkeypatch.setattr(pipeline.inpaint_service, "apply_inpaint_color_match", fake_color_match)
+    monkeypatch.setattr(pipeline.inpaint_service, "stitch_inpaint_image", fake_stitch)
+
+    image, *_ = pipeline.generate_flux2_klein_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="negative",
+        width=512,
+        height=768,
+        seed=123,
+        steps=4,
+        cfg=1.0,
+        sampler="auto",
+        scheduler="auto",
+        settings={},
+        inpaint_config={
+            "image": "image",
+            "mask": "mask",
+            "denoise": 0.75,
+            "color_match_strength": 0.25,
+            "crop_source_reference": False,
+        },
+    )
+
+    assert image == "stitched_image"
+    assert calls["color_match"] == {
+        "target_image": "decoded_image",
+        "reference_image": "cropped_image",
+        "exclude_mask": "cropped_noise_mask",
+        "strength": 0.25,
+    }
+    assert calls["stitch"] == {
+        "stitcher": "stitcher",
+        "inpainted_image": "matched_image",
+    }
+    assert events == ["decode", "color_match", "stitch"]
+
+
+def test_flux2_pipeline_color_match_missing_node_error(monkeypatch):
+    monkeypatch.setitem(sys.modules, "nodes", SimpleNamespace(NODE_CLASS_MAPPINGS={}))
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model", "clip", []))
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
+    monkeypatch.setattr(pipeline, "encode_flux2_prompt", lambda **kwargs: "positive")
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "negative")
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "prepare_inpaint_source",
+        lambda **kwargs: pipeline.inpaint_service.InpaintSource(
+            image="source_image",
+            mask="source_mask",
+            noise_mask="sampling_mask",
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "apply_inpaint_model_conditioning",
+        lambda **kwargs: ("inpaint_positive", "inpaint_negative", {"samples": "inpaint", "noise_mask": "mask"}),
+    )
+    monkeypatch.setattr(pipeline, "flux2_sigmas", lambda **kwargs: "sigmas")
+    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", lambda sigmas, denoise: sigmas)
+    monkeypatch.setattr(pipeline, "sample_with_sigmas", lambda **kwargs: {"samples": "sampled"})
+    monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: "decoded_image")
+
+    with pytest.raises(ValueError, match="INPAINT_ColorMatch"):
+        pipeline.generate_flux2_klein_t2i(
+            diffusion_model="model.safetensors",
+            text_encoder="text.safetensors",
+            vae="vae.safetensors",
+            positive_prompt="prompt",
+            negative_prompt="negative",
+            width=512,
+            height=768,
+            seed=123,
+            steps=4,
+            cfg=1.0,
+            sampler="auto",
+            scheduler="auto",
+            settings={},
+            inpaint_config={
+                "image": "image",
+                "mask": "mask",
+                "denoise": 0.75,
+                "color_match_strength": 0.25,
+                "crop_source_reference": False,
+            },
+        )
 
 
 def test_flux2_pipeline_skips_duplicate_inpaint_source_reference(monkeypatch):

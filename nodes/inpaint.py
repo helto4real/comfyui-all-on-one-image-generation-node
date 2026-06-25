@@ -151,6 +151,17 @@ class AIOInpaint:
                         "tooltip": "Maximum full-frame fallback long side when crop/stitch is unavailable.",
                     },
                 ),
+                "color_match_strength": (
+                    "FLOAT",
+                    {
+                        "default": 0.0,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "advanced": True,
+                        "tooltip": "Use Acly Color Match (Masked) after decoding Flux Klein inpaint, before final blend/stitch.",
+                    },
+                ),
             },
             "optional": {
                 "context_mask": (
@@ -178,6 +189,7 @@ class AIOInpaint:
         mask_hipass_filter: float = 0.1,
         max_full_frame_megapixels: float = 1.0,
         max_full_frame_side: int = 1536,
+        color_match_strength: float = 0.0,
         context_mask: Any = None,
     ):
         config = normalize_inpaint_config(
@@ -197,5 +209,6 @@ class AIOInpaint:
             mask_hipass_filter=mask_hipass_filter,
             max_full_frame_megapixels=max_full_frame_megapixels,
             max_full_frame_side=max_full_frame_side,
+            color_match_strength=color_match_strength,
         )
         return (config, prepare_inpaint_output_mask(config))

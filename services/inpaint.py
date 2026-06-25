@@ -71,6 +71,7 @@ def normalize_inpaint_config(
     mask_hipass_filter: float | None = None,
     max_full_frame_megapixels: float | None = None,
     max_full_frame_side: int | None = None,
+    color_match_strength: float | None = None,
 ) -> dict[str, Any]:
     source = dict(config or {})
     resolved_image = image if image is not None else source.get("image")
@@ -158,6 +159,12 @@ def normalize_inpaint_config(
             "max_full_frame_side",
             64,
             16384,
+        ),
+        "color_match_strength": _validate_float(
+            _get_value(source, "color_match_strength", color_match_strength, 0.0),
+            "color_match_strength",
+            0.0,
+            1.0,
         ),
     }
 
@@ -520,6 +527,29 @@ def apply_inpaint_model_conditioning(
 def stitch_inpaint_image(*, stitcher: Any, inpainted_image: Any) -> Any:
     node_cls = _required_node_class("InpaintStitchImproved")
     return node_cls().inpaint_stitch(stitcher=stitcher, inpainted_image=inpainted_image)[0]
+
+
+def apply_inpaint_color_match(
+    *,
+    target_image: Any,
+    reference_image: Any,
+    exclude_mask: Any,
+    strength: float,
+) -> Any:
+    if float(strength) <= 0.0:
+        return target_image
+    node_cls = _optional_node_class("INPAINT_ColorMatch")
+    if node_cls is None:
+        raise ValueError(
+            "AIO Inpaint color_match_strength requires Acly/comfyui-inpaint-nodes "
+            "Color Match (Masked) node (INPAINT_ColorMatch)."
+        )
+    return node_cls.execute(
+        target=target_image,
+        reference=reference_image,
+        exclude_mask=exclude_mask,
+        strength=float(strength),
+    )[0]
 
 
 def prepare_inpaint_mask(config: Mapping[str, Any], *, width: int, height: int):

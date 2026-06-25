@@ -1248,6 +1248,15 @@ def generate_flux2_klein_t2i(
         image = decoded_image if decode_image else None
     if decode_image:
         if inpaint_config is not None and flux_inpaint_source is not None:
+            color_match_strength = float(inpaint_config.get("color_match_strength", 0.0))
+            if color_match_strength > 0.0:
+                _phase(progress, "matching inpaint color")
+                image = inpaint_service.apply_inpaint_color_match(
+                    target_image=image,
+                    reference_image=flux_inpaint_source.image,
+                    exclude_mask=flux_inpaint_source.sampling_mask,
+                    strength=color_match_strength,
+                )
             if flux_inpaint_source.stitcher is not None:
                 _phase(progress, "stitching inpaint")
                 image = inpaint_service.stitch_inpaint_image(

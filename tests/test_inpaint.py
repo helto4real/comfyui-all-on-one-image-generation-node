@@ -6,6 +6,7 @@ import pytest
 
 from nodes.inpaint import AIOInpaint
 from services.inpaint import (
+    apply_inpaint_color_match,
     apply_inpaint_model_conditioning,
     encode_inpaint_source_latent,
     feather_inpaint_mask,
@@ -62,6 +63,9 @@ def test_inpaint_node_exposes_config_schema():
     assert inputs["max_full_frame_megapixels"][1]["advanced"] is True
     assert inputs["max_full_frame_side"][1]["default"] == 1536
     assert inputs["max_full_frame_side"][1]["advanced"] is True
+    assert inputs["color_match_strength"][1]["default"] == 0.0
+    assert inputs["color_match_strength"][1]["max"] == 1.0
+    assert inputs["color_match_strength"][1]["advanced"] is True
     assert optional["context_mask"][0] == "MASK"
 
 
@@ -88,6 +92,7 @@ def test_inpaint_config_normalizes_defaults():
     assert config["context_mask"] is None
     assert config["max_full_frame_megapixels"] == 1.0
     assert config["max_full_frame_side"] == 1536
+    assert config["color_match_strength"] == 0.0
 
 
 def test_inpaint_config_preserves_controls(monkeypatch):
@@ -114,6 +119,7 @@ def test_inpaint_config_preserves_controls(monkeypatch):
         mask_hipass_filter=0.25,
         max_full_frame_megapixels=2.0,
         max_full_frame_side=2048,
+        color_match_strength=0.35,
         context_mask=context_mask,
     )
 
@@ -132,6 +138,7 @@ def test_inpaint_config_preserves_controls(monkeypatch):
     assert config["mask_hipass_filter"] == 0.25
     assert config["max_full_frame_megapixels"] == 2.0
     assert config["max_full_frame_side"] == 2048
+    assert config["color_match_strength"] == 0.35
     assert config["context_mask"] is context_mask
     assert output_mask.shape == (1, 4, 4)
 
@@ -160,6 +167,8 @@ def test_inpaint_config_rejects_out_of_range_controls():
         normalize_inpaint_config(image=FakeImage(), mask=FakeMask(), max_full_frame_megapixels=0.0)
     with pytest.raises(ValueError, match="max_full_frame_side must be between 64 and 16384"):
         normalize_inpaint_config(image=FakeImage(), mask=FakeMask(), max_full_frame_side=63)
+    with pytest.raises(ValueError, match="color_match_strength must be between 0.0 and 1.0"):
+        normalize_inpaint_config(image=FakeImage(), mask=FakeMask(), color_match_strength=1.1)
 
 
 def test_inpaint_dimensions_round_to_model_multiple():
@@ -632,3 +641,59 @@ def test_stitch_inpaint_image_uses_crop_stitch_node(monkeypatch):
 
     assert image == "original_size_image"
     assert captured == {"stitcher": "stitcher", "inpainted_image": "decoded_crop"}
+
+
+def test_apply_inpaint_color_match_returns_target_when_disabled(monkeypatch):
+    monkeypatch.setitem(sys.modules, "nodes", SimpleNamespace(NODE_CLASS_MAPPINGS={}))
+
+    image = apply_inpaint_color_match(
+        target_image="target",
+        reference_image="reference",
+        exclude_mask="mask",
+        strength=0.0,
+    )
+
+    assert image == "target"
+
+
+def test_apply_inpaint_color_match_uses_acly_node(monkeypatch):
+    captured = {}
+
+    class FakeColorMatch:
+        @classmethod
+        def execute(cls, **kwargs):
+            captured.update(kwargs)
+            return ("matched_image",)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "nodes",
+        SimpleNamespace(NODE_CLASS_MAPPINGS={"INPAINT_ColorMatch": FakeColorMatch}),
+    )
+
+    image = apply_inpaint_color_match(
+        target_image="decoded_target",
+        reference_image="source_reference",
+        exclude_mask="sampling_mask",
+        strength=0.25,
+    )
+
+    assert image == "matched_image"
+    assert captured == {
+        "target": "decoded_target",
+        "reference": "source_reference",
+        "exclude_mask": "sampling_mask",
+        "strength": 0.25,
+    }
+
+
+def test_apply_inpaint_color_match_requires_acly_node(monkeypatch):
+    monkeypatch.setitem(sys.modules, "nodes", SimpleNamespace(NODE_CLASS_MAPPINGS={}))
+
+    with pytest.raises(ValueError, match="Acly/comfyui-inpaint-nodes"):
+        apply_inpaint_color_match(
+            target_image="decoded_target",
+            reference_image="source_reference",
+            exclude_mask="sampling_mask",
+            strength=0.25,
+        )
