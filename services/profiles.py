@@ -103,7 +103,7 @@ PROFILES: dict[str, ModelProfile] = {
         supports_reference_image=False,
         supports_mask=False,
         supports_inpaint=False,
-        supports_gguf=False,
+        supports_gguf=True,
         required_components=("diffusion_model", "text_encoder", "vae"),
         notes=(
             "Local open-weight Krea 2 text-to-image profile using Krea2 "

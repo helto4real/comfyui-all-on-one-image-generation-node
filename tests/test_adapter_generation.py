@@ -110,6 +110,64 @@ def test_krea2_adapter_calls_real_generation_pipeline(monkeypatch):
     assert calls["return_vae"] is False
 
 
+def test_krea2_adapter_accepts_gguf_and_delegates_generation(monkeypatch):
+    calls = {}
+
+    def fake_generate(**kwargs):
+        calls.update(kwargs)
+        return "image", {"samples": "latent"}, "positive", "negative", "vae"
+
+    monkeypatch.setattr(krea2.gguf_backend, "is_available", lambda: True)
+    monkeypatch.setattr(krea2.pipeline, "generate_krea2_t2i", fake_generate)
+    adapter = Krea2Adapter()
+    settings = adapter.resolve_settings(
+        model_settings={"family": "krea2"},
+        width=1344,
+        height=2048,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+    )
+
+    warnings = adapter.validate_inputs(
+        diffusion_model="unet_gguf/krea2_turbo_q4.gguf",
+        text_encoder="clip_gguf/qwen3vl_4b_q4.gguf",
+        vae="qwen_image_vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="",
+        width=1344,
+        height=2048,
+        settings=settings,
+    )
+
+    image, latent, positive, negative, loaded_vae = adapter.generate(
+        diffusion_model="unet_gguf/krea2_turbo_q4.gguf",
+        text_encoder="clip_gguf/qwen3vl_4b_q4.gguf",
+        vae="qwen_image_vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="ignored",
+        width=1344,
+        height=2048,
+        seed=123,
+        settings=settings,
+        sampler=settings["sampler"],
+        scheduler=settings["scheduler"],
+    )
+
+    assert warnings == []
+    assert image == "image"
+    assert latent == {"samples": "latent"}
+    assert positive == "positive"
+    assert negative == "negative"
+    assert loaded_vae == "vae"
+    assert calls["diffusion_model"] == "unet_gguf/krea2_turbo_q4.gguf"
+    assert calls["text_encoder"] == "clip_gguf/qwen3vl_4b_q4.gguf"
+    assert calls["vae"] == "qwen_image_vae.safetensors"
+    assert calls["sampler"] == "er_sde"
+    assert calls["scheduler"] == "simple"
+
+
 def test_flux2_adapter_calls_real_generation_pipeline(monkeypatch):
     calls = {}
 
@@ -527,7 +585,7 @@ def test_ideogram4_negative_prompt_returns_warning():
     ]
 
 
-def test_krea2_validation_rejects_unsupported_inputs_and_warns_for_negative_prompt():
+def test_krea2_validation_rejects_unsupported_inputs_and_warns_for_negative_prompt(monkeypatch):
     adapter = Krea2Adapter()
     base = {
         "diffusion_model": "krea/krea2_turbo_fp8.safetensors",
@@ -546,8 +604,12 @@ def test_krea2_validation_rejects_unsupported_inputs_and_warns_for_negative_prom
         adapter.validate_inputs(**base, reference_inputs=ReferenceInputs(images=("first",)))
     with pytest.raises(ValueError, match="mask was connected"):
         adapter.validate_inputs(**base, reference_inputs=ReferenceInputs(images=(), mask="mask"))
-    with pytest.raises(ValueError, match="GGUF"):
+    monkeypatch.setattr(krea2.gguf_backend, "is_available", lambda: False)
+    with pytest.raises(ValueError, match="A GGUF model file was selected"):
         adapter.validate_inputs(**{**base, "diffusion_model": "model.gguf"})
+    monkeypatch.setattr(krea2.gguf_backend, "is_available", lambda: True)
+    assert adapter.validate_inputs(**{**base, "diffusion_model": "model.gguf"}) == []
+    assert adapter.validate_inputs(**{**base, "text_encoder": "clip_gguf/qwen.gguf"}) == []
 
     warnings = adapter.validate_inputs(**{**base, "negative_prompt": "ignored"})
     assert warnings == [

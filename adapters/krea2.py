@@ -5,15 +5,15 @@ from __future__ import annotations
 from typing import Any
 
 try:
+    from ..loaders import gguf_backend
     from ..services import pipeline
     from ..services import validation
-    from ..services.model_resolution import infer_model_format
     from ..services.registry import register_adapter
     from .base import BaseImageAdapter
 except ImportError:  # pragma: no cover - direct test imports
+    from loaders import gguf_backend
     from services import pipeline
     from services import validation
-    from services.model_resolution import infer_model_format
     from services.registry import register_adapter
     from adapters.base import BaseImageAdapter
 
@@ -59,12 +59,13 @@ class Krea2Adapter(BaseImageAdapter):
             mask=mask,
         )
         validation.validate_inpaint_config(profile, inpaint_config)
-        if any(infer_model_format(name) == "gguf" for name in (diffusion_model, text_encoder, vae)):
-            raise ValueError("Krea 2 does not currently support GGUF model files in this adapter.")
         warning = validation.validate_negative_prompt_policy(
             profile,
             negative_prompt,
             ignored_by_default=True,
+        )
+        validation.validate_gguf_available_for_models(
+            gguf_backend.is_available(), diffusion_model, text_encoder, vae
         )
         return [warning] if warning else []
 

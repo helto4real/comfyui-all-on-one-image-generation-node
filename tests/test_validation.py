@@ -23,6 +23,10 @@ def test_gguf_file_without_backend_rejected():
         validate_gguf_available_for_models(False, "text.gguf")
 
 
+def test_gguf_file_with_backend_allowed():
+    validate_gguf_available_for_models(True, "text.gguf")
+
+
 def test_reference_image_rejected_for_unsupported_adapter_mode():
     profile = get_profile("z_image_turbo")
 
