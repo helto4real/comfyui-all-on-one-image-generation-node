@@ -89,6 +89,8 @@ class Krea2Adapter(BaseImageAdapter):
             lora_config=kwargs.get("lora_config"),
             loaded_model=kwargs.get("loaded_model"),
             loaded_clip=kwargs.get("loaded_clip"),
+            inpaint_config=kwargs.get("inpaint_config"),
+            inpaint_previews=kwargs.get("inpaint_previews"),
             decode_image=kwargs.get("decode_image", True),
             return_vae=kwargs.get("return_vae", False),
             pid_capture_step=kwargs.get("pid_capture_step"),

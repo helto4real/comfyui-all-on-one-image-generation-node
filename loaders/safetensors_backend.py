@@ -33,13 +33,16 @@ def _folder_paths():
 
 def _resolve(filename: str, categories: tuple[str, ...]) -> Path:
     requested_category, requested_name = strip_category_prefix(filename)
-    search_categories = (requested_category,) if requested_category else categories
+    if requested_category in categories:
+        search_paths = ((requested_category, requested_name),)
+    elif requested_category:
+        search_paths = tuple((category, filename) for category in categories)
+    else:
+        search_paths = tuple((category, requested_name) for category in categories)
     folder_paths = _folder_paths()
-    for category in search_categories:
-        if category is None:
-            continue
+    for category, name in search_paths:
         try:
-            path = folder_paths.get_full_path_or_raise(category, requested_name)
+            path = folder_paths.get_full_path_or_raise(category, name)
         except Exception:
             continue
         if path:

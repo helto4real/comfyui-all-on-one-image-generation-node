@@ -66,6 +66,9 @@ def test_inpaint_node_exposes_config_schema():
     assert inputs["color_match_strength"][1]["default"] == 0.0
     assert inputs["color_match_strength"][1]["max"] == 1.0
     assert inputs["color_match_strength"][1]["advanced"] is True
+    assert inputs["source_latent_mode"][0] == ["crop/stitch", "full image"]
+    assert inputs["source_latent_mode"][1]["default"] == "crop/stitch"
+    assert inputs["source_latent_mode"][1]["advanced"] is True
     assert optional["context_mask"][0] == "MASK"
 
 
@@ -93,6 +96,7 @@ def test_inpaint_config_normalizes_defaults():
     assert config["max_full_frame_megapixels"] == 1.0
     assert config["max_full_frame_side"] == 1536
     assert config["color_match_strength"] == 0.0
+    assert config["source_latent_mode"] == "crop/stitch"
 
 
 def test_inpaint_config_preserves_controls(monkeypatch):
@@ -120,6 +124,7 @@ def test_inpaint_config_preserves_controls(monkeypatch):
         max_full_frame_megapixels=2.0,
         max_full_frame_side=2048,
         color_match_strength=0.35,
+        source_latent_mode="full image",
         context_mask=context_mask,
     )
 
@@ -139,6 +144,7 @@ def test_inpaint_config_preserves_controls(monkeypatch):
     assert config["max_full_frame_megapixels"] == 2.0
     assert config["max_full_frame_side"] == 2048
     assert config["color_match_strength"] == 0.35
+    assert config["source_latent_mode"] == "full image"
     assert config["context_mask"] is context_mask
     assert output_mask.shape == (1, 4, 4)
 
@@ -169,6 +175,8 @@ def test_inpaint_config_rejects_out_of_range_controls():
         normalize_inpaint_config(image=FakeImage(), mask=FakeMask(), max_full_frame_side=63)
     with pytest.raises(ValueError, match="color_match_strength must be between 0.0 and 1.0"):
         normalize_inpaint_config(image=FakeImage(), mask=FakeMask(), color_match_strength=1.1)
+    with pytest.raises(ValueError, match="source_latent_mode must be one of"):
+        normalize_inpaint_config(image=FakeImage(), mask=FakeMask(), source_latent_mode="unknown")
 
 
 def test_inpaint_dimensions_round_to_model_multiple():
@@ -380,6 +388,42 @@ def test_prepare_inpaint_source_keeps_gpu_crop_for_large_images(monkeypatch):
     )
 
     assert captured["device_mode"] == "gpu (much faster)"
+
+
+def test_prepare_inpaint_source_full_image_mode_bypasses_crop_node(monkeypatch):
+    torch = pytest.importorskip("torch")
+    image = torch.rand((1, 4, 4, 3))
+    mask = torch.zeros((1, 4, 4))
+    mask[:, 1:3, 1:3] = 1.0
+
+    class FakeCropNode:
+        def inpaint_crop(self, **kwargs):
+            del kwargs
+            raise AssertionError("full image mode should not call crop/stitch")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "nodes",
+        SimpleNamespace(NODE_CLASS_MAPPINGS={"InpaintCropImproved": FakeCropNode}),
+    )
+
+    source = prepare_inpaint_source(
+        config=normalize_inpaint_config(
+            image=image,
+            mask=mask,
+            mask_grow_percent=0.0,
+            source_latent_mode="full image",
+        ),
+        width=4,
+        height=4,
+    )
+
+    assert source.stitcher is None
+    assert source.used_crop is False
+    assert source.image is image
+    assert source.working_dimensions(fallback_width=1, fallback_height=1) == (4, 4)
+    assert torch.equal(source.mask, mask)
+    assert torch.equal(source.noise_mask, mask)
 
 
 def test_prepare_inpaint_source_allows_explicit_cpu_crop(monkeypatch):

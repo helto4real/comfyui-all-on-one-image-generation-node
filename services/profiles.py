@@ -102,12 +102,13 @@ PROFILES: dict[str, ModelProfile] = {
         supports_negative_prompt=False,
         supports_reference_image=False,
         supports_mask=False,
-        supports_inpaint=False,
+        supports_inpaint=True,
         supports_gguf=True,
         required_components=("diffusion_model", "text_encoder", "vae"),
         notes=(
-            "Local open-weight Krea 2 text-to-image profile using Krea2 "
-            "Qwen3-VL conditioning and optional per-layer conditioning rebalance."
+            "Local open-weight Krea 2 profile using Krea2 Qwen3-VL "
+            "conditioning, optional per-layer conditioning rebalance, and "
+            "AIO Inpaint masked img2img."
         ),
     ),
 }

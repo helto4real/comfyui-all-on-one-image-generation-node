@@ -526,6 +526,220 @@ def test_krea2_pipeline_can_disable_rebalance_and_decode(monkeypatch):
     assert loaded_vae is None
 
 
+def test_krea2_pipeline_uses_inpaint_source_latent_and_blends_output(monkeypatch):
+    calls = {}
+    previews = {
+        pipeline.INPAINT_PREVIEW_REQUESTED: {
+            pipeline.INPAINT_PREVIEW_SOURCE: True,
+            pipeline.INPAINT_PREVIEW_SAMPLE: True,
+            pipeline.INPAINT_PREVIEW_MASK: True,
+        },
+        pipeline.INPAINT_PREVIEW_SOURCE: None,
+        pipeline.INPAINT_PREVIEW_SAMPLE: None,
+        pipeline.INPAINT_PREVIEW_MASK: None,
+    }
+
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model", "clip", []))
+    monkeypatch.setattr(pipeline, "encode_krea2_prompt", lambda **kwargs: "positive")
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "negative")
+    monkeypatch.setattr(
+        pipeline.krea2_rebalance,
+        "rebalance_conditioning",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("rebalance should be disabled")),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "make_empty_krea2_latent",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("empty latent should not be used")),
+    )
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "prepare_inpaint_source",
+        lambda **kwargs: pipeline.inpaint_service.InpaintSource(
+            image="source_image",
+            mask="source_mask",
+            noise_mask="noise_mask",
+        ),
+    )
+
+    def fake_encode_source(**kwargs):
+        calls["encode_source"] = kwargs
+        return {"samples": "inpaint", "noise_mask": "mask"}
+
+    def fake_sample(**kwargs):
+        calls["sample"] = kwargs
+        return {"samples": "sampled", "noise_mask": kwargs["latent"]["noise_mask"]}
+
+    def fake_blend(**kwargs):
+        calls["blend"] = kwargs
+        return "blended_image"
+
+    monkeypatch.setattr(pipeline.inpaint_service, "encode_inpaint_source_latent", fake_encode_source)
+    monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", fake_sample)
+    monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: "decoded_image")
+    monkeypatch.setattr(pipeline.inpaint_service, "blend_inpaint_image", fake_blend)
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "stitch_inpaint_image",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("fallback path should not stitch")),
+    )
+
+    image, latent, positive, negative, loaded_vae = pipeline.generate_krea2_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        width=512,
+        height=768,
+        seed=123,
+        steps=8,
+        cfg=1.0,
+        sampler="er_sde",
+        scheduler="simple",
+        settings={"rebalance_enabled": False},
+        inpaint_config={
+            "image": "image",
+            "mask": "mask",
+            "denoise": 0.35,
+            "mask_feather": 12,
+            "final_blend": True,
+        },
+        inpaint_previews=previews,
+    )
+
+    assert image == "blended_image"
+    assert latent == {"samples": "sampled", "noise_mask": "mask"}
+    assert positive == "positive"
+    assert negative == "negative"
+    assert loaded_vae == "vae"
+    assert calls["encode_source"]["source"].image == "source_image"
+    assert calls["encode_source"]["source"].sampling_mask == "noise_mask"
+    assert calls["sample"]["latent"] == {"samples": "inpaint", "noise_mask": "mask"}
+    assert calls["sample"]["denoise"] == 0.35
+    assert calls["blend"] == {
+        "source_image": "source_image",
+        "generated_image": "decoded_image",
+        "mask": "source_mask",
+        "feather": 12,
+    }
+    assert previews[pipeline.INPAINT_PREVIEW_SOURCE] == "source_image"
+    assert previews[pipeline.INPAINT_PREVIEW_MASK] == "noise_mask"
+    assert previews[pipeline.INPAINT_PREVIEW_SAMPLE] == "decoded_image"
+
+
+def test_krea2_pipeline_stitches_crop_inpaint_output(monkeypatch):
+    calls = {}
+
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model", "clip", []))
+    monkeypatch.setattr(pipeline, "encode_krea2_prompt", lambda **kwargs: "positive")
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "negative")
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "prepare_inpaint_source",
+        lambda **kwargs: pipeline.inpaint_service.InpaintSource(
+            image="crop",
+            mask="crop_mask",
+            stitcher="stitcher",
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "encode_inpaint_source_latent",
+        lambda **kwargs: {"samples": "inpaint", "noise_mask": "mask"},
+    )
+    monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", lambda **kwargs: {"samples": "sampled"})
+    monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: "decoded_image")
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "blend_inpaint_image",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("crop path should stitch, not blend")),
+    )
+
+    def fake_stitch(**kwargs):
+        calls["stitch"] = kwargs
+        return "stitched_image"
+
+    monkeypatch.setattr(pipeline.inpaint_service, "stitch_inpaint_image", fake_stitch)
+
+    image, *_ = pipeline.generate_krea2_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        width=512,
+        height=768,
+        seed=123,
+        steps=8,
+        cfg=1.0,
+        sampler="er_sde",
+        scheduler="simple",
+        settings={"rebalance_enabled": False},
+        inpaint_config={"image": "image", "mask": "mask", "denoise": 1.0},
+    )
+
+    assert image == "stitched_image"
+    assert calls["stitch"] == {
+        "stitcher": "stitcher",
+        "inpainted_image": "decoded_image",
+    }
+
+
+def test_krea2_pipeline_skips_sampling_for_zero_denoise_inpaint(monkeypatch):
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model", "clip", []))
+    monkeypatch.setattr(pipeline, "encode_krea2_prompt", lambda **kwargs: "positive")
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "negative")
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "prepare_inpaint_source",
+        lambda **kwargs: pipeline.inpaint_service.InpaintSource(image="source", mask="mask"),
+    )
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "encode_inpaint_source_latent",
+        lambda **kwargs: {"samples": "inpaint", "noise_mask": "mask"},
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "sample_with_comfy_ksampler",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("sample should not run")),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "decode_latent",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("decode should not run")),
+    )
+
+    image, latent, _, _, loaded_vae = pipeline.generate_krea2_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        width=512,
+        height=768,
+        seed=123,
+        steps=8,
+        cfg=1.0,
+        sampler="er_sde",
+        scheduler="simple",
+        settings={"rebalance_enabled": False},
+        inpaint_config={"image": "image", "mask": "mask", "denoise": 0.0},
+        decode_image=False,
+    )
+
+    assert image is None
+    assert latent == {"samples": "inpaint", "noise_mask": "mask"}
+    assert loaded_vae == "vae"
+
+
 def test_ideogram4_pipeline_uses_dual_model_flow_and_ideogram_sigmas(monkeypatch):
     calls = {"models": []}
 

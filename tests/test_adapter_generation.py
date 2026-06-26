@@ -69,6 +69,8 @@ def test_krea2_adapter_calls_real_generation_pipeline(monkeypatch):
 
     monkeypatch.setattr(krea2.pipeline, "generate_krea2_t2i", fake_generate)
     adapter = Krea2Adapter()
+    inpaint_config = {"image": "image", "mask": "mask", "denoise": 0.7}
+    inpaint_previews = {"requested": {}}
     settings = adapter.resolve_settings(
         model_settings={"family": "krea2", "rebalance_enabled": True},
         width=1344,
@@ -93,6 +95,8 @@ def test_krea2_adapter_calls_real_generation_pipeline(monkeypatch):
         scheduler=settings["scheduler"],
         loaded_model="patched_model",
         loaded_clip="patched_clip",
+        inpaint_config=inpaint_config,
+        inpaint_previews=inpaint_previews,
     )
 
     assert image == "image"
@@ -106,6 +110,8 @@ def test_krea2_adapter_calls_real_generation_pipeline(monkeypatch):
     assert calls["positive_prompt"] == "prompt"
     assert calls["loaded_model"] == "patched_model"
     assert calls["loaded_clip"] == "patched_clip"
+    assert calls["inpaint_config"] is inpaint_config
+    assert calls["inpaint_previews"] is inpaint_previews
     assert calls["decode_image"] is True
     assert calls["return_vae"] is False
 
@@ -408,7 +414,35 @@ def test_flux2_adapter_warns_when_no_crop_inpaint_will_downscale(monkeypatch):
 
     assert warnings == [
         "AIO Inpaint crop/stitch is unavailable; full-frame inpaint input will be "
-        "downscaled from 2048x2048 to 1024x1024 to reduce Flux VRAM use."
+        "downscaled from 2048x2048 to 1024x1024 to reduce sampler VRAM use."
+    ]
+
+
+def test_flux2_adapter_warns_when_full_image_inpaint_will_downscale_with_crop_available(monkeypatch):
+    monkeypatch.setattr(flux2_klein_9b.gguf_backend, "is_available", lambda: True)
+    monkeypatch.setitem(
+        sys.modules,
+        "nodes",
+        SimpleNamespace(NODE_CLASS_MAPPINGS={"InpaintCropImproved": object}),
+    )
+    adapter = Flux2Klein9BAdapter()
+    settings = {"steps": 4, "cfg": 1.0}
+
+    warnings = adapter.validate_inputs(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="negative",
+        width=2048,
+        height=2048,
+        settings=settings,
+        inpaint_config={"image": "image", "mask": "mask", "source_latent_mode": "full image"},
+    )
+
+    assert warnings == [
+        "AIO Inpaint full-image source latent mode is selected; full-frame inpaint input will be "
+        "downscaled from 2048x2048 to 1024x1024 to reduce sampler VRAM use."
     ]
 
 
@@ -604,6 +638,7 @@ def test_krea2_validation_rejects_unsupported_inputs_and_warns_for_negative_prom
         adapter.validate_inputs(**base, reference_inputs=ReferenceInputs(images=("first",)))
     with pytest.raises(ValueError, match="mask was connected"):
         adapter.validate_inputs(**base, reference_inputs=ReferenceInputs(images=(), mask="mask"))
+    assert adapter.validate_inputs(**base, inpaint_config={"image": "image", "mask": "mask"}) == []
     monkeypatch.setattr(krea2.gguf_backend, "is_available", lambda: False)
     with pytest.raises(ValueError, match="A GGUF model file was selected"):
         adapter.validate_inputs(**{**base, "diffusion_model": "model.gguf"})

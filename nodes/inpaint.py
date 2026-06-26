@@ -5,9 +5,19 @@ from __future__ import annotations
 from typing import Any
 
 try:
-    from ..services.inpaint import normalize_inpaint_config, prepare_inpaint_output_mask
+    from ..services.inpaint import (
+        INPAINT_SOURCE_LATENT_MODE_CROP,
+        INPAINT_SOURCE_LATENT_MODES,
+        normalize_inpaint_config,
+        prepare_inpaint_output_mask,
+    )
 except ImportError:  # pragma: no cover - direct test imports
-    from services.inpaint import normalize_inpaint_config, prepare_inpaint_output_mask
+    from services.inpaint import (
+        INPAINT_SOURCE_LATENT_MODE_CROP,
+        INPAINT_SOURCE_LATENT_MODES,
+        normalize_inpaint_config,
+        prepare_inpaint_output_mask,
+    )
 
 
 class AIOInpaint:
@@ -162,6 +172,14 @@ class AIOInpaint:
                         "tooltip": "Use Acly Color Match (Masked) after decoding Flux Klein inpaint, before final blend/stitch.",
                     },
                 ),
+                "source_latent_mode": (
+                    list(INPAINT_SOURCE_LATENT_MODES),
+                    {
+                        "default": INPAINT_SOURCE_LATENT_MODE_CROP,
+                        "advanced": True,
+                        "tooltip": "Use crop/stitch working crops by default, or encode the full source image as the sampler latent.",
+                    },
+                ),
             },
             "optional": {
                 "context_mask": (
@@ -190,6 +208,7 @@ class AIOInpaint:
         max_full_frame_megapixels: float = 1.0,
         max_full_frame_side: int = 1536,
         color_match_strength: float = 0.0,
+        source_latent_mode: str = INPAINT_SOURCE_LATENT_MODE_CROP,
         context_mask: Any = None,
     ):
         config = normalize_inpaint_config(
@@ -210,5 +229,6 @@ class AIOInpaint:
             max_full_frame_megapixels=max_full_frame_megapixels,
             max_full_frame_side=max_full_frame_side,
             color_match_strength=color_match_strength,
+            source_latent_mode=source_latent_mode,
         )
         return (config, prepare_inpaint_output_mask(config))

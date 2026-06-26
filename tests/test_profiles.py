@@ -18,7 +18,7 @@ def test_profile_defaults():
     assert ideogram_profile.supports_inpaint is True
     assert z_profile.supports_inpaint is False
     assert flux_profile.supports_inpaint is True
-    assert krea_profile.supports_inpaint is False
+    assert krea_profile.supports_inpaint is True
     assert krea_profile.supports_gguf is True
     assert "diffusion_model" in z_profile.required_components
     assert "text_encoder" in flux_profile.required_components

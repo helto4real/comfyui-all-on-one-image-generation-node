@@ -801,7 +801,7 @@ def generate_ideogram4_t2i(
     if inpaint_config is not None:
         _phase(progress, "loading vae")
         loaded_vae = load_vae(vae=vae)
-        _phase(progress, "preparing inpaint crop")
+        _phase(progress, "preparing inpaint source")
         inpaint_source = inpaint_service.prepare_inpaint_source(
             config=inpaint_config,
             width=width,
@@ -980,6 +980,8 @@ def generate_krea2_t2i(
     lora_config: dict[str, Any] | None = None,
     loaded_model: Any = None,
     loaded_clip: Any = None,
+    inpaint_config: dict[str, Any] | None = None,
+    inpaint_previews: dict[str, Any] | None = None,
     decode_image: bool = True,
     return_vae: bool = False,
     pid_capture_step: int | None = None,
@@ -1002,12 +1004,22 @@ def generate_krea2_t2i(
         )
     apply_timing = normalize_performance_apply_timing(settings)
     if apply_timing == "before_loras":
-        model = _apply_model_performance_if_configured(model=model, settings=settings, progress=progress)
+        model = _apply_model_performance_if_configured(
+            model=model,
+            settings=settings,
+            inpaint_config=inpaint_config,
+            progress=progress,
+        )
     if not using_connected_model_pair:
         _phase(progress, "applying loras")
         model, clip, _ = apply_lora_config(model=model, clip=clip, lora_config=lora_config)
     if apply_timing == "after_loras":
-        model = _apply_model_performance_if_configured(model=model, settings=settings, progress=progress)
+        model = _apply_model_performance_if_configured(
+            model=model,
+            settings=settings,
+            inpaint_config=inpaint_config,
+            progress=progress,
+        )
     _phase(progress, "encoding prompts")
     positive = encode_krea2_prompt(clip=clip, prompt=positive_prompt)
     negative = zero_out_conditioning(positive)
@@ -1018,28 +1030,73 @@ def generate_krea2_t2i(
             multiplier=float(settings.get("rebalance_multiplier", 4.0)),
             per_layer_weights=settings.get("rebalance_per_layer_weights"),
         )
-    latent = make_empty_krea2_latent(width=width, height=height)
-    _phase(progress, "sampling")
-    sampled_latent = sample_with_comfy_ksampler(
-        model=model,
-        seed=seed,
-        steps=steps,
-        cfg=cfg,
-        sampler=sampler,
-        scheduler=scheduler,
-        positive=positive,
-        negative=negative,
-        latent=latent,
-        pid_capture_step=pid_capture_step,
-    )
-    image = None
     loaded_vae = None
-    if decode_image or return_vae:
+    if inpaint_config is not None:
         _phase(progress, "loading vae")
         loaded_vae = load_vae(vae=vae)
-    if decode_image:
+        _phase(progress, "preparing inpaint source")
+        inpaint_source = inpaint_service.prepare_inpaint_source(
+            config=inpaint_config,
+            width=width,
+            height=height,
+        )
+        _set_inpaint_preview(inpaint_previews, INPAINT_PREVIEW_SOURCE, inpaint_source.image)
+        _set_inpaint_preview(inpaint_previews, INPAINT_PREVIEW_MASK, inpaint_source.sampling_mask)
+        _phase(progress, "encoding inpaint image")
+        latent = inpaint_service.encode_inpaint_source_latent(
+            vae=loaded_vae,
+            source=inpaint_source,
+        )
+    else:
+        inpaint_source = None
+        latent = make_empty_krea2_latent(width=width, height=height)
+    inpaint_denoise = float(inpaint_config.get("denoise", 1.0)) if inpaint_config is not None else 1.0
+    if inpaint_config is not None and inpaint_denoise <= 0.0:
+        sampled_latent = latent
+    else:
+        _phase(progress, "sampling")
+        sampled_latent = sample_with_comfy_ksampler(
+            model=model,
+            seed=seed,
+            steps=steps,
+            cfg=cfg,
+            sampler=sampler,
+            scheduler=scheduler,
+            positive=positive,
+            negative=negative,
+            latent=latent,
+            denoise=inpaint_denoise,
+            pid_capture_step=pid_capture_step,
+        )
+    image = None
+    decode_inpaint_sample = (
+        inpaint_config is not None
+        and _inpaint_preview_requested(inpaint_previews, INPAINT_PREVIEW_SAMPLE)
+    )
+    if (decode_image or decode_inpaint_sample or return_vae) and loaded_vae is None:
+        _phase(progress, "loading vae")
+        loaded_vae = load_vae(vae=vae)
+    if decode_image or decode_inpaint_sample:
         _phase(progress, "decoding")
-        image = decode_latent(vae=loaded_vae, latent=sampled_latent)
+        decoded_image = decode_latent(vae=loaded_vae, latent=sampled_latent)
+        _set_inpaint_preview(inpaint_previews, INPAINT_PREVIEW_SAMPLE, decoded_image)
+        image = decoded_image if decode_image else None
+    if decode_image:
+        if inpaint_config is not None and inpaint_source is not None:
+            if inpaint_source.stitcher is not None:
+                _phase(progress, "stitching inpaint")
+                image = inpaint_service.stitch_inpaint_image(
+                    stitcher=inpaint_source.stitcher,
+                    inpainted_image=image,
+                )
+            elif bool(inpaint_config.get("final_blend", True)):
+                _phase(progress, "blending inpaint")
+                image = inpaint_service.blend_inpaint_image(
+                    source_image=inpaint_source.image,
+                    generated_image=image,
+                    mask=inpaint_source.mask,
+                    feather=int(inpaint_config.get("mask_feather", 24)),
+                )
     return image, sampled_latent, positive, negative, loaded_vae
 
 
@@ -1122,7 +1179,7 @@ def generate_flux2_klein_t2i(
         loaded_vae = load_vae(vae=vae)
     flux_inpaint_source = None
     if inpaint_config is not None:
-        _phase(progress, "preparing inpaint crop")
+        _phase(progress, "preparing inpaint source")
         flux_inpaint_source = inpaint_service.prepare_inpaint_source(
             config=inpaint_config,
             width=width,

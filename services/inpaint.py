@@ -26,6 +26,12 @@ CROP_INPAINT_DEVICE_MODE = "gpu (much faster)"
 CROP_INPAINT_MAX_FULL_FRAME_MEGAPIXELS = 1.0
 CROP_INPAINT_MAX_FULL_FRAME_SIDE = 1536
 CPU_CROP_DEVICE_MODE = "cpu (compatible)"
+INPAINT_SOURCE_LATENT_MODE_CROP = "crop/stitch"
+INPAINT_SOURCE_LATENT_MODE_FULL_IMAGE = "full image"
+INPAINT_SOURCE_LATENT_MODES = (
+    INPAINT_SOURCE_LATENT_MODE_CROP,
+    INPAINT_SOURCE_LATENT_MODE_FULL_IMAGE,
+)
 
 
 @dataclass(frozen=True)
@@ -72,6 +78,7 @@ def normalize_inpaint_config(
     max_full_frame_megapixels: float | None = None,
     max_full_frame_side: int | None = None,
     color_match_strength: float | None = None,
+    source_latent_mode: str | None = None,
 ) -> dict[str, Any]:
     source = dict(config or {})
     resolved_image = image if image is not None else source.get("image")
@@ -166,6 +173,16 @@ def normalize_inpaint_config(
             0.0,
             1.0,
         ),
+        "source_latent_mode": _validate_choice(
+            _get_value(
+                source,
+                "source_latent_mode",
+                source_latent_mode,
+                INPAINT_SOURCE_LATENT_MODE_CROP,
+            ),
+            "source_latent_mode",
+            INPAINT_SOURCE_LATENT_MODES,
+        ),
     }
 
 
@@ -240,7 +257,8 @@ def prepare_inpaint_source(
     normalized = normalize_inpaint_config(config)
     crop_target_width = int(normalized["crop_target_width"])
     crop_target_height = int(normalized["crop_target_height"])
-    crop_cls = _optional_node_class("InpaintCropImproved")
+    use_crop_source = normalized["source_latent_mode"] == INPAINT_SOURCE_LATENT_MODE_CROP
+    crop_cls = _optional_node_class("InpaintCropImproved") if use_crop_source else None
     if crop_cls is not None:
         source_input_width, source_input_height = _image_dimensions(
             normalized["image"],
@@ -473,9 +491,12 @@ def inpaint_full_frame_downscale_warning(
     width: int,
     height: int,
 ) -> str | None:
-    if config is None or _optional_node_class("InpaintCropImproved") is not None:
+    if config is None:
         return None
     normalized = normalize_inpaint_config(config)
+    full_image_mode = normalized["source_latent_mode"] == INPAINT_SOURCE_LATENT_MODE_FULL_IMAGE
+    if not full_image_mode and _optional_node_class("InpaintCropImproved") is not None:
+        return None
     limited_width, limited_height = _fallback_full_frame_dimensions(
         normalized,
         width=int(width),
@@ -484,10 +505,15 @@ def inpaint_full_frame_downscale_warning(
     )
     if limited_width == int(width) and limited_height == int(height):
         return None
+    reason = (
+        "AIO Inpaint full-image source latent mode is selected; full-frame inpaint input will be "
+        if full_image_mode
+        else "AIO Inpaint crop/stitch is unavailable; full-frame inpaint input will be "
+    )
     return (
-        "AIO Inpaint crop/stitch is unavailable; full-frame inpaint input will be "
+        reason +
         f"downscaled from {int(width)}x{int(height)} to {limited_width}x{limited_height} "
-        "to reduce Flux VRAM use."
+        "to reduce sampler VRAM use."
     )
 
 
@@ -787,4 +813,12 @@ def _validate_float(value: Any, name: str, minimum: float, maximum: float) -> fl
     resolved = float(value)
     if resolved < minimum or resolved > maximum:
         raise ValueError(f"{name} must be between {minimum} and {maximum}.")
+    return resolved
+
+
+def _validate_choice(value: Any, name: str, choices: tuple[str, ...]) -> str:
+    resolved = str(value)
+    if resolved not in choices:
+        allowed = ", ".join(choices)
+        raise ValueError(f"{name} must be one of: {allowed}.")
     return resolved
