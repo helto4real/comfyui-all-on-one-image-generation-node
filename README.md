@@ -86,7 +86,7 @@ The node is not an output node, so it is safe for API-mode workflows.
 
 `Ideogram 4 Settings` returns an `AIO_MODEL_SETTINGS` dict with the unconditional model toggle and model path, sampling preset, dual CFG, final CFG override window, AuraFlow sampling shift, precision policy, attention backend, Torch compile, and performance-apply timing. The official presets use Ideogram 4 sigmas; `Workflow Compatible` uses the saved workflow's simple scheduler path. Disable `run_unconditional_model` for turbo LoRA workflows that should skip the separate unconditional diffusion model and run the guider with the conditional model only.
 
-`Krea 2 Settings` returns an `AIO_MODEL_SETTINGS` dict with conditioning rebalance controls, precision policy, attention backend, Torch compile, performance-apply timing, and CUDA fp16 accumulation callbacks. The default rebalance multiplier is `4.0`, with workflow layer weights `1.0,1.0,1.0,1.0,1.0,1.0,1.0,2.5,5.0,1.1,4.0,1.0`.
+`Krea 2 Settings` returns an `AIO_MODEL_SETTINGS` dict with Krea2T enhancer controls, precision policy, attention backend, Torch compile, performance-apply timing, and CUDA fp16 accumulation callbacks. The enhancer is enabled by default with strength `1.0`; strength `0.0` disables the model patch.
 
 `Ideogram 4 Prompt Builder` returns an `AIO_IDEOGRAM4_PROMPT` payload plus convenience `prompt`, `preview`, `bboxes`, `width`, and `height` outputs. Connect its first output to `Ideogram 4 Settings`. When connected, the generated JSON prompt replaces the main node's `positive_prompt`, and the builder's resolved dimensions replace the main node's size controls for Ideogram 4 only. The builder uses the same `max side`, `aspect ratio`, and `multiple value` calculation as `AIO Image Generate`; it does not expose raw width/height inputs.
 
@@ -120,7 +120,7 @@ The LoRA configuration node and LoRA info dialog are inspired by and partially a
 
 The Ideogram 4 prompt builder backend formatting and editor behavior are adapted from [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)' `Ideogram4PromptBuilderKJ`, which is distributed under GPL-3.0. See `THIRD_PARTY_NOTICES.md`.
 
-The Krea 2 conditioning rebalance helper is adapted from [ComfyUI-ConditioningKrea2Rebalance](https://github.com/nova452/ComfyUI-ConditioningKrea2Rebalance), which is distributed under Apache-2.0. See `THIRD_PARTY_NOTICES.md`.
+The Krea2T prompt-adherence enhancer is adapted from [ComfyUI-Krea2T-Enhancer](https://github.com/capitan01R/ComfyUI-Krea2T-Enhancer), which is distributed under MIT. See `THIRD_PARTY_NOTICES.md`.
 
 API workflows can pass rgthree-style dynamic row payloads directly:
 
@@ -225,6 +225,6 @@ The original AIO code is distributed under the MIT License. Because the LoRA UI 
 
 The Ideogram 4 prompt-builder implementation includes code and behavior adapted from GPL-3.0 KJNodes sources. Treat those derived prompt-builder portions as GPL-3.0-covered material, comply with GPL-3.0 when redistributing them, and keep the KJNodes notice intact.
 
-The Krea 2 conditioning rebalance implementation includes code and behavior adapted from Apache-2.0 ComfyUI-ConditioningKrea2Rebalance sources. Preserve the Apache-2.0 attribution and notice when redistributing those derived rebalance portions.
+The Krea2T prompt-adherence enhancer implementation includes code and behavior adapted from MIT ComfyUI-Krea2T-Enhancer sources. Preserve the MIT attribution and notice when redistributing those derived enhancer portions.
 
 For new code that does not derive from GPL sources, MIT remains the simplest and most community-friendly fit for this ComfyUI node pack.

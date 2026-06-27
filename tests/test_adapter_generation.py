@@ -72,7 +72,7 @@ def test_krea2_adapter_calls_real_generation_pipeline(monkeypatch):
     inpaint_config = {"image": "image", "mask": "mask", "denoise": 0.7}
     inpaint_previews = {"requested": {}}
     settings = adapter.resolve_settings(
-        model_settings={"family": "krea2", "rebalance_enabled": True},
+        model_settings={"family": "krea2", "enhancer_enabled": True},
         width=1344,
         height=2048,
         steps=0,

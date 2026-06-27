@@ -14,7 +14,7 @@ try:
     from ..loaders import gguf_backend, safetensors_backend
     from .dimensions import parse_multiple_value, round_to_multiple
     from . import inpaint as inpaint_service
-    from . import krea2_rebalance
+    from . import krea2_enhancer
     from .lora_application import apply_lora_config
     from .lora_config import normalize_lora_config
     from .model_resolution import infer_model_format, strip_category_prefix
@@ -28,7 +28,7 @@ except ImportError:  # pragma: no cover - direct test imports
     from loaders import gguf_backend, safetensors_backend
     from services.dimensions import parse_multiple_value, round_to_multiple
     from services import inpaint as inpaint_service
-    from services import krea2_rebalance
+    from services import krea2_enhancer
     from services.lora_application import apply_lora_config
     from services.lora_config import normalize_lora_config
     from services.model_resolution import infer_model_format, strip_category_prefix
@@ -1370,16 +1370,16 @@ def generate_krea2_t2i(
             inpaint_config=inpaint_config,
             progress=progress,
         )
+    if settings.get("enhancer_enabled", True):
+        _phase(progress, "applying Krea2T enhancer")
+    model = krea2_enhancer.apply_krea2_enhancer(
+        model,
+        enabled=bool(settings.get("enhancer_enabled", True)),
+        strength=settings.get("enhancer_strength", 1.0),
+    )
     _phase(progress, "encoding prompts")
     positive = encode_krea2_prompt(clip=clip, prompt=positive_prompt)
     negative = zero_out_conditioning(positive)
-    if settings.get("rebalance_enabled", True):
-        _phase(progress, "rebalancing conditioning")
-        positive = krea2_rebalance.rebalance_conditioning(
-            positive,
-            multiplier=float(settings.get("rebalance_multiplier", 4.0)),
-            per_layer_weights=settings.get("rebalance_per_layer_weights"),
-        )
     loaded_vae = None
     if inpaint_config is not None:
         _phase(progress, "loading vae")

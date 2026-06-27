@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 try:
-    from ..services.krea2_rebalance import DEFAULT_KREA2_REBALANCE_WEIGHTS
     from ..services.performance import (
         ATTENTION_MODES,
         PERFORMANCE_APPLY_TIMINGS,
@@ -11,7 +10,6 @@ try:
         TORCH_COMPILE_MODES,
     )
 except ImportError:  # pragma: no cover - direct test imports
-    from services.krea2_rebalance import DEFAULT_KREA2_REBALANCE_WEIGHTS
     from services.performance import (
         ATTENTION_MODES,
         PERFORMANCE_APPLY_TIMINGS,
@@ -29,29 +27,21 @@ class AIOKrea2Settings:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "rebalance_enabled": (
+                "enhancer_enabled": (
                     "BOOLEAN",
                     {
                         "default": True,
-                        "tooltip": "Apply Krea 2 per-layer conditioning rebalance to the positive prompt conditioning.",
+                        "tooltip": "Apply the Krea2T prompt-adherence enhancer to the diffusion model during sampling.",
                     },
                 ),
-                "rebalance_multiplier": (
+                "enhancer_strength": (
                     "FLOAT",
                     {
-                        "default": 4.0,
-                        "min": -1000000000.0,
-                        "max": 1000000000.0,
-                        "step": 0.01,
-                        "tooltip": "Global multiplier applied by the Krea 2 conditioning rebalance.",
-                    },
-                ),
-                "rebalance_per_layer_weights": (
-                    "STRING",
-                    {
-                        "default": DEFAULT_KREA2_REBALANCE_WEIGHTS,
-                        "multiline": False,
-                        "tooltip": "Comma-separated Krea 2 conditioning layer weights.",
+                        "default": 1.0,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.05,
+                        "tooltip": "Blend amount for the Krea2T prompt-adherence enhancer.",
                     },
                 ),
                 "precision_policy": (
@@ -86,9 +76,8 @@ class AIOKrea2Settings:
 
     def build_settings(
         self,
-        rebalance_enabled: bool,
-        rebalance_multiplier: float,
-        rebalance_per_layer_weights: str,
+        enhancer_enabled: bool,
+        enhancer_strength: float,
         precision_policy: str,
         attention_mode: str = "auto",
         torch_compile_mode: str = "off",
@@ -99,9 +88,8 @@ class AIOKrea2Settings:
         return (
             {
                 "family": "krea2",
-                "rebalance_enabled": bool(rebalance_enabled),
-                "rebalance_multiplier": rebalance_multiplier,
-                "rebalance_per_layer_weights": rebalance_per_layer_weights,
+                "enhancer_enabled": bool(enhancer_enabled),
+                "enhancer_strength": enhancer_strength,
                 "precision_policy": precision_policy,
                 "attention_mode": attention_mode,
                 "torch_compile_mode": torch_compile_mode,

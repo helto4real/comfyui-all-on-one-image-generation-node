@@ -4,7 +4,6 @@ from nodes.flux2_klein_settings import AIOFlux2Klein9BSettings
 from nodes.ideogram4_settings import AIOIdeogram4Settings, DEFAULT_UNCONDITIONAL_MODEL
 from nodes.krea2_settings import AIOKrea2Settings
 from nodes.z_image_settings import AIOZImageTurboSettings
-from services.krea2_rebalance import DEFAULT_KREA2_REBALANCE_WEIGHTS
 from services import privacy
 import sys
 
@@ -63,15 +62,13 @@ def test_flux_settings_returns_family_dict():
 def test_krea2_settings_returns_workflow_defaults():
     settings = AIOKrea2Settings().build_settings(
         True,
-        4.0,
-        DEFAULT_KREA2_REBALANCE_WEIGHTS,
+        1.0,
         "auto",
     )[0]
 
     assert settings["family"] == "krea2"
-    assert settings["rebalance_enabled"] is True
-    assert settings["rebalance_multiplier"] == 4.0
-    assert settings["rebalance_per_layer_weights"] == DEFAULT_KREA2_REBALANCE_WEIGHTS
+    assert settings["enhancer_enabled"] is True
+    assert settings["enhancer_strength"] == 1.0
     assert settings["precision_policy"] == "auto"
     assert settings["attention_mode"] == "auto"
     assert settings["torch_compile_mode"] == "off"
@@ -270,8 +267,7 @@ def test_settings_can_override_performance_controls():
     )[0]
     krea_settings = AIOKrea2Settings().build_settings(
         False,
-        2.0,
-        "1.0,2.0",
+        0.35,
         "bf16",
         "pytorch",
         "auto",
@@ -288,8 +284,8 @@ def test_settings_can_override_performance_controls():
     assert flux_settings["torch_compile_mode"] == "auto"
     assert flux_settings["torch_compile_backend"] == "inductor"
     assert flux_settings["performance_apply_timing"] == "before_loras"
-    assert krea_settings["rebalance_enabled"] is False
-    assert krea_settings["rebalance_multiplier"] == 2.0
+    assert krea_settings["enhancer_enabled"] is False
+    assert krea_settings["enhancer_strength"] == 0.35
     assert krea_settings["precision_policy"] == "bf16"
     assert krea_settings["attention_mode"] == "pytorch"
     assert krea_settings["torch_compile_mode"] == "auto"

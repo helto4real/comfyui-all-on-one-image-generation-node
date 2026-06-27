@@ -400,7 +400,7 @@ def test_z_image_pipeline_skips_vae_when_image_decode_disabled(monkeypatch):
     assert loaded_vae is None
 
 
-def test_krea2_pipeline_rebalances_positive_after_zeroing_negative(monkeypatch):
+def test_krea2_pipeline_applies_enhancer_model_after_loras_and_performance(monkeypatch):
     events = []
     captured = {}
 
@@ -433,14 +433,14 @@ def test_krea2_pipeline_rebalances_positive_after_zeroing_negative(monkeypatch):
         events.append("zero_negative")
         return "zeroed_negative"
 
-    def fake_rebalance(conditioning, *, multiplier, per_layer_weights):
-        captured["rebalance"] = {
-            "conditioning": conditioning,
-            "multiplier": multiplier,
-            "per_layer_weights": per_layer_weights,
+    def fake_enhancer(model, *, enabled, strength):
+        captured["enhancer"] = {
+            "model": model,
+            "enabled": enabled,
+            "strength": strength,
         }
-        events.append("rebalance_positive")
-        return "rebalanced_positive"
+        events.append("apply_enhancer")
+        return f"{model}+enhancer"
 
     def fake_sample(**kwargs):
         captured["sample"] = kwargs
@@ -453,7 +453,7 @@ def test_krea2_pipeline_rebalances_positive_after_zeroing_negative(monkeypatch):
     monkeypatch.setattr(pipeline, "apply_model_performance", fake_performance)
     monkeypatch.setattr(pipeline, "encode_krea2_prompt", fake_encode)
     monkeypatch.setattr(pipeline, "zero_out_conditioning", fake_zero)
-    monkeypatch.setattr(pipeline.krea2_rebalance, "rebalance_conditioning", fake_rebalance)
+    monkeypatch.setattr(pipeline.krea2_enhancer, "apply_krea2_enhancer", fake_enhancer)
     monkeypatch.setattr(pipeline, "make_empty_krea2_latent", lambda **kwargs: events.append("latent") or {"samples": "empty"})
     monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", fake_sample)
     monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: events.append("load_vae") or "vae")
@@ -475,16 +475,15 @@ def test_krea2_pipeline_rebalances_positive_after_zeroing_negative(monkeypatch):
             "precision_policy": "fp8",
             "attention_mode": "off",
             "fp16_accumulation_enabled": True,
-            "rebalance_enabled": True,
-            "rebalance_multiplier": 4.0,
-            "rebalance_per_layer_weights": "1.0,2.0",
+            "enhancer_enabled": True,
+            "enhancer_strength": 0.75,
         },
         lora_config={"loras": [{"enabled": True, "name": "style"}]},
     )
 
     assert image == "image"
     assert latent == {"samples": "sampled"}
-    assert positive == "rebalanced_positive"
+    assert positive == "positive"
     assert negative == "zeroed_negative"
     assert loaded_vae == "vae"
     assert events == [
@@ -492,9 +491,9 @@ def test_krea2_pipeline_rebalances_positive_after_zeroing_negative(monkeypatch):
         "load_clip",
         "apply_loras",
         "performance:model+lora",
+        "apply_enhancer",
         "encode:clip+lora",
         "zero_negative",
-        "rebalance_positive",
         "latent",
         "sample",
         "load_vae",
@@ -510,29 +509,24 @@ def test_krea2_pipeline_rebalances_positive_after_zeroing_negative(monkeypatch):
     }
     assert captured["performance_settings"]["fp16_accumulation_enabled"] is True
     assert captured["zero"] == "positive"
-    assert captured["rebalance"] == {
-        "conditioning": "positive",
-        "multiplier": 4.0,
-        "per_layer_weights": "1.0,2.0",
+    assert captured["enhancer"] == {
+        "model": "model+lora+perf",
+        "enabled": True,
+        "strength": 0.75,
     }
-    assert captured["sample"]["model"] == "model+lora+perf"
-    assert captured["sample"]["positive"] == "rebalanced_positive"
+    assert captured["sample"]["model"] == "model+lora+perf+enhancer"
+    assert captured["sample"]["positive"] == "positive"
     assert captured["sample"]["negative"] == "zeroed_negative"
     assert captured["sample"]["sampler"] == "er_sde"
     assert captured["sample"]["scheduler"] == "simple"
 
 
-def test_krea2_pipeline_can_disable_rebalance_and_decode(monkeypatch):
+def test_krea2_pipeline_can_disable_enhancer_and_decode(monkeypatch):
     monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
     monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
     monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model", "clip", []))
     monkeypatch.setattr(pipeline, "encode_krea2_prompt", lambda **kwargs: "positive")
     monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "zeroed_negative")
-    monkeypatch.setattr(
-        pipeline.krea2_rebalance,
-        "rebalance_conditioning",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("rebalance should be disabled")),
-    )
     monkeypatch.setattr(pipeline, "make_empty_krea2_latent", lambda **kwargs: {"samples": "empty"})
     monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", lambda **kwargs: {"samples": "sampled"})
     monkeypatch.setattr(
@@ -558,7 +552,7 @@ def test_krea2_pipeline_can_disable_rebalance_and_decode(monkeypatch):
         cfg=1.0,
         sampler="er_sde",
         scheduler="simple",
-        settings={"rebalance_enabled": False},
+        settings={"enhancer_enabled": False},
         decode_image=False,
     )
 
@@ -587,11 +581,6 @@ def test_krea2_pipeline_uses_inpaint_source_latent_and_blends_output(monkeypatch
     monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model", "clip", []))
     monkeypatch.setattr(pipeline, "encode_krea2_prompt", lambda **kwargs: "positive")
     monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "negative")
-    monkeypatch.setattr(
-        pipeline.krea2_rebalance,
-        "rebalance_conditioning",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("rebalance should be disabled")),
-    )
     monkeypatch.setattr(
         pipeline,
         "make_empty_krea2_latent",
@@ -642,7 +631,7 @@ def test_krea2_pipeline_uses_inpaint_source_latent_and_blends_output(monkeypatch
         cfg=1.0,
         sampler="er_sde",
         scheduler="simple",
-        settings={"rebalance_enabled": False},
+        settings={"enhancer_enabled": False},
         inpaint_config={
             "image": "image",
             "mask": "mask",
@@ -724,7 +713,7 @@ def test_krea2_pipeline_stitches_crop_inpaint_output(monkeypatch):
         cfg=1.0,
         sampler="er_sde",
         scheduler="simple",
-        settings={"rebalance_enabled": False},
+        settings={"enhancer_enabled": False},
         inpaint_config={"image": "image", "mask": "mask", "denoise": 1.0},
     )
 
@@ -775,7 +764,7 @@ def test_krea2_pipeline_skips_sampling_for_zero_denoise_inpaint(monkeypatch):
         cfg=1.0,
         sampler="er_sde",
         scheduler="simple",
-        settings={"rebalance_enabled": False},
+        settings={"enhancer_enabled": False},
         inpaint_config={"image": "image", "mask": "mask", "denoise": 0.0},
         decode_image=False,
     )
@@ -2947,7 +2936,7 @@ def test_z_image_pipeline_second_pass_reuses_ksampler_without_final_decode(monke
     assert latent[pipeline.SECOND_PASS_INFO_KEY]["final_size"] == {"width": 1536, "height": 1536}
 
 
-def test_krea2_pipeline_second_pass_reuses_ksampler_after_rebalance(monkeypatch):
+def test_krea2_pipeline_second_pass_reuses_enhanced_model(monkeypatch):
     sample_calls = []
 
     monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
@@ -2956,7 +2945,7 @@ def test_krea2_pipeline_second_pass_reuses_ksampler_after_rebalance(monkeypatch)
     monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
     monkeypatch.setattr(pipeline, "encode_krea2_prompt", lambda **kwargs: "positive")
     monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "negative")
-    monkeypatch.setattr(pipeline.krea2_rebalance, "rebalance_conditioning", lambda *args, **kwargs: "rebalanced")
+    monkeypatch.setattr(pipeline.krea2_enhancer, "apply_krea2_enhancer", lambda *args, **kwargs: "enhanced_model")
     monkeypatch.setattr(pipeline, "make_empty_krea2_latent", lambda **kwargs: {"samples": "empty"})
     monkeypatch.setattr(pipeline, "upscale_image_by_ratio", lambda **kwargs: ("upscaled_image", 1536, 1536))
     monkeypatch.setattr(pipeline, "encode_image_to_latent", lambda **kwargs: {"samples": "upscaled_latent"})
@@ -2984,13 +2973,15 @@ def test_krea2_pipeline_second_pass_reuses_ksampler_after_rebalance(monkeypatch)
         cfg=1.0,
         sampler="er_sde",
         scheduler="simple",
-        settings={"rebalance_enabled": True},
+        settings={"enhancer_enabled": True, "enhancer_strength": 0.5},
         second_pass_config={"enabled": True, "decode_image": True, "steps_input": 6},
     )
 
     assert image == "second_pass_image"
-    assert positive == "rebalanced"
-    assert sample_calls[1]["positive"] == "rebalanced"
+    assert positive == "positive"
+    assert sample_calls[0]["model"] == "enhanced_model"
+    assert sample_calls[1]["model"] == "enhanced_model"
+    assert sample_calls[1]["positive"] == "positive"
     assert sample_calls[1]["negative"] == "negative"
     assert sample_calls[1]["denoise"] == 0.15
     assert sample_calls[1]["steps"] == 6

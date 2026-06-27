@@ -107,7 +107,7 @@ PROFILES: dict[str, ModelProfile] = {
         required_components=("diffusion_model", "text_encoder", "vae"),
         notes=(
             "Local open-weight Krea 2 profile using Krea2 Qwen3-VL "
-            "conditioning, optional per-layer conditioning rebalance, and "
+            "conditioning, optional Krea2T prompt-adherence enhancement, and "
             "AIO Inpaint masked img2img."
         ),
     ),
