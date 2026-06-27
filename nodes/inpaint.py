@@ -180,6 +180,16 @@ class AIOInpaint:
                         "tooltip": "Use crop/stitch working crops by default, or encode the full source image as the sampler latent.",
                     },
                 ),
+                "steps": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 100,
+                        "step": 1,
+                        "tooltip": "Inpaint sampling steps. Use 0 to reuse the main resolved step count.",
+                    },
+                ),
             },
             "optional": {
                 "context_mask": (
@@ -209,6 +219,7 @@ class AIOInpaint:
         max_full_frame_side: int = 1536,
         color_match_strength: float = 0.0,
         source_latent_mode: str = INPAINT_SOURCE_LATENT_MODE_CROP,
+        steps: int = 0,
         context_mask: Any = None,
     ):
         config = normalize_inpaint_config(
@@ -230,5 +241,6 @@ class AIOInpaint:
             max_full_frame_side=max_full_frame_side,
             color_match_strength=color_match_strength,
             source_latent_mode=source_latent_mode,
+            steps=steps,
         )
         return (config, prepare_inpaint_output_mask(config))

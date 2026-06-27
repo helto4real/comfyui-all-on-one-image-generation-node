@@ -6,6 +6,7 @@ import pytest
 
 from nodes.inpaint import AIOInpaint
 from services.inpaint import (
+    apply_denoise_to_sigmas,
     apply_inpaint_color_match,
     apply_inpaint_model_conditioning,
     encode_inpaint_source_latent,
@@ -17,7 +18,9 @@ from services.inpaint import (
     prepare_inpaint_mask,
     prepare_inpaint_output_mask,
     prepare_inpaint_source,
+    resolve_denoise_schedule_steps,
     resolve_dimensions_from_inpaint_config,
+    resolve_inpaint_steps,
     resolve_mask_grow_pixels,
     stitch_inpaint_image,
     stitcher_blend_mask,
@@ -69,6 +72,9 @@ def test_inpaint_node_exposes_config_schema():
     assert inputs["source_latent_mode"][0] == ["crop/stitch", "full image"]
     assert inputs["source_latent_mode"][1]["default"] == "crop/stitch"
     assert inputs["source_latent_mode"][1]["advanced"] is True
+    assert inputs["steps"][1]["default"] == 0
+    assert inputs["steps"][1]["min"] == 0
+    assert inputs["steps"][1]["max"] == 100
     assert optional["context_mask"][0] == "MASK"
 
 
@@ -97,6 +103,7 @@ def test_inpaint_config_normalizes_defaults():
     assert config["max_full_frame_side"] == 1536
     assert config["color_match_strength"] == 0.0
     assert config["source_latent_mode"] == "crop/stitch"
+    assert config["steps"] == 0
 
 
 def test_inpaint_config_preserves_controls(monkeypatch):
@@ -125,6 +132,7 @@ def test_inpaint_config_preserves_controls(monkeypatch):
         max_full_frame_side=2048,
         color_match_strength=0.35,
         source_latent_mode="full image",
+        steps=6,
         context_mask=context_mask,
     )
 
@@ -145,6 +153,7 @@ def test_inpaint_config_preserves_controls(monkeypatch):
     assert config["max_full_frame_side"] == 2048
     assert config["color_match_strength"] == 0.35
     assert config["source_latent_mode"] == "full image"
+    assert config["steps"] == 6
     assert config["context_mask"] is context_mask
     assert output_mask.shape == (1, 4, 4)
 
@@ -163,6 +172,8 @@ def test_inpaint_config_rejects_out_of_range_controls():
         normalize_inpaint_config(image=FakeImage(), mask=FakeMask(), mask_feather=257)
     with pytest.raises(ValueError, match="denoise must be between 0.0 and 1.0"):
         normalize_inpaint_config(image=FakeImage(), mask=FakeMask(), denoise=1.1)
+    with pytest.raises(ValueError, match="steps must be between 0 and 100"):
+        normalize_inpaint_config(image=FakeImage(), mask=FakeMask(), steps=101)
     with pytest.raises(ValueError, match="crop_target_width must be between 64 and 16384"):
         normalize_inpaint_config(image=FakeImage(), mask=FakeMask(), crop_target_width=63)
     with pytest.raises(ValueError, match="crop_target_height must be between 64 and 16384"):
@@ -177,6 +188,24 @@ def test_inpaint_config_rejects_out_of_range_controls():
         normalize_inpaint_config(image=FakeImage(), mask=FakeMask(), color_match_strength=1.1)
     with pytest.raises(ValueError, match="source_latent_mode must be one of"):
         normalize_inpaint_config(image=FakeImage(), mask=FakeMask(), source_latent_mode="unknown")
+
+
+def test_inpaint_steps_resolve_against_main_steps():
+    assert resolve_inpaint_steps(normalize_inpaint_config(image=FakeImage(), mask=FakeMask()), 12) == 12
+    assert resolve_inpaint_steps(normalize_inpaint_config(image=FakeImage(), mask=FakeMask(), steps=5), 12) == 5
+    assert resolve_inpaint_steps(None, 12) == 12
+
+
+def test_denoise_schedule_steps_match_comfy_low_denoise_semantics():
+    assert resolve_denoise_schedule_steps(8, 1.0) == 8
+    assert resolve_denoise_schedule_steps(8, 0.5) == 16
+    assert resolve_denoise_schedule_steps(8, 0.0) == 0
+
+
+def test_apply_denoise_to_sigmas_can_keep_explicit_step_count():
+    sigmas = list(range(11))
+    assert apply_denoise_to_sigmas(sigmas, 0.5, steps=4) == [6, 7, 8, 9, 10]
+    assert apply_denoise_to_sigmas(sigmas, 1.0, steps=4) == [6, 7, 8, 9, 10]
 
 
 def test_inpaint_dimensions_round_to_model_multiple():

@@ -1095,24 +1095,32 @@ def generate_ideogram4_t2i(
         negative=negative,
         cfg=float(settings.get("dual_cfg", settings.get("cfg", 7.0))),
     )
-    if settings.get("schedule_mode") == "basic":
-        sigmas = basic_sigmas(model=scheduler_model, scheduler=scheduler, steps=steps)
-    else:
-        sigmas = ideogram4_sigmas(
-            steps=steps,
-            width=sampling_width,
-            height=sampling_height,
-            mu=float(settings.get("mu", 0.0)),
-            std=float(settings.get("std", 1.75)),
-        )
-    if inpaint_config is not None:
-        sigmas = inpaint_service.apply_denoise_to_sigmas(
-            sigmas,
-            float(inpaint_config.get("denoise", 1.0)),
-        )
-    if inpaint_config is not None and float(inpaint_config.get("denoise", 1.0)) <= 0.0:
+    inpaint_denoise = float(inpaint_config.get("denoise", 1.0)) if inpaint_config is not None else 1.0
+    inpaint_steps = inpaint_service.resolve_inpaint_steps(inpaint_config, steps)
+    if inpaint_config is not None and inpaint_denoise <= 0.0:
         sampled_latent = latent
     else:
+        schedule_steps = (
+            inpaint_service.resolve_denoise_schedule_steps(inpaint_steps, inpaint_denoise)
+            if inpaint_config is not None
+            else steps
+        )
+        if settings.get("schedule_mode") == "basic":
+            sigmas = basic_sigmas(model=scheduler_model, scheduler=scheduler, steps=schedule_steps)
+        else:
+            sigmas = ideogram4_sigmas(
+                steps=schedule_steps,
+                width=sampling_width,
+                height=sampling_height,
+                mu=float(settings.get("mu", 0.0)),
+                std=float(settings.get("std", 1.75)),
+            )
+        if inpaint_config is not None:
+            sigmas = inpaint_service.apply_denoise_to_sigmas(
+                sigmas,
+                inpaint_denoise,
+                steps=inpaint_steps,
+            )
         _phase(progress, "sampling")
         sampled_latent = sample_with_custom_guider(
             guider=guider,
@@ -1393,6 +1401,7 @@ def generate_krea2_t2i(
         inpaint_source = None
         latent = make_empty_krea2_latent(width=width, height=height)
     inpaint_denoise = float(inpaint_config.get("denoise", 1.0)) if inpaint_config is not None else 1.0
+    inpaint_steps = inpaint_service.resolve_inpaint_steps(inpaint_config, steps)
     if inpaint_config is not None and inpaint_denoise <= 0.0:
         sampled_latent = latent
     else:
@@ -1400,7 +1409,7 @@ def generate_krea2_t2i(
         sampled_latent = sample_with_comfy_ksampler(
             model=model,
             seed=seed,
-            steps=steps,
+            steps=inpaint_steps,
             cfg=cfg,
             sampler=sampler,
             scheduler=scheduler,
@@ -1626,6 +1635,7 @@ def generate_flux2_klein_t2i(
     else:
         latent = make_empty_flux2_latent(width=width, height=height)
     inpaint_denoise = float(inpaint_config.get("denoise", 1.0)) if inpaint_config is not None else 1.0
+    inpaint_steps = inpaint_service.resolve_inpaint_steps(inpaint_config, steps)
     if inpaint_config is not None and inpaint_denoise <= 0.0:
         sampled_latent = latent
     else:
@@ -1636,14 +1646,23 @@ def generate_flux2_klein_t2i(
                 if flux_inpaint_source is not None
                 else (width, height)
             )
-            sigmas = flux2_sigmas(steps=steps, width=sigma_width, height=sigma_height)
+            schedule_steps = (
+                inpaint_service.resolve_denoise_schedule_steps(inpaint_steps, inpaint_denoise)
+                if inpaint_config is not None
+                else steps
+            )
+            sigmas = flux2_sigmas(steps=schedule_steps, width=sigma_width, height=sigma_height)
             if inpaint_config is not None:
-                sigmas = inpaint_service.apply_denoise_to_sigmas(sigmas, inpaint_denoise)
+                sigmas = inpaint_service.apply_denoise_to_sigmas(
+                    sigmas,
+                    inpaint_denoise,
+                    steps=inpaint_steps,
+                )
             _phase(progress, "sampling")
             sampled_latent = sample_with_sigmas(
                 model=model,
                 seed=seed,
-                steps=steps,
+                steps=inpaint_steps if inpaint_config is not None else steps,
                 cfg=cfg,
                 sampler=sampler,
                 scheduler="normal",
@@ -1659,7 +1678,7 @@ def generate_flux2_klein_t2i(
             sampled_latent = sample_with_comfy_ksampler(
                 model=model,
                 seed=seed,
-                steps=steps,
+                steps=inpaint_steps,
                 cfg=cfg,
                 sampler=sampler,
                 scheduler=scheduler,

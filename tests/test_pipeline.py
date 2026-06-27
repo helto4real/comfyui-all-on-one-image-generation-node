@@ -647,6 +647,7 @@ def test_krea2_pipeline_uses_inpaint_source_latent_and_blends_output(monkeypatch
             "image": "image",
             "mask": "mask",
             "denoise": 0.35,
+            "steps": 5,
             "mask_feather": 12,
             "final_blend": True,
         },
@@ -662,6 +663,7 @@ def test_krea2_pipeline_uses_inpaint_source_latent_and_blends_output(monkeypatch
     assert calls["encode_source"]["source"].sampling_mask == "noise_mask"
     assert calls["sample"]["latent"] == {"samples": "inpaint", "noise_mask": "mask"}
     assert calls["sample"]["denoise"] == 0.35
+    assert calls["sample"]["steps"] == 5
     assert calls["blend"] == {
         "source_image": "source_image",
         "generated_image": "decoded_image",
@@ -934,7 +936,11 @@ def test_ideogram4_pipeline_uses_crop_inpaint_latent_and_stitches_output(monkeyp
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("empty latent should not be used")),
     )
     monkeypatch.setattr(pipeline, "build_dual_model_guider", lambda **kwargs: "guider")
-    monkeypatch.setattr(pipeline, "ideogram4_sigmas", lambda **kwargs: "sigmas")
+    def fake_sigmas(**kwargs):
+        calls["sigmas"] = kwargs
+        return "sigmas"
+
+    monkeypatch.setattr(pipeline, "ideogram4_sigmas", fake_sigmas)
     monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
     monkeypatch.setattr(
         pipeline.inpaint_service,
@@ -959,8 +965,8 @@ def test_ideogram4_pipeline_uses_crop_inpaint_latent_and_stitches_output(monkeyp
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("Ideogram should not use Flux inpaint conditioning")),
     )
 
-    def fake_denoise(sigmas, denoise):
-        calls["denoise"] = {"sigmas": sigmas, "denoise": denoise}
+    def fake_denoise(sigmas, denoise, *, steps=None):
+        calls["denoise"] = {"sigmas": sigmas, "denoise": denoise, "steps": steps}
         return "trimmed_sigmas"
 
     def fake_sample(**kwargs):
@@ -1003,6 +1009,7 @@ def test_ideogram4_pipeline_uses_crop_inpaint_latent_and_stitches_output(monkeyp
             "image": "image",
             "mask": "mask",
             "denoise": 0.75,
+            "steps": 8,
             "final_blend": False,
             "mask_feather": 24,
         },
@@ -1016,7 +1023,8 @@ def test_ideogram4_pipeline_uses_crop_inpaint_latent_and_stitches_output(monkeyp
     assert loaded_vae == "vae"
     assert calls["encode_source"]["source"].image == "cropped_image"
     assert calls["encode_source"]["source"].sampling_mask == "cropped_noise_mask"
-    assert calls["denoise"] == {"sigmas": "sigmas", "denoise": 0.75}
+    assert calls["sigmas"]["steps"] == 10
+    assert calls["denoise"] == {"sigmas": "sigmas", "denoise": 0.75, "steps": 8}
     assert calls["sample"]["latent"] == {"samples": "inpaint", "noise_mask": "mask"}
     assert calls["sample"]["sigmas"] == "trimmed_sigmas"
     assert calls["stitch"] == {
@@ -1053,7 +1061,7 @@ def test_ideogram4_pipeline_skips_final_blend_when_disabled(monkeypatch):
         "encode_inpaint_source_latent",
         lambda **kwargs: {"samples": "inpaint", "noise_mask": "mask"},
     )
-    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", lambda sigmas, denoise: sigmas)
+    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", lambda sigmas, denoise, **kwargs: sigmas)
     monkeypatch.setattr(pipeline, "sample_with_custom_guider", lambda **kwargs: {"samples": "sampled"})
     monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: "decoded_image")
     monkeypatch.setattr(
@@ -1113,7 +1121,7 @@ def test_ideogram4_pipeline_fallback_final_blend_when_enabled(monkeypatch):
         "encode_inpaint_source_latent",
         lambda **kwargs: {"samples": "inpaint", "noise_mask": "mask"},
     )
-    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", lambda sigmas, denoise: sigmas)
+    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", lambda sigmas, denoise, **kwargs: sigmas)
     monkeypatch.setattr(pipeline, "sample_with_custom_guider", lambda **kwargs: {"samples": "sampled"})
     monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: "decoded_image")
 
@@ -1185,7 +1193,7 @@ def test_ideogram4_pipeline_skips_decode_and_blend_for_latent_only_inpaint(monke
         "encode_inpaint_source_latent",
         lambda **kwargs: {"samples": "inpaint", "noise_mask": "mask"},
     )
-    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", lambda sigmas, denoise: sigmas)
+    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", lambda sigmas, denoise, **kwargs: sigmas)
     monkeypatch.setattr(pipeline, "sample_with_custom_guider", lambda **kwargs: {"samples": "sampled"})
     monkeypatch.setattr(
         pipeline,
@@ -1251,7 +1259,7 @@ def test_ideogram4_pipeline_skips_sampling_when_inpaint_denoise_is_zero(monkeypa
         "encode_inpaint_source_latent",
         lambda **kwargs: {"samples": "inpaint", "noise_mask": "mask"},
     )
-    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", lambda sigmas, denoise: sigmas)
+    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", lambda sigmas, denoise, **kwargs: sigmas)
     monkeypatch.setattr(
         pipeline,
         "sample_with_custom_guider",
@@ -1613,8 +1621,8 @@ def test_flux2_pipeline_uses_inpaint_latent_and_final_blend(monkeypatch):
 
     monkeypatch.setattr(pipeline, "flux2_sigmas", fake_flux2_sigmas)
 
-    def fake_denoise(sigmas, denoise):
-        calls["denoise"] = {"sigmas": sigmas, "denoise": denoise}
+    def fake_denoise(sigmas, denoise, *, steps=None):
+        calls["denoise"] = {"sigmas": sigmas, "denoise": denoise, "steps": steps}
         return "trimmed_sigmas"
 
     def fake_sample(**kwargs):
@@ -1658,6 +1666,7 @@ def test_flux2_pipeline_uses_inpaint_latent_and_final_blend(monkeypatch):
             "image": "image",
             "mask": "mask",
             "denoise": 0.75,
+            "steps": 8,
             "final_blend": True,
             "mask_feather": 24,
         },
@@ -1672,9 +1681,10 @@ def test_flux2_pipeline_uses_inpaint_latent_and_final_blend(monkeypatch):
     assert calls["reference_latents"] == [{"samples": "source_ref"}]
     assert calls["conditioning"]["image"] == "cropped_image"
     assert calls["conditioning"]["mask"] == "cropped_noise_mask"
-    assert calls["sigmas"] == {"steps": 4, "width": 1024, "height": 1024}
-    assert calls["denoise"] == {"sigmas": "sigmas", "denoise": 0.75}
+    assert calls["sigmas"] == {"steps": 10, "width": 1024, "height": 1024}
+    assert calls["denoise"] == {"sigmas": "sigmas", "denoise": 0.75, "steps": 8}
     assert calls["sample"]["latent"] == {"samples": "inpaint", "noise_mask": "mask"}
+    assert calls["sample"]["steps"] == 8
     assert calls["sample"]["sigmas"] == "trimmed_sigmas"
     assert calls["stitch"] == {
         "stitcher": "stitcher",
@@ -1713,7 +1723,7 @@ def test_flux2_pipeline_applies_color_match_before_stitch(monkeypatch):
         lambda **kwargs: ("inpaint_positive", "inpaint_negative", {"samples": "inpaint", "noise_mask": "mask"}),
     )
     monkeypatch.setattr(pipeline, "flux2_sigmas", lambda **kwargs: "sigmas")
-    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", lambda sigmas, denoise: sigmas)
+    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", lambda sigmas, denoise, **kwargs: sigmas)
     monkeypatch.setattr(pipeline, "sample_with_sigmas", lambda **kwargs: {"samples": "sampled"})
     monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: events.append("decode") or "decoded_image")
 
@@ -1790,7 +1800,7 @@ def test_flux2_pipeline_color_match_missing_node_error(monkeypatch):
         lambda **kwargs: ("inpaint_positive", "inpaint_negative", {"samples": "inpaint", "noise_mask": "mask"}),
     )
     monkeypatch.setattr(pipeline, "flux2_sigmas", lambda **kwargs: "sigmas")
-    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", lambda sigmas, denoise: sigmas)
+    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", lambda sigmas, denoise, **kwargs: sigmas)
     monkeypatch.setattr(pipeline, "sample_with_sigmas", lambda **kwargs: {"samples": "sampled"})
     monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: "decoded_image")
 
@@ -2038,7 +2048,7 @@ def test_flux2_pipeline_skips_decode_and_blend_for_latent_only_inpaint(monkeypat
         lambda **kwargs: ("inpaint_positive", "inpaint_negative", {"samples": "inpaint", "noise_mask": "mask"}),
     )
     monkeypatch.setattr(pipeline, "flux2_sigmas", lambda **kwargs: "sigmas")
-    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", lambda sigmas, denoise: sigmas)
+    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", lambda sigmas, denoise, **kwargs: sigmas)
     monkeypatch.setattr(pipeline, "sample_with_sigmas", lambda **kwargs: {"samples": "sampled"})
     monkeypatch.setattr(
         pipeline,
@@ -2110,7 +2120,7 @@ def test_flux2_pipeline_decodes_inpaint_sample_preview_without_final_image(monke
         lambda **kwargs: ("inpaint_positive", "inpaint_negative", {"samples": "inpaint", "noise_mask": "mask"}),
     )
     monkeypatch.setattr(pipeline, "flux2_sigmas", lambda **kwargs: "sigmas")
-    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", lambda sigmas, denoise: sigmas)
+    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", lambda sigmas, denoise, **kwargs: sigmas)
     monkeypatch.setattr(pipeline, "sample_with_sigmas", lambda **kwargs: {"samples": "sampled"})
     monkeypatch.setattr(pipeline, "decode_latent", lambda **kwargs: "decoded_preview")
     monkeypatch.setattr(
@@ -2196,13 +2206,14 @@ def test_flux2_pipeline_passes_inpaint_denoise_to_ksampler_scheduler(monkeypatch
         sampler="euler",
         scheduler="normal",
         settings={},
-        inpaint_config={"image": "image", "mask": "mask", "denoise": 0.35},
+        inpaint_config={"image": "image", "mask": "mask", "denoise": 0.35, "steps": 3},
         decode_image=False,
     )
 
     assert latent == {"samples": "sampled"}
     assert calls["sample"]["latent"] == {"samples": "inpaint", "noise_mask": "mask"}
     assert calls["sample"]["denoise"] == 0.35
+    assert calls["sample"]["steps"] == 3
 
 
 def test_flux2_pipeline_downscales_no_crop_inpaint_before_sampling(monkeypatch):
@@ -2500,7 +2511,7 @@ def test_flux2_pipeline_shares_vae_for_references_and_inpaint(monkeypatch):
         ),
     )
     monkeypatch.setattr(pipeline, "flux2_sigmas", lambda **kwargs: "sigmas")
-    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", lambda sigmas, denoise: sigmas)
+    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", lambda sigmas, denoise, **kwargs: sigmas)
     monkeypatch.setattr(pipeline, "sample_with_sigmas", lambda **kwargs: {"samples": "sampled"})
     monkeypatch.setattr(
         pipeline,

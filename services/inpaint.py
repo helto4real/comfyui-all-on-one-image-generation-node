@@ -20,6 +20,7 @@ CROP_INPAINT_MASK_GROW_MAX_PIXELS = 1024
 CROP_INPAINT_MASK_FEATHER = 24
 CROP_INPAINT_TARGET_WIDTH = 1024
 CROP_INPAINT_TARGET_HEIGHT = 1024
+CROP_INPAINT_STEPS = 0
 CROP_INPAINT_CONTEXT_FACTOR = 1.6
 CROP_INPAINT_OUTPUT_PADDING = "64"
 CROP_INPAINT_DEVICE_MODE = "gpu (much faster)"
@@ -67,6 +68,7 @@ def normalize_inpaint_config(
     mask_grow_percent: float | None = None,
     mask_feather: int | None = None,
     denoise: float | None = None,
+    steps: int | None = None,
     final_blend: bool | None = None,
     context_mask: Any = None,
     crop_target_width: int | None = None,
@@ -106,6 +108,12 @@ def normalize_inpaint_config(
             256,
         ),
         "denoise": _validate_float(_get_value(source, "denoise", denoise, 1.0), "denoise", 0.0, 1.0),
+        "steps": _validate_int(
+            _get_value(source, "steps", steps, CROP_INPAINT_STEPS),
+            "steps",
+            0,
+            100,
+        ),
         "final_blend": bool(_get_value(source, "final_blend", final_blend, True)),
         "context_mask": context_mask if context_mask is not None else source.get("context_mask"),
         "crop_target_width": _validate_int(
@@ -190,6 +198,25 @@ def normalize_optional_inpaint_config(config: Mapping[str, Any] | None) -> dict[
     if config is None:
         return None
     return normalize_inpaint_config(config)
+
+
+def resolve_inpaint_steps(config: Mapping[str, Any] | None, main_steps: int) -> int:
+    if config is None:
+        return max(1, int(main_steps))
+    normalized_steps = int(config.get("steps", CROP_INPAINT_STEPS))
+    if normalized_steps <= 0:
+        return max(1, int(main_steps))
+    return normalized_steps
+
+
+def resolve_denoise_schedule_steps(steps: int, denoise: float) -> int:
+    resolved_steps = max(1, int(steps))
+    value = float(denoise)
+    if value <= 0.0:
+        return 0
+    if value >= 1.0:
+        return resolved_steps
+    return max(1, int(resolved_steps / value))
 
 
 def inpaint_image_dimensions(config: Mapping[str, Any]) -> tuple[int, int]:
@@ -736,14 +763,17 @@ def _floor_to_multiple(value: float, multiple: int) -> int:
     return max(multiple, int(math.floor(float(value) / multiple)) * multiple)
 
 
-def apply_denoise_to_sigmas(sigmas: Any, denoise: float):
+def apply_denoise_to_sigmas(sigmas: Any, denoise: float, *, steps: int | None = None):
     value = float(denoise)
-    if value >= 1.0:
+    if value >= 1.0 and steps is None:
         return sigmas
     shape = getattr(sigmas, "shape", None)
     sigma_count = int(shape[-1]) if shape is not None else len(sigmas)
-    step_count = max(1, sigma_count - 1)
-    keep_steps = max(1, int(round(step_count * max(0.0, value))))
+    if steps is None:
+        step_count = max(1, sigma_count - 1)
+        keep_steps = max(1, int(round(step_count * max(0.0, value))))
+    else:
+        keep_steps = max(1, min(int(steps), sigma_count - 1))
     return sigmas[-(keep_steps + 1):]
 
 

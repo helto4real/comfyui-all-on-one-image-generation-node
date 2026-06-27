@@ -22,6 +22,7 @@ try:
     from ..services.inpaint import (
         normalize_optional_inpaint_config,
         resolve_dimensions_from_inpaint_config,
+        resolve_inpaint_steps,
     )
     from ..services.lora_config import normalize_lora_config, summarize_loras
     from ..services.reference_inputs import (
@@ -51,6 +52,7 @@ except ImportError:  # pragma: no cover - direct test imports
     from services.inpaint import (
         normalize_optional_inpaint_config,
         resolve_dimensions_from_inpaint_config,
+        resolve_inpaint_steps,
     )
     from services.lora_config import normalize_lora_config, summarize_loras
     from services.reference_inputs import (
@@ -861,6 +863,12 @@ class AIOImageGenerate:
         effective_width = int(settings["width"])
         effective_height = int(settings["height"])
         effective_steps = int(settings["steps"])
+        effective_inpaint_steps = (
+            resolve_inpaint_steps(normalized_inpaint_config, effective_steps)
+            if normalized_inpaint_config is not None
+            else None
+        )
+        effective_sampling_steps = effective_inpaint_steps if effective_inpaint_steps is not None else effective_steps
         effective_cfg = float(settings["cfg"])
         effective_sampler = str(settings["sampler"])
         effective_scheduler = str(settings["scheduler"])
@@ -888,11 +896,11 @@ class AIOImageGenerate:
             reference_inputs=reference_inputs,
             inpaint_config=normalized_inpaint_config,
         )
-        progress = ProgressReporter(total_steps=effective_steps, node_id=unique_id)
+        progress = ProgressReporter(total_steps=effective_sampling_steps, node_id=unique_id)
         progress.phase("resolving models")
         resolved_pid_capture_step = pipeline.resolve_pid_capture_step(
             pid_capture_step,
-            effective_steps,
+            effective_sampling_steps,
         ) if pid_capture_connected else None
         debug_info = {
             "node": {
@@ -940,6 +948,7 @@ class AIOImageGenerate:
                 "sampler_received": sampler,
                 "scheduler_received": scheduler,
                 "effective_steps": effective_steps,
+                "effective_sampling_steps": effective_sampling_steps,
                 "effective_cfg": effective_cfg,
                 "effective_sampler": effective_sampler,
                 "effective_scheduler": effective_scheduler,
@@ -968,6 +977,10 @@ class AIOImageGenerate:
             },
             "inpaint": {
                 "config": _debug_inpaint_config(normalized_inpaint_config),
+                "steps_input": int(normalized_inpaint_config.get("steps", 0))
+                if normalized_inpaint_config is not None
+                else None,
+                "effective_steps": effective_inpaint_steps,
                 "previews_requested": _debug_value(inpaint_previews[pipeline.INPAINT_PREVIEW_REQUESTED]),
             },
             "references": _debug_reference_inputs(reference_inputs),
