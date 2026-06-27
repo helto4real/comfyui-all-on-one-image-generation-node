@@ -88,6 +88,7 @@ class BaseImageAdapter(ABC):
         loaded_clip: Any = None,
         decode_image: bool = True,
         return_vae: bool = False,
+        second_pass_config: dict[str, Any] | None = None,
         pid_capture_step: int | None = None,
         progress: Any = None,
     ):

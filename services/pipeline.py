@@ -7,6 +7,7 @@ execution-time functions so importing this custom node pack remains lightweight.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from typing import Any
 
 try:
@@ -40,6 +41,9 @@ except ImportError:  # pragma: no cover - direct test imports
 
 
 PID_CAPTURE_KEY = "pid_capture"
+SECOND_PASS_INFO_KEY = "aio_second_pass_info"
+SECOND_PASS_ORIGINAL_IMAGE_KEY = "aio_second_pass_original_image"
+SECOND_PASS_UPSCALE_METHODS = ("nearest-exact", "bilinear", "area", "bicubic", "lanczos")
 INPAINT_PREVIEW_SOURCE = "inpaint_source"
 INPAINT_PREVIEW_SAMPLE = "inpaint_sample"
 INPAINT_PREVIEW_MASK = "inpaint_mask"
@@ -76,6 +80,122 @@ def _node_output_first(value: Any) -> Any:
 def _phase(progress: Any, message: str) -> None:
     if progress is not None:
         progress.phase(message)
+
+
+def _image_dimensions(image: Any) -> tuple[int, int] | None:
+    shape = getattr(image, "shape", None)
+    if shape is None or len(shape) < 3:
+        return None
+    return int(shape[2]), int(shape[1])
+
+
+def _size_info(width_height: tuple[int, int] | None) -> dict[str, int] | None:
+    if width_height is None:
+        return None
+    return {"width": int(width_height[0]), "height": int(width_height[1])}
+
+
+def _validate_second_pass_float(
+    value: Any,
+    name: str,
+    minimum: float,
+    maximum: float,
+) -> float:
+    try:
+        resolved = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a number.") from exc
+    if resolved < minimum or resolved > maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}.")
+    return resolved
+
+
+def _validate_second_pass_int(
+    value: Any,
+    name: str,
+    minimum: int,
+    maximum: int,
+) -> int:
+    try:
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueError
+        resolved = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be an integer.") from exc
+    if resolved < minimum or resolved > maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}.")
+    return resolved
+
+
+def normalize_second_pass_config(config: dict[str, Any] | None = None, **overrides: Any) -> dict[str, Any]:
+    source = dict(config or {})
+    source.update({key: value for key, value in overrides.items() if value is not None})
+    upscale_method = str(source.get("upscale_method", "lanczos")).lower()
+    if upscale_method not in SECOND_PASS_UPSCALE_METHODS:
+        raise ValueError(
+            "second_pass_upscale_method must be one of "
+            f"{', '.join(SECOND_PASS_UPSCALE_METHODS)}."
+        )
+    return {
+        "enabled": bool(source.get("enabled", False)),
+        "denoise": _validate_second_pass_float(
+            source.get("denoise", 0.15),
+            "second_pass_denoise",
+            0.0,
+            1.0,
+        ),
+        "steps_input": _validate_second_pass_int(
+            source.get("steps_input", source.get("steps", 0)),
+            "second_pass_steps",
+            0,
+            100,
+        ),
+        "upscale_ratio": _validate_second_pass_float(
+            source.get("upscale_ratio", 1.5),
+            "second_pass_upscale_ratio",
+            1.0,
+            8.0,
+        ),
+        "upscale_method": upscale_method,
+        "decode_image": bool(source.get("decode_image", True)),
+        "return_image_original": bool(source.get("return_image_original", False)),
+    }
+
+
+def resolve_second_pass_steps(config: dict[str, Any], main_steps: int) -> int:
+    steps_input = int(config.get("steps_input", 0))
+    if steps_input <= 0:
+        return max(1, int(main_steps))
+    return steps_input
+
+
+def second_pass_status(
+    config: dict[str, Any],
+    *,
+    applied: bool = False,
+    first_pass_size: tuple[int, int] | None = None,
+    final_size: tuple[int, int] | None = None,
+    main_steps: int | None = None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    steps_input = int(config.get("steps_input", 0))
+    steps = config.get("steps")
+    if steps is None and main_steps is not None:
+        steps = resolve_second_pass_steps(config, main_steps)
+    info = {
+        "enabled": bool(config.get("enabled", False)),
+        "applied": bool(applied),
+        "denoise": float(config.get("denoise", 0.15)),
+        "steps_input": steps_input,
+        "steps": int(steps) if steps is not None else None,
+        "upscale_ratio": float(config.get("upscale_ratio", 1.5)),
+        "upscale_method": str(config.get("upscale_method", "lanczos")),
+        "first_pass_size": _size_info(first_pass_size),
+        "final_size": _size_info(final_size),
+    }
+    if reason:
+        info["reason"] = reason
+    return info
 
 
 def _has_reference_attention_context(reference_inputs: Any = None, inpaint_config: Any = None) -> bool:
@@ -298,6 +418,104 @@ def encode_image_to_latent(*, vae: Any, image: Any):
     import nodes  # type: ignore
 
     return nodes.VAEEncode().encode(vae, image)[0]
+
+
+def upscale_image_by_ratio(
+    *,
+    image: Any,
+    upscale_ratio: float,
+    upscale_method: str,
+    dimension_multiple: int | None,
+) -> tuple[Any, int, int]:
+    import comfy.utils  # type: ignore
+
+    dimensions = _image_dimensions(image)
+    if dimensions is None:
+        raise ValueError("second pass source image must be an IMAGE tensor with shape [B, H, W, C].")
+    source_width, source_height = dimensions
+    target_width = round_to_multiple(source_width * float(upscale_ratio), dimension_multiple)
+    target_height = round_to_multiple(source_height * float(upscale_ratio), dimension_multiple)
+    samples = image.movedim(-1, 1)
+    resized = comfy.utils.common_upscale(
+        samples,
+        int(target_width),
+        int(target_height),
+        str(upscale_method),
+        "disabled",
+    )
+    return resized.movedim(1, -1), int(target_width), int(target_height)
+
+
+def apply_second_sampler_pass(
+    *,
+    config: dict[str, Any] | None,
+    image: Any,
+    latent: dict[str, Any],
+    vae: str,
+    loaded_vae: Any,
+    sample_latent: Callable[[dict[str, Any], int, int, float, int], dict[str, Any]],
+    dimension_multiple: int | None,
+    main_steps: int,
+    progress: Any = None,
+) -> tuple[Any, dict[str, Any], Any]:
+    second_pass = normalize_second_pass_config(config)
+    second_pass["steps"] = resolve_second_pass_steps(second_pass, main_steps)
+    if not second_pass["enabled"]:
+        return image, latent, loaded_vae
+
+    first_pass_size = _image_dimensions(image)
+    if image is None or first_pass_size is None:
+        out = latent.copy()
+        out[SECOND_PASS_INFO_KEY] = second_pass_status(
+            second_pass,
+            applied=False,
+            reason="first_pass_image_unavailable",
+        )
+        return image, out, loaded_vae
+
+    if loaded_vae is None:
+        _phase(progress, "loading vae")
+        loaded_vae = load_vae(vae=vae)
+
+    _phase(progress, "upscaling second pass")
+    upscaled_image, upscaled_width, upscaled_height = upscale_image_by_ratio(
+        image=image,
+        upscale_ratio=float(second_pass["upscale_ratio"]),
+        upscale_method=str(second_pass["upscale_method"]),
+        dimension_multiple=dimension_multiple,
+    )
+    _phase(progress, "encoding second pass image")
+    second_latent = encode_image_to_latent(vae=loaded_vae, image=upscaled_image)
+
+    if float(second_pass["denoise"]) <= 0.0:
+        sampled_latent = second_latent
+    else:
+        _phase(progress, "sampling second pass")
+        sampled_latent = sample_latent(
+            second_latent,
+            upscaled_width,
+            upscaled_height,
+            float(second_pass["denoise"]),
+            int(second_pass["steps"]),
+        )
+
+    sampled_latent = sampled_latent.copy()
+    if isinstance(latent, dict) and PID_CAPTURE_KEY in latent:
+        sampled_latent[PID_CAPTURE_KEY] = latent[PID_CAPTURE_KEY]
+    sampled_latent[SECOND_PASS_INFO_KEY] = second_pass_status(
+        second_pass,
+        applied=True,
+        first_pass_size=first_pass_size,
+        final_size=(upscaled_width, upscaled_height),
+    )
+    if second_pass.get("return_image_original"):
+        sampled_latent[SECOND_PASS_ORIGINAL_IMAGE_KEY] = image
+
+    output_image = None
+    if second_pass.get("decode_image"):
+        _phase(progress, "decoding second pass")
+        output_image = decode_latent(vae=loaded_vae, latent=sampled_latent)
+    return output_image, sampled_latent, loaded_vae
 
 
 def apply_reference_latents_to_conditioning(
@@ -742,6 +960,8 @@ def generate_ideogram4_t2i(
     inpaint_previews: dict[str, Any] | None = None,
     decode_image: bool = True,
     return_vae: bool = False,
+    second_pass_config: dict[str, Any] | None = None,
+    second_pass_dimension_multiple: int | None = 16,
     pid_capture_step: int | None = None,
     progress: Any = None,
 ):
@@ -887,6 +1107,43 @@ def generate_ideogram4_t2i(
                     mask=inpaint_source.mask,
                     feather=int(inpaint_config.get("mask_feather", 24)),
                 )
+    def sample_second_pass(
+        second_latent: dict[str, Any],
+        second_width: int,
+        second_height: int,
+        denoise: float,
+        second_steps: int,
+    ):
+        if settings.get("schedule_mode") == "basic":
+            second_sigmas = basic_sigmas(model=scheduler_model, scheduler=scheduler, steps=second_steps)
+        else:
+            second_sigmas = ideogram4_sigmas(
+                steps=second_steps,
+                width=second_width,
+                height=second_height,
+                mu=float(settings.get("mu", 0.0)),
+                std=float(settings.get("std", 1.75)),
+            )
+        second_sigmas = inpaint_service.apply_denoise_to_sigmas(second_sigmas, denoise)
+        return sample_with_custom_guider(
+            guider=guider,
+            seed=seed,
+            sampler=sampler,
+            sigmas=second_sigmas,
+            latent=second_latent,
+        )
+
+    image, sampled_latent, loaded_vae = apply_second_sampler_pass(
+        config=second_pass_config,
+        image=image,
+        latent=sampled_latent,
+        vae=vae,
+        loaded_vae=loaded_vae,
+        sample_latent=sample_second_pass,
+        dimension_multiple=second_pass_dimension_multiple,
+        main_steps=steps,
+        progress=progress,
+    )
     return image, sampled_latent, positive, negative, loaded_vae
 
 
@@ -909,6 +1166,8 @@ def generate_z_image_turbo_t2i(
     loaded_clip: Any = None,
     decode_image: bool = True,
     return_vae: bool = False,
+    second_pass_config: dict[str, Any] | None = None,
+    second_pass_dimension_multiple: int | None = 16,
     pid_capture_step: int | None = None,
     progress: Any = None,
 ):
@@ -960,6 +1219,38 @@ def generate_z_image_turbo_t2i(
     if decode_image:
         _phase(progress, "decoding")
         image = decode_latent(vae=loaded_vae, latent=sampled_latent)
+    def sample_second_pass(
+        second_latent: dict[str, Any],
+        second_width: int,
+        second_height: int,
+        denoise: float,
+        second_steps: int,
+    ):
+        del second_width, second_height
+        return sample_with_comfy_ksampler(
+            model=model,
+            seed=seed,
+            steps=second_steps,
+            cfg=cfg,
+            sampler=sampler,
+            scheduler=scheduler,
+            positive=positive,
+            negative=negative,
+            latent=second_latent,
+            denoise=denoise,
+        )
+
+    image, sampled_latent, loaded_vae = apply_second_sampler_pass(
+        config=second_pass_config,
+        image=image,
+        latent=sampled_latent,
+        vae=vae,
+        loaded_vae=loaded_vae,
+        sample_latent=sample_second_pass,
+        dimension_multiple=second_pass_dimension_multiple,
+        main_steps=steps,
+        progress=progress,
+    )
     return image, sampled_latent, positive, negative, loaded_vae
 
 
@@ -984,6 +1275,8 @@ def generate_krea2_t2i(
     inpaint_previews: dict[str, Any] | None = None,
     decode_image: bool = True,
     return_vae: bool = False,
+    second_pass_config: dict[str, Any] | None = None,
+    second_pass_dimension_multiple: int | None = 16,
     pid_capture_step: int | None = None,
     progress: Any = None,
 ):
@@ -1097,6 +1390,38 @@ def generate_krea2_t2i(
                     mask=inpaint_source.mask,
                     feather=int(inpaint_config.get("mask_feather", 24)),
                 )
+    def sample_second_pass(
+        second_latent: dict[str, Any],
+        second_width: int,
+        second_height: int,
+        denoise: float,
+        second_steps: int,
+    ):
+        del second_width, second_height
+        return sample_with_comfy_ksampler(
+            model=model,
+            seed=seed,
+            steps=second_steps,
+            cfg=cfg,
+            sampler=sampler,
+            scheduler=scheduler,
+            positive=positive,
+            negative=negative,
+            latent=second_latent,
+            denoise=denoise,
+        )
+
+    image, sampled_latent, loaded_vae = apply_second_sampler_pass(
+        config=second_pass_config,
+        image=image,
+        latent=sampled_latent,
+        vae=vae,
+        loaded_vae=loaded_vae,
+        sample_latent=sample_second_pass,
+        dimension_multiple=second_pass_dimension_multiple,
+        main_steps=steps,
+        progress=progress,
+    )
     return image, sampled_latent, positive, negative, loaded_vae
 
 
@@ -1123,6 +1448,8 @@ def generate_flux2_klein_t2i(
     inpaint_previews: dict[str, Any] | None = None,
     decode_image: bool = True,
     return_vae: bool = False,
+    second_pass_config: dict[str, Any] | None = None,
+    second_pass_dimension_multiple: int | None = 16,
     pid_capture_step: int | None = None,
     progress: Any = None,
 ):
@@ -1328,4 +1655,50 @@ def generate_flux2_klein_t2i(
                     mask=flux_inpaint_source.mask,
                     feather=int(inpaint_config.get("mask_feather", 24)),
                 )
+    def sample_second_pass(
+        second_latent: dict[str, Any],
+        second_width: int,
+        second_height: int,
+        denoise: float,
+        second_steps: int,
+    ):
+        if scheduler == "auto":
+            second_sigmas = flux2_sigmas(steps=second_steps, width=second_width, height=second_height)
+            second_sigmas = inpaint_service.apply_denoise_to_sigmas(second_sigmas, denoise)
+            return sample_with_sigmas(
+                model=model,
+                seed=seed,
+                steps=second_steps,
+                cfg=cfg,
+                sampler=sampler,
+                scheduler="normal",
+                positive=positive,
+                negative=negative,
+                latent=second_latent,
+                sigmas=second_sigmas,
+            )
+        return sample_with_comfy_ksampler(
+            model=model,
+            seed=seed,
+            steps=second_steps,
+            cfg=cfg,
+            sampler=sampler,
+            scheduler=scheduler,
+            positive=positive,
+            negative=negative,
+            latent=second_latent,
+            denoise=denoise,
+        )
+
+    image, sampled_latent, loaded_vae = apply_second_sampler_pass(
+        config=second_pass_config,
+        image=image,
+        latent=sampled_latent,
+        vae=vae,
+        loaded_vae=loaded_vae,
+        sample_latent=sample_second_pass,
+        dimension_multiple=second_pass_dimension_multiple,
+        main_steps=steps,
+        progress=progress,
+    )
     return image, sampled_latent, positive, negative, loaded_vae

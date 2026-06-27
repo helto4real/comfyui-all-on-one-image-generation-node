@@ -14,4 +14,5 @@
 - Added Ideogram 4 `AIO Inpaint` crop/stitch support using clean-source latent sampling with `noise_mask`.
 - Added runtime GGUF loader-node integration for diffusion and text encoder loading through compatible GGUF custom nodes.
 - Added AIO LoRA Configuration node with dynamic ordered LoRA rows and runtime application through ComfyUI's LoRA loader.
+- Added optional upscaled second sampler pass with configurable steps, `image_original` output, and `run_info.second_pass` metadata.
 - Added tests that do not require real model files.

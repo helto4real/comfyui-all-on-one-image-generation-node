@@ -5,6 +5,8 @@ import pytest
 
 from nodes.aio_generate import (
     AIOImageGenerate,
+    AIO_GENERATE_SERIALIZED_WIDGET_NAMES,
+    IMAGE_ORIGINAL_OUTPUT_INDEX,
     image_output_is_required,
     output_is_reachable,
     workflow_output_has_link,
@@ -60,6 +62,26 @@ def test_main_node_exposes_core_inputs():
     assert "aspect ratio" in required
     assert required["multiple value"][0] == ["none", "8", "16", "32"]
     assert required["seed"][1]["control_after_generate"] == "fixed"
+    assert required["second_pass_enabled"][1]["default"] is False
+    assert required["second_pass_steps"][1]["default"] == 0
+    assert required["second_pass_steps"][1]["min"] == 0
+    assert required["second_pass_steps"][1]["max"] == 100
+    assert required["second_pass_steps"][1]["step"] == 1
+    assert required["second_pass_denoise"][1]["default"] == 0.15
+    assert required["second_pass_denoise"][1]["min"] == 0.0
+    assert required["second_pass_denoise"][1]["max"] == 1.0
+    assert required["second_pass_upscale_ratio"][1]["default"] == 1.5
+    assert required["second_pass_upscale_ratio"][1]["min"] == 1.0
+    assert required["second_pass_upscale_ratio"][1]["max"] == 8.0
+    assert required["second_pass_upscale_method"][0] == ["nearest-exact", "bilinear", "area", "bicubic", "lanczos"]
+    assert required["second_pass_upscale_method"][1]["default"] == "lanczos"
+    assert AIO_GENERATE_SERIALIZED_WIDGET_NAMES[-5:] == (
+        "second_pass_enabled",
+        "second_pass_steps",
+        "second_pass_denoise",
+        "second_pass_upscale_ratio",
+        "second_pass_upscale_method",
+    )
     assert "width" not in required
     assert "height" not in required
     assert "model_settings" in optional
@@ -86,6 +108,7 @@ def test_main_node_exposes_core_inputs():
         "IMAGE",
         "IMAGE",
         "MASK",
+        "IMAGE",
     )
     assert AIOImageGenerate.RETURN_NAMES == (
         "image",
@@ -101,7 +124,9 @@ def test_main_node_exposes_core_inputs():
         "inpaint_source",
         "inpaint_sample",
         "inpaint_mask",
+        "image_original",
     )
+    assert IMAGE_ORIGINAL_OUTPUT_INDEX == 13
 
 
 def test_aio_seed_frontend_randomizes_live_seed_before_queue():
@@ -305,6 +330,161 @@ def test_main_node_passes_lora_config_to_adapter(monkeypatch):
     assert (output_width, output_height) == (1024, 1024)
 
 
+def test_main_node_passes_second_pass_config_and_strips_latent_sidecars(monkeypatch):
+    from nodes import aio_generate
+
+    captured = {}
+    second_pass_info = {
+        "enabled": True,
+        "applied": True,
+        "denoise": 0.15,
+        "steps_input": 12,
+        "steps": 12,
+        "upscale_ratio": 1.5,
+        "upscale_method": "lanczos",
+        "first_pass_size": {"width": 1024, "height": 1024},
+        "final_size": {"width": 1536, "height": 1536},
+    }
+
+    class FakeAdapter:
+        version = "test"
+
+        def resolve_settings(self, **kwargs):
+            return {
+                "width": kwargs["width"],
+                "height": kwargs["height"],
+                "steps": 8,
+                "cfg": 1.0,
+                "sampler": "auto",
+                "scheduler": "auto",
+            }
+
+        def validate_inputs(self, **kwargs):
+            return []
+
+        def generate(self, **kwargs):
+            captured.update(kwargs)
+            return (
+                None,
+                {
+                    "samples": "second_pass_latent",
+                    pipeline.SECOND_PASS_INFO_KEY: second_pass_info,
+                    pipeline.SECOND_PASS_ORIGINAL_IMAGE_KEY: "first_pass_image",
+                },
+                "positive",
+                "negative",
+                "vae",
+            )
+
+    monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
+
+    (
+        image,
+        latent,
+        run_info,
+        _positive,
+        _negative,
+        _loaded_vae,
+        _pid_latent,
+        _pid_sigma,
+        output_width,
+        output_height,
+        *_debug_outputs,
+        image_original,
+    ) = AIOImageGenerate().generate(
+        model_type="z_image_turbo",
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="",
+        width=1024,
+        height=1024,
+        seed=0,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+        second_pass_enabled=True,
+        second_pass_steps=12,
+    )
+
+    assert image is None
+    assert latent == {"samples": "second_pass_latent"}
+    assert image_original == "first_pass_image"
+    assert captured["decode_image"] is True
+    assert captured["second_pass_config"] == {
+        "enabled": True,
+        "denoise": 0.15,
+        "steps_input": 12,
+        "upscale_ratio": 1.5,
+        "upscale_method": "lanczos",
+        "decode_image": True,
+        "return_image_original": True,
+    }
+    assert (output_width, output_height) == (1536, 1536)
+    parsed = json.loads(run_info)
+    assert parsed["width"] == 1536
+    assert parsed["height"] == 1536
+    assert parsed["second_pass"] == second_pass_info
+
+
+def test_main_node_returns_original_image_output_when_second_pass_is_disabled(monkeypatch):
+    from nodes import aio_generate
+
+    captured = {}
+
+    class FakeAdapter:
+        version = "test"
+
+        def resolve_settings(self, **kwargs):
+            return {
+                "width": kwargs["width"],
+                "height": kwargs["height"],
+                "steps": 8,
+                "cfg": 1.0,
+                "sampler": "auto",
+                "scheduler": "auto",
+            }
+
+        def validate_inputs(self, **kwargs):
+            return []
+
+        def generate(self, **kwargs):
+            captured.update(kwargs)
+            return "first_pass_image", {"samples": "latent"}, "positive", "negative", "vae"
+
+    prompt = {
+        "1": {"class_type": "AIOImageGenerate", "inputs": {}},
+        "2": {"class_type": "PreviewImage", "inputs": {"images": ["1", aio_generate.IMAGE_ORIGINAL_OUTPUT_INDEX]}},
+    }
+    monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
+    monkeypatch.setattr(aio_generate, "_class_is_output_node", lambda class_type: class_type == "PreviewImage")
+
+    *_, image_original = AIOImageGenerate().generate(
+        model_type="z_image_turbo",
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="",
+        width=1024,
+        height=1024,
+        seed=0,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+        unique_id="1",
+        prompt=prompt,
+    )
+
+    assert image_original == "first_pass_image"
+    assert captured["decode_image"] is True
+    assert captured["second_pass_config"]["enabled"] is False
+    assert captured["second_pass_config"]["steps_input"] == 0
+
+
 def test_main_node_passes_inpaint_config_and_uses_source_dimensions(monkeypatch):
     from nodes import aio_generate
 
@@ -428,6 +608,7 @@ def test_main_node_returns_connected_inpaint_debug_previews(monkeypatch):
         inpaint_source,
         inpaint_sample,
         inpaint_mask,
+        _image_original,
     ) = AIOImageGenerate().generate(
         model_type="ideogram4",
         diffusion_model="model.safetensors",

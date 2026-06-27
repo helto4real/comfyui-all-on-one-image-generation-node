@@ -70,6 +70,7 @@ PID_SIGMA_OUTPUT_INDEX = 7
 INPAINT_SOURCE_OUTPUT_INDEX = 10
 INPAINT_SAMPLE_OUTPUT_INDEX = 11
 INPAINT_MASK_OUTPUT_INDEX = 12
+IMAGE_ORIGINAL_OUTPUT_INDEX = 13
 AIO_GENERATE_SERIALIZED_WIDGET_NAMES = (
     "model_type",
     "diffusion_model",
@@ -88,6 +89,11 @@ AIO_GENERATE_SERIALIZED_WIDGET_NAMES = (
     "sampler",
     "scheduler",
     "pid_capture_step",
+    "second_pass_enabled",
+    "second_pass_steps",
+    "second_pass_denoise",
+    "second_pass_upscale_ratio",
+    "second_pass_upscale_method",
 )
 MASKED_PROMPT_VALUE = "Private prompt - hover to reveal"
 
@@ -305,6 +311,24 @@ def _debug_inpaint_config(config: dict[str, Any] | None) -> dict[str, Any]:
     return info
 
 
+def _extract_pipeline_sidecars(
+    latent: Any,
+) -> tuple[Any, dict[str, Any] | None, Any]:
+    if not isinstance(latent, dict):
+        return latent, None, None
+    second_pass_info = latent.get(pipeline.SECOND_PASS_INFO_KEY)
+    image_original = latent.get(pipeline.SECOND_PASS_ORIGINAL_IMAGE_KEY)
+    if (
+        pipeline.SECOND_PASS_INFO_KEY not in latent
+        and pipeline.SECOND_PASS_ORIGINAL_IMAGE_KEY not in latent
+    ):
+        return latent, None, None
+    clean_latent = latent.copy()
+    clean_latent.pop(pipeline.SECOND_PASS_INFO_KEY, None)
+    clean_latent.pop(pipeline.SECOND_PASS_ORIGINAL_IMAGE_KEY, None)
+    return clean_latent, second_pass_info, image_original
+
+
 def _resolved_dimensions_debug(dimensions: ResolvedDimensions) -> dict[str, Any]:
     return {
         "width": int(dimensions.width),
@@ -462,6 +486,7 @@ class AIOImageGenerate:
         "IMAGE",
         "IMAGE",
         "MASK",
+        "IMAGE",
     )
     RETURN_NAMES = (
         "image",
@@ -477,6 +502,7 @@ class AIOImageGenerate:
         "inpaint_source",
         "inpaint_sample",
         "inpaint_mask",
+        "image_original",
     )
     FUNCTION = "generate"
 
@@ -614,6 +640,50 @@ class AIOImageGenerate:
                         "tooltip": "Main sampler step to capture for PID. Use 0 to auto-select a step near the end.",
                     },
                 ),
+                "second_pass_enabled": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": "Run a low-denoise upscale img2img pass after the first generated image.",
+                    },
+                ),
+                "second_pass_steps": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 100,
+                        "step": 1,
+                        "tooltip": "Second-pass sampling steps. Use 0 to reuse the main resolved step count.",
+                    },
+                ),
+                "second_pass_denoise": (
+                    "FLOAT",
+                    {
+                        "default": 0.15,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "tooltip": "Denoise strength for the second sampler pass.",
+                    },
+                ),
+                "second_pass_upscale_ratio": (
+                    "FLOAT",
+                    {
+                        "default": 1.5,
+                        "min": 1.0,
+                        "max": 8.0,
+                        "step": 0.01,
+                        "tooltip": "Scale factor applied to the first-pass image before second-pass sampling.",
+                    },
+                ),
+                "second_pass_upscale_method": (
+                    list(pipeline.SECOND_PASS_UPSCALE_METHODS),
+                    {
+                        "default": "lanczos",
+                        "tooltip": "Resize filter used to upscale the first-pass image before VAE encoding.",
+                    },
+                ),
             },
             "optional": {
                 "model_settings": (
@@ -665,6 +735,11 @@ class AIOImageGenerate:
         sampler: str = "auto",
         scheduler: str = "auto",
         pid_capture_step: int = 0,
+        second_pass_enabled: bool = False,
+        second_pass_steps: int = 0,
+        second_pass_denoise: float = 0.15,
+        second_pass_upscale_ratio: float = 1.5,
+        second_pass_upscale_method: str = "lanczos",
         privacy_mode: bool = False,
         model_settings: dict[str, Any] | None = None,
         lora_config: dict[str, Any] | None = None,
@@ -702,8 +777,18 @@ class AIOImageGenerate:
         inpaint_source_connected = output_is_connected(prompt, extra_pnginfo, unique_id, INPAINT_SOURCE_OUTPUT_INDEX)
         inpaint_sample_connected = output_is_connected(prompt, extra_pnginfo, unique_id, INPAINT_SAMPLE_OUTPUT_INDEX)
         inpaint_mask_connected = output_is_connected(prompt, extra_pnginfo, unique_id, INPAINT_MASK_OUTPUT_INDEX)
+        image_original_connected = output_is_connected(prompt, extra_pnginfo, unique_id, IMAGE_ORIGINAL_OUTPUT_INDEX)
+        second_pass_config = pipeline.normalize_second_pass_config(
+            enabled=second_pass_enabled,
+            steps_input=second_pass_steps,
+            denoise=second_pass_denoise,
+            upscale_ratio=second_pass_upscale_ratio,
+            upscale_method=second_pass_upscale_method,
+            decode_image=image_connected,
+            return_image_original=image_original_connected or bool(second_pass_enabled),
+        )
         pid_capture_connected = pid_latent_connected or pid_sigma_connected
-        decode_image = image_connected
+        decode_image = image_connected or image_original_connected or bool(second_pass_config["enabled"])
         reference_inputs = normalize_reference_inputs(
             reference_values,
             reference_image=reference_image,
@@ -894,7 +979,12 @@ class AIOImageGenerate:
                 "inpaint_source": inpaint_source_connected,
                 "inpaint_sample": inpaint_sample_connected,
                 "inpaint_mask": inpaint_mask_connected,
+                "image_original": image_original_connected,
             },
+            "second_pass": pipeline.second_pass_status(
+                second_pass_config,
+                main_steps=effective_steps,
+            ),
             "pid": {
                 "capture_requested": pid_capture_connected,
                 "pid_capture_step_input": int(pid_capture_step),
@@ -926,10 +1016,19 @@ class AIOImageGenerate:
             inpaint_previews=inpaint_previews,
             decode_image=decode_image,
             return_vae=vae_connected,
+            second_pass_config=second_pass_config,
             pid_capture_step=resolved_pid_capture_step,
             progress=progress,
         )
 
+        latent, second_pass_info, image_original = _extract_pipeline_sidecars(latent)
+        if second_pass_info is None:
+            second_pass_info = pipeline.second_pass_status(
+                second_pass_config,
+                main_steps=effective_steps,
+            )
+        if image_original is None and image_original_connected and not bool(second_pass_info.get("applied")):
+            image_original = image
         pid_capture = latent.get(pipeline.PID_CAPTURE_KEY) if isinstance(latent, dict) else None
         pid_latent = pid_capture["latent"] if pid_capture_connected and pid_capture else None
         pid_sigma = float(pid_capture["sigma"]) if pid_capture_connected and pid_capture else 0.0
@@ -939,6 +1038,10 @@ class AIOImageGenerate:
         image_dimensions = _image_dimensions(image)
         if image_dimensions is not None:
             output_width, output_height = image_dimensions
+        elif second_pass_info.get("final_size"):
+            final_size = second_pass_info["final_size"]
+            output_width = int(final_size["width"])
+            output_height = int(final_size["height"])
         debug_info["dimensions"]["output"] = {
             "width": output_width,
             "height": output_height,
@@ -951,6 +1054,7 @@ class AIOImageGenerate:
             pipeline.INPAINT_PREVIEW_MASK: inpaint_previews[pipeline.INPAINT_PREVIEW_MASK] is not None,
         }
         debug_info["pid"]["capture_available"] = pid_capture is not None
+        debug_info["second_pass"] = _debug_value(second_pass_info)
 
         run_info = build_run_info(
             model_type=model_type,
@@ -974,6 +1078,7 @@ class AIOImageGenerate:
             loras=lora_summary,
             privacy_mode=run_info_privacy_mode,
             debug=debug_info,
+            second_pass=second_pass_info,
         )
         return (
             image,
@@ -989,4 +1094,5 @@ class AIOImageGenerate:
             inpaint_previews[pipeline.INPAINT_PREVIEW_SOURCE],
             inpaint_previews[pipeline.INPAINT_PREVIEW_SAMPLE],
             inpaint_previews[pipeline.INPAINT_PREVIEW_MASK],
+            image_original,
         )

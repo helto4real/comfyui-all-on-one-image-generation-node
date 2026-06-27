@@ -94,6 +94,7 @@ def build_run_info(
     loras: list[dict[str, Any]] | None = None,
     privacy_mode: bool = False,
     debug: dict[str, Any] | None = None,
+    second_pass: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     settings_info = settings_info_from_settings(settings, privacy_mode=privacy_mode)
     info = {
@@ -117,6 +118,7 @@ def build_run_info(
         "warnings": warnings,
         "adapter_version": adapter_version,
         "loras": loras or [],
+        "second_pass": second_pass or {"enabled": False, "applied": False},
     }
     if debug is not None:
         info["debug"] = debug

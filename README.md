@@ -73,7 +73,8 @@ The dropdown may prefix values with their category when multiple folders are sea
 7. Optionally attach `AIO LoRA Configuration` to apply one or more LoRAs.
 8. Optionally attach `AIO Inpaint` to edit only a masked source-image area on supported model families.
 9. Optionally use `AIO Load Pipeline Models` and external `MODEL`/`CLIP` patch nodes after the LoRA phase.
-10. Connect `IMAGE` to Preview Image or Save Image.
+10. Optionally enable the second sampler pass to upscale the first generated image, VAE-encode it, and refine it with low denoise.
+11. Connect `IMAGE` to Preview Image or Save Image.
 
 The node is not an output node, so it is safe for API-mode workflows.
 
@@ -140,6 +141,20 @@ API workflows can pass rgthree-style dynamic row payloads directly:
 
 `run_info.performance` records the requested and resolved attention mode, Torch/Triton compile mode, compile backend, and whether performance patches were applied before or after LoRAs.
 
+## Second Sampler Pass
+
+`AIO Image Generate` can run an optional second img2img pass after the normal first-pass image is decoded. When enabled, the node upscales the first-pass image, VAE-encodes the upscaled image, samples it again with the same post-LoRA model, VAE, seed, sampler, scheduler, and conditioning, then decodes the refined output as the main `image`.
+
+Controls:
+
+- `second_pass_enabled`: enable the upscaled refinement pass.
+- `second_pass_steps`: second-pass step count. The default `0` reuses the main resolved step count.
+- `second_pass_denoise`: second-pass denoise strength, default `0.15`.
+- `second_pass_upscale_ratio`: image scale factor, default `1.5`.
+- `second_pass_upscale_method`: resize filter, default `lanczos`.
+
+When the pass is enabled, `image_original` exposes the first-pass image before upscaling/refinement. `run_info.second_pass` records whether the pass ran, the second-pass step input and effective step count, the denoise/upscale settings, the first-pass size, and the final refined size.
+
 ## External Model Patching
 
 `AIO Load Pipeline Models` loads the same diffusion model and text encoder pair as the main node, applies an optional `AIO_LORA_CONFIG`, then outputs standard ComfyUI `MODEL` and `CLIP` values. Connect those outputs through any compatible external model/CLIP patch nodes, then connect the patched results to the optional `model` and `clip` inputs on `AIO Image Generate`.
@@ -167,10 +182,10 @@ When both `model` and `clip` are connected, the main node treats them as already
 
 Local ComfyUI source was inspected before implementing the generation pipeline. Relevant references:
 
-- `/home/thhel/git/ComfyUI/nodes.py`: classic `NODE_CLASS_MAPPINGS`, `folder_paths`, `UNETLoader`, `CLIPLoader`, `VAEDecode`, `common_ksampler`, `InpaintModelConditioning`
+- `/home/thhel/git/ComfyUI/nodes.py`: classic `NODE_CLASS_MAPPINGS`, `folder_paths`, `UNETLoader`, `CLIPLoader`, `VAEEncode`, `VAEDecode`, `ImageScaleBy`, `common_ksampler`, `InpaintModelConditioning`
 - `/home/thhel/git/ComfyUI/comfy/sample.py`: `comfy.sample.sample` signature
 - `/home/thhel/git/ComfyUI/comfy/samplers.py`: sampler `noise_mask` and denoise-mask behavior
-- `/home/thhel/git/ComfyUI/comfy/utils.py`: `ProgressBar`
+- `/home/thhel/git/ComfyUI/comfy/utils.py`: `ProgressBar`, `common_upscale`
 - `/home/thhel/git/ComfyUI/comfy_extras/nodes_flux.py`: `EmptyFlux2LatentImage`, Flux guidance, Flux2 scheduler
 - `/home/thhel/git/ComfyUI/comfy_extras/nodes_ideogram4.py`: Ideogram 4 scheduler and sigma helper
 - `/home/thhel/git/ComfyUI/comfy_extras/nodes_custom_sampler.py`: `DualModelGuider`, `CFGOverride`, `RandomNoise`, `KSamplerSelect`, `SamplerCustomAdvanced`, `BasicScheduler`

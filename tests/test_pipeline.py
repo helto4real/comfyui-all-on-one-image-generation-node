@@ -8,6 +8,49 @@ from loaders import gguf_backend
 from services import pipeline
 
 
+class FakeSecondPassImage:
+    shape = (1, 1024, 1024, 3)
+
+    def movedim(self, *args):
+        return FakeSecondPassSamples(args)
+
+
+class FakeSecondPassSamples:
+    shape = (1, 3, 1024, 1024)
+
+    def __init__(self, args=()):
+        self.args = args
+
+
+class FakeSecondPassResized:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def movedim(self, *args):
+        self.calls["resized_movedim"] = args
+        return "upscaled_image"
+
+
+def _install_fake_common_upscale(monkeypatch, calls):
+    fake_comfy = ModuleType("comfy")
+    fake_utils = ModuleType("comfy.utils")
+
+    def fake_common_upscale(samples, width, height, upscale_method, crop):
+        calls["upscale"] = {
+            "samples": samples,
+            "width": width,
+            "height": height,
+            "upscale_method": upscale_method,
+            "crop": crop,
+        }
+        return FakeSecondPassResized(calls)
+
+    fake_utils.common_upscale = fake_common_upscale
+    fake_comfy.utils = fake_utils
+    monkeypatch.setitem(sys.modules, "comfy", fake_comfy)
+    monkeypatch.setitem(sys.modules, "comfy.utils", fake_utils)
+
+
 def test_gguf_diffusion_loader_uses_comfy_node_mapping(monkeypatch):
     calls = {}
 
@@ -2757,6 +2800,378 @@ def test_flux2_pipeline_keeps_negative_prompt_conditioning_when_cfg_not_one(monk
     assert "encode:negative" in events
     assert events.index("encode:negative") < events.index("apply_references")
     assert events.index("apply_references") < events.index("sample")
+
+
+def test_second_pass_steps_zero_reuses_main_steps():
+    config = pipeline.normalize_second_pass_config({"enabled": True})
+
+    assert config["steps_input"] == 0
+    assert pipeline.resolve_second_pass_steps(config, 11) == 11
+    assert pipeline.second_pass_status(config, main_steps=11)["steps"] == 11
+
+
+def test_second_pass_helper_upscales_encodes_samples_and_decodes(monkeypatch):
+    calls = {}
+    _install_fake_common_upscale(monkeypatch, calls)
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "loaded_vae")
+
+    def fake_encode(**kwargs):
+        calls["encode"] = kwargs
+        return {"samples": "encoded_upscale"}
+
+    def fake_decode(**kwargs):
+        calls["decode"] = kwargs
+        return "decoded_second_pass"
+
+    def fake_sample(latent, width, height, denoise, steps):
+        calls["sample"] = {
+            "latent": latent,
+            "width": width,
+            "height": height,
+            "denoise": denoise,
+            "steps": steps,
+        }
+        return {"samples": "sampled_second_pass"}
+
+    monkeypatch.setattr(pipeline, "encode_image_to_latent", fake_encode)
+    monkeypatch.setattr(pipeline, "decode_latent", fake_decode)
+
+    image, latent, loaded_vae = pipeline.apply_second_sampler_pass(
+        config={"enabled": True, "steps_input": 5},
+        image=FakeSecondPassImage(),
+        latent={
+            "samples": "first_pass",
+            pipeline.PID_CAPTURE_KEY: {"latent": "pid", "sigma": 0.1},
+        },
+        vae="vae.safetensors",
+        loaded_vae=None,
+        sample_latent=fake_sample,
+        dimension_multiple=16,
+        main_steps=9,
+    )
+
+    assert image == "decoded_second_pass"
+    assert loaded_vae == "loaded_vae"
+    assert calls["upscale"]["width"] == 1536
+    assert calls["upscale"]["height"] == 1536
+    assert calls["upscale"]["upscale_method"] == "lanczos"
+    assert calls["upscale"]["crop"] == "disabled"
+    assert calls["encode"]["image"] == "upscaled_image"
+    assert calls["sample"] == {
+        "latent": {"samples": "encoded_upscale"},
+        "width": 1536,
+        "height": 1536,
+        "denoise": 0.15,
+        "steps": 5,
+    }
+    assert calls["decode"]["latent"]["samples"] == "sampled_second_pass"
+    assert latent[pipeline.PID_CAPTURE_KEY] == {"latent": "pid", "sigma": 0.1}
+    assert latent[pipeline.SECOND_PASS_INFO_KEY] == {
+        "enabled": True,
+        "applied": True,
+        "denoise": 0.15,
+        "steps_input": 5,
+        "steps": 5,
+        "upscale_ratio": 1.5,
+        "upscale_method": "lanczos",
+        "first_pass_size": {"width": 1024, "height": 1024},
+        "final_size": {"width": 1536, "height": 1536},
+    }
+
+
+def test_z_image_pipeline_second_pass_reuses_ksampler_without_final_decode(monkeypatch):
+    sample_calls = []
+    decode_calls = []
+
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model+lora", "clip+lora", []))
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
+    monkeypatch.setattr(pipeline, "encode_z_image_prompt", lambda **kwargs: "conditioning")
+    monkeypatch.setattr(pipeline, "make_empty_z_image_latent", lambda **kwargs: {"samples": "empty"})
+    monkeypatch.setattr(pipeline, "upscale_image_by_ratio", lambda **kwargs: ("upscaled_image", 1536, 1536))
+    monkeypatch.setattr(pipeline, "encode_image_to_latent", lambda **kwargs: {"samples": "upscaled_latent"})
+
+    def fake_sample(**kwargs):
+        sample_calls.append(kwargs)
+        return {"samples": f"sampled_{len(sample_calls)}"}
+
+    def fake_decode(**kwargs):
+        decode_calls.append(kwargs)
+        if len(decode_calls) == 1:
+            return FakeSecondPassImage()
+        raise AssertionError("final second-pass image should not decode")
+
+    monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", fake_sample)
+    monkeypatch.setattr(pipeline, "decode_latent", fake_decode)
+
+    image, latent, _, _, loaded_vae = pipeline.generate_z_image_turbo_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        width=1024,
+        height=1024,
+        seed=123,
+        steps=8,
+        cfg=1.0,
+        sampler="euler",
+        scheduler="normal",
+        settings={},
+        second_pass_config={"enabled": True, "decode_image": False, "return_image_original": True},
+    )
+
+    assert image is None
+    assert loaded_vae == "vae"
+    assert len(sample_calls) == 2
+    assert sample_calls[1]["model"] == "model+lora"
+    assert sample_calls[1]["positive"] == "conditioning"
+    assert sample_calls[1]["latent"] == {"samples": "upscaled_latent"}
+    assert sample_calls[1]["denoise"] == 0.15
+    assert sample_calls[1]["steps"] == 8
+    assert latent["samples"] == "sampled_2"
+    assert latent[pipeline.SECOND_PASS_ORIGINAL_IMAGE_KEY].shape == (1, 1024, 1024, 3)
+    assert latent[pipeline.SECOND_PASS_INFO_KEY]["steps_input"] == 0
+    assert latent[pipeline.SECOND_PASS_INFO_KEY]["steps"] == 8
+    assert latent[pipeline.SECOND_PASS_INFO_KEY]["final_size"] == {"width": 1536, "height": 1536}
+
+
+def test_krea2_pipeline_second_pass_reuses_ksampler_after_rebalance(monkeypatch):
+    sample_calls = []
+
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model+lora", "clip+lora", []))
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
+    monkeypatch.setattr(pipeline, "encode_krea2_prompt", lambda **kwargs: "positive")
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "negative")
+    monkeypatch.setattr(pipeline.krea2_rebalance, "rebalance_conditioning", lambda *args, **kwargs: "rebalanced")
+    monkeypatch.setattr(pipeline, "make_empty_krea2_latent", lambda **kwargs: {"samples": "empty"})
+    monkeypatch.setattr(pipeline, "upscale_image_by_ratio", lambda **kwargs: ("upscaled_image", 1536, 1536))
+    monkeypatch.setattr(pipeline, "encode_image_to_latent", lambda **kwargs: {"samples": "upscaled_latent"})
+    monkeypatch.setattr(
+        pipeline,
+        "decode_latent",
+        lambda **kwargs: FakeSecondPassImage() if len(sample_calls) < 2 else "second_pass_image",
+    )
+
+    def fake_sample(**kwargs):
+        sample_calls.append(kwargs)
+        return {"samples": f"sampled_{len(sample_calls)}"}
+
+    monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", fake_sample)
+
+    image, latent, positive, _, _ = pipeline.generate_krea2_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        width=1024,
+        height=1024,
+        seed=123,
+        steps=8,
+        cfg=1.0,
+        sampler="er_sde",
+        scheduler="simple",
+        settings={"rebalance_enabled": True},
+        second_pass_config={"enabled": True, "decode_image": True, "steps_input": 6},
+    )
+
+    assert image == "second_pass_image"
+    assert positive == "rebalanced"
+    assert sample_calls[1]["positive"] == "rebalanced"
+    assert sample_calls[1]["negative"] == "negative"
+    assert sample_calls[1]["denoise"] == 0.15
+    assert sample_calls[1]["steps"] == 6
+    assert latent["samples"] == "sampled_2"
+    assert latent[pipeline.SECOND_PASS_INFO_KEY]["steps"] == 6
+
+
+def test_flux2_pipeline_second_pass_uses_upscaled_flux_sigmas(monkeypatch):
+    sigmas_calls = []
+    denoise_calls = []
+    sample_calls = []
+
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model", "clip", []))
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
+    monkeypatch.setattr(pipeline, "encode_flux2_prompt", lambda **kwargs: "positive")
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "negative")
+    monkeypatch.setattr(pipeline, "make_empty_flux2_latent", lambda **kwargs: {"samples": "empty"})
+    monkeypatch.setattr(pipeline, "upscale_image_by_ratio", lambda **kwargs: ("upscaled_image", 1536, 1536))
+    monkeypatch.setattr(pipeline, "encode_image_to_latent", lambda **kwargs: {"samples": "upscaled_latent"})
+    monkeypatch.setattr(
+        pipeline,
+        "decode_latent",
+        lambda **kwargs: FakeSecondPassImage() if len(sample_calls) < 2 else "second_pass_image",
+    )
+
+    def fake_flux2_sigmas(**kwargs):
+        sigmas_calls.append(kwargs)
+        return f"sigmas_{kwargs['width']}x{kwargs['height']}"
+
+    def fake_denoise(sigmas, denoise):
+        denoise_calls.append({"sigmas": sigmas, "denoise": denoise})
+        return f"denoised_{sigmas}_{denoise}"
+
+    def fake_sample(**kwargs):
+        sample_calls.append(kwargs)
+        return {"samples": f"sampled_{len(sample_calls)}"}
+
+    monkeypatch.setattr(pipeline, "flux2_sigmas", fake_flux2_sigmas)
+    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", fake_denoise)
+    monkeypatch.setattr(pipeline, "sample_with_sigmas", fake_sample)
+
+    image, latent, _, _, _ = pipeline.generate_flux2_klein_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="",
+        width=1024,
+        height=1024,
+        seed=123,
+        steps=4,
+        cfg=1.0,
+        sampler="auto",
+        scheduler="auto",
+        settings={},
+        second_pass_config={"enabled": True, "decode_image": True, "steps_input": 6},
+    )
+
+    assert image == "second_pass_image"
+    assert sigmas_calls == [
+        {"steps": 4, "width": 1024, "height": 1024},
+        {"steps": 6, "width": 1536, "height": 1536},
+    ]
+    assert denoise_calls == [{"sigmas": "sigmas_1536x1536", "denoise": 0.15}]
+    assert sample_calls[1]["sigmas"] == "denoised_sigmas_1536x1536_0.15"
+    assert sample_calls[1]["latent"] == {"samples": "upscaled_latent"}
+    assert sample_calls[1]["steps"] == 6
+    assert latent["samples"] == "sampled_2"
+
+
+def test_flux2_pipeline_second_pass_non_auto_uses_ksampler_steps(monkeypatch):
+    sigmas_calls = []
+    sample_calls = []
+
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model", "clip", []))
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
+    monkeypatch.setattr(pipeline, "encode_flux2_prompt", lambda **kwargs: "positive")
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "negative")
+    monkeypatch.setattr(pipeline, "make_empty_flux2_latent", lambda **kwargs: {"samples": "empty"})
+    monkeypatch.setattr(pipeline, "upscale_image_by_ratio", lambda **kwargs: ("upscaled_image", 1536, 1536))
+    monkeypatch.setattr(pipeline, "encode_image_to_latent", lambda **kwargs: {"samples": "upscaled_latent"})
+    monkeypatch.setattr(pipeline, "flux2_sigmas", lambda **kwargs: sigmas_calls.append(kwargs) or "sigmas")
+    monkeypatch.setattr(
+        pipeline,
+        "decode_latent",
+        lambda **kwargs: FakeSecondPassImage() if len(sample_calls) < 2 else "second_pass_image",
+    )
+
+    def fake_sample(**kwargs):
+        sample_calls.append(kwargs)
+        return {"samples": f"sampled_{len(sample_calls)}"}
+
+    monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", fake_sample)
+
+    image, latent, _, _, _ = pipeline.generate_flux2_klein_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="",
+        width=1024,
+        height=1024,
+        seed=123,
+        steps=4,
+        cfg=1.0,
+        sampler="euler",
+        scheduler="normal",
+        settings={},
+        second_pass_config={"enabled": True, "decode_image": True, "steps_input": 7},
+    )
+
+    assert image == "second_pass_image"
+    assert sigmas_calls == []
+    assert sample_calls[0]["steps"] == 4
+    assert sample_calls[1]["steps"] == 7
+    assert sample_calls[1]["latent"] == {"samples": "upscaled_latent"}
+    assert sample_calls[1]["denoise"] == 0.15
+    assert latent["samples"] == "sampled_2"
+
+
+def test_ideogram4_pipeline_second_pass_uses_custom_guider_sigmas(monkeypatch):
+    sigmas_calls = []
+    denoise_calls = []
+    sample_calls = []
+
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: f"model:{kwargs['diffusion_model']}")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_model_sampling_aura", lambda **kwargs: "conditional+aura")
+    monkeypatch.setattr(pipeline, "apply_lora_config_model_only", lambda **kwargs: ("conditional+lora", []))
+    monkeypatch.setattr(pipeline, "apply_cfg_override", lambda **kwargs: "conditional+cfg")
+    monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
+    monkeypatch.setattr(pipeline, "encode_ideogram4_prompt", lambda **kwargs: "positive")
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "negative")
+    monkeypatch.setattr(pipeline, "make_empty_ideogram4_latent", lambda **kwargs: {"samples": "empty"})
+    monkeypatch.setattr(pipeline, "build_dual_model_guider", lambda **kwargs: "guider")
+    monkeypatch.setattr(pipeline, "upscale_image_by_ratio", lambda **kwargs: ("upscaled_image", 1536, 1536))
+    monkeypatch.setattr(pipeline, "encode_image_to_latent", lambda **kwargs: {"samples": "upscaled_latent"})
+    monkeypatch.setattr(
+        pipeline,
+        "decode_latent",
+        lambda **kwargs: FakeSecondPassImage() if len(sample_calls) < 2 else "second_pass_image",
+    )
+
+    def fake_sigmas(**kwargs):
+        sigmas_calls.append(kwargs)
+        return f"ideogram_sigmas_{kwargs['width']}x{kwargs['height']}"
+
+    def fake_denoise(sigmas, denoise):
+        denoise_calls.append({"sigmas": sigmas, "denoise": denoise})
+        return f"denoised_{sigmas}_{denoise}"
+
+    def fake_sample(**kwargs):
+        sample_calls.append(kwargs)
+        return {"samples": f"sampled_{len(sample_calls)}"}
+
+    monkeypatch.setattr(pipeline, "ideogram4_sigmas", fake_sigmas)
+    monkeypatch.setattr(pipeline.inpaint_service, "apply_denoise_to_sigmas", fake_denoise)
+    monkeypatch.setattr(pipeline, "sample_with_custom_guider", fake_sample)
+
+    image, latent, _, _, _ = pipeline.generate_ideogram4_t2i(
+        diffusion_model="model.safetensors",
+        unconditional_model="unconditional.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        width=1024,
+        height=1024,
+        seed=123,
+        steps=20,
+        sampler="euler",
+        scheduler="ideogram4",
+        settings={"mu": 0.0, "std": 1.75},
+        second_pass_config={"enabled": True, "decode_image": True, "steps_input": 12},
+    )
+
+    assert image == "second_pass_image"
+    assert sigmas_calls == [
+        {"steps": 20, "width": 1024, "height": 1024, "mu": 0.0, "std": 1.75},
+        {"steps": 12, "width": 1536, "height": 1536, "mu": 0.0, "std": 1.75},
+    ]
+    assert denoise_calls == [
+        {"sigmas": "ideogram_sigmas_1536x1536", "denoise": 0.15},
+    ]
+    assert sample_calls[1]["guider"] == "guider"
+    assert sample_calls[1]["sigmas"] == "denoised_ideogram_sigmas_1536x1536_0.15"
+    assert sample_calls[1]["latent"] == {"samples": "upscaled_latent"}
+    assert latent["samples"] == "sampled_2"
+    assert latent[pipeline.SECOND_PASS_INFO_KEY]["steps"] == 12
 
 
 def test_reference_scaling_calculates_target_dimensions(monkeypatch):
