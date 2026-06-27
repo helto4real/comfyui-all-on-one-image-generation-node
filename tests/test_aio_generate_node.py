@@ -143,6 +143,44 @@ def test_aio_seed_frontend_randomizes_live_seed_before_queue():
     assert "AIOSeedProbe" not in source
 
 
+def test_aio_frontend_clears_standard_progress_text_after_execution():
+    source = (ROOT / "web/js/aio_image_generate.js").read_text(encoding="utf-8")
+
+    assert 'const PROGRESS_TEXT_WIDGET_NAME = "$$node-text-preview";' in source
+    assert "function removeAioGenerateProgressTextWidget" in source
+    assert "function clearAioGenerateRuntimePhases" in source
+    assert "widget?.onRemove?.()" in source
+    assert "delete node[AIO_RUNTIME_PHASE_NODE_KEY]" in source
+    assert 'api.addEventListener?.("execution_success", scheduleAioGenerateProgressTextCleanup)' in source
+    assert 'api.addEventListener?.("execution_error", scheduleAioGenerateProgressTextCleanup)' in source
+    assert 'api.addEventListener?.("execution_interrupted", scheduleAioGenerateProgressTextCleanup)' in source
+    assert "installAioGenerateProgressTextCleanup();" in source
+
+
+def test_aio_frontend_tracks_runtime_phase_from_progress_text():
+    source = (ROOT / "web/js/aio_image_generate.js").read_text(encoding="utf-8")
+
+    assert 'const AIO_RUNTIME_PHASE_BRIDGE_KEY = "__aioGenerateRuntimePhaseBridgeInstalled";' in source
+    assert "function handleAioGenerateProgressText" in source
+    assert "const node = findAioGenerateNodeById(nodeId);" in source
+    assert "setAioGenerateRuntimePhase(node, text);" in source
+    assert 'api.addEventListener?.("progress_text", handleAioGenerateProgressText)' in source
+    assert "installAioGenerateRuntimePhaseBridge();" in source
+
+    set_phase_start = source.index("function setAioGenerateRuntimePhase")
+    set_phase_end = source.index("function clearAioGenerateRuntimePhase", set_phase_start)
+    set_phase_block = source[set_phase_start:set_phase_end]
+    assert "!isAioGenerateNode(node)" in set_phase_block
+    assert "node[AIO_RUNTIME_PHASE_NODE_KEY] = phase" in set_phase_block
+    assert "scheduleAioGenerateRuntimePhaseDomUpdate(node)" in set_phase_block
+
+    draw_start = source.index("function drawAioGenerateRuntimePhase")
+    draw_end = source.index("function handleAioGenerateProgressText", draw_start)
+    draw_block = source[draw_start:draw_end]
+    assert "fitString(ctx, phase" in draw_block
+    assert "ctx.roundRect" in draw_block
+
+
 def test_aio_fixed_seed_button_sets_control_back_to_fixed():
     source = (ROOT / "web/js/aio_image_generate.js").read_text(encoding="utf-8")
     start = source.index("function ensureAioGenerateSeedButton")

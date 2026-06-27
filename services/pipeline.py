@@ -622,6 +622,29 @@ def _capture_sigma_at(sigmas: Any, step_index: int) -> float:
             return 0.0
 
 
+def _prepare_sampling_callback(
+    *,
+    model: Any,
+    steps: int,
+    progress: Any = None,
+    x0_output_dict: dict[str, Any] | None = None,
+):
+    if progress is not None and hasattr(progress, "prepare_sampling_callback"):
+        try:
+            return progress.prepare_sampling_callback(model, steps, x0_output_dict=x0_output_dict)
+        except TypeError:
+            return progress.prepare_sampling_callback(model, steps)
+        except Exception:
+            pass
+
+    import latent_preview  # type: ignore
+
+    try:
+        return latent_preview.prepare_callback(model, steps, x0_output_dict)
+    except TypeError:
+        return latent_preview.prepare_callback(model, steps)
+
+
 def sample_with_comfy_ksampler(
     *,
     model: Any,
@@ -635,27 +658,11 @@ def sample_with_comfy_ksampler(
     latent: dict[str, Any],
     denoise: float = 1.0,
     pid_capture_step: int | None = None,
+    progress: Any = None,
 ):
-    if pid_capture_step is None:
-        import nodes  # type: ignore
-
-        return nodes.common_ksampler(
-            model,
-            seed,
-            steps,
-            cfg,
-            sampler,
-            scheduler,
-            positive,
-            negative,
-            latent,
-            denoise=float(denoise),
-        )[0]
-
     import comfy.sample  # type: ignore
     import comfy.samplers  # type: ignore
     import comfy.utils  # type: ignore
-    import latent_preview  # type: ignore
 
     latent_image = latent["samples"]
     latent_image = comfy.sample.fix_empty_latent_channels(
@@ -680,7 +687,11 @@ def sample_with_comfy_ksampler(
     effective_steps = max(0, int(sigmas.shape[0]) - 1)
     target_step = resolve_pid_capture_step(pid_capture_step, effective_steps)
     captured: dict[str, Any] = {}
-    preview_callback = latent_preview.prepare_callback(model, effective_steps)
+    preview_callback = _prepare_sampling_callback(
+        model=model,
+        steps=effective_steps or steps,
+        progress=progress,
+    )
 
     def callback(step, x0, x, total_steps):
         preview_callback(step, x0, x, total_steps)
@@ -724,13 +735,18 @@ def _pid_capture_callback_from_sigmas(
     model: Any,
     sigmas: Any,
     pid_capture_step: int | None,
+    progress: Any = None,
+    x0_output_dict: dict[str, Any] | None = None,
 ):
-    import latent_preview  # type: ignore
-
     effective_steps = max(0, int(sigmas.shape[-1]) - 1)
     target_step = resolve_pid_capture_step(pid_capture_step, effective_steps)
     captured: dict[str, Any] = {}
-    preview_callback = latent_preview.prepare_callback(model, effective_steps)
+    preview_callback = _prepare_sampling_callback(
+        model=model,
+        steps=effective_steps,
+        progress=progress,
+        x0_output_dict=x0_output_dict,
+    )
 
     def callback(step, x0, x, total_steps):
         preview_callback(step, x0, x, total_steps)
@@ -754,6 +770,7 @@ def sample_with_sigmas(
     latent: dict[str, Any],
     sigmas: Any,
     pid_capture_step: int | None = None,
+    progress: Any = None,
 ):
     import comfy.sample  # type: ignore
     import comfy.utils  # type: ignore
@@ -771,6 +788,7 @@ def sample_with_sigmas(
         model=model,
         sigmas=sigmas,
         pid_capture_step=pid_capture_step,
+        progress=progress,
     )
     disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
     noise_mask = latent.get("noise_mask")
@@ -906,28 +924,55 @@ def sample_with_custom_guider(
     sigmas: Any,
     latent: dict[str, Any],
     pid_capture_step: int | None = None,
+    progress: Any = None,
 ):
-    from comfy_extras.nodes_custom_sampler import KSamplerSelect, RandomNoise, SamplerCustomAdvanced  # type: ignore
+    import comfy.model_management  # type: ignore
+    import comfy.sample  # type: ignore
+    import comfy.utils  # type: ignore
+    from comfy_extras.nodes_custom_sampler import KSamplerSelect, RandomNoise  # type: ignore
 
     noise = _node_output_first(RandomNoise.execute(noise_seed=seed))
     sampler_obj = _node_output_first(KSamplerSelect.execute(sampler_name=sampler))
-    sampled = _node_output_first(
-        SamplerCustomAdvanced.execute(
-            noise=noise,
-            guider=guider,
-            sampler=sampler_obj,
-            sigmas=sigmas,
-            latent_image=latent,
-        )
+    latent_image = latent["samples"]
+    latent_image = comfy.sample.fix_empty_latent_channels(
+        guider.model_patcher,
+        latent_image,
+        latent.get("downscale_ratio_spacial", None),
+        latent.get("downscale_ratio_temporal", None),
     )
-    target_step = resolve_pid_capture_step(pid_capture_step, max(1, int(getattr(sigmas, "shape", [1])[-1]) - 1))
+    sampling_latent = latent.copy()
+    sampling_latent["samples"] = latent_image
+    noise_mask = sampling_latent.get("noise_mask")
+    callback, captured, target_step = _pid_capture_callback_from_sigmas(
+        model=guider.model_patcher,
+        sigmas=sigmas,
+        pid_capture_step=pid_capture_step,
+        progress=progress,
+    )
+    disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
+    samples = guider.sample(
+        noise.generate_noise(sampling_latent),
+        latent_image,
+        sampler_obj,
+        sigmas,
+        denoise_mask=noise_mask,
+        callback=callback,
+        disable_pbar=disable_pbar,
+        seed=noise.seed,
+    )
+    if hasattr(samples, "to"):
+        samples = samples.to(comfy.model_management.intermediate_device())
+    sampled = sampling_latent.copy()
+    sampled.pop("downscale_ratio_spacial", None)
+    sampled.pop("downscale_ratio_temporal", None)
+    sampled["samples"] = samples
     if target_step is None:
         return sampled
     return _attach_pid_capture(
         latent=sampled,
         source_latent=latent,
-        captured={},
-        fallback_samples=sampled["samples"],
+        captured=captured,
+        fallback_samples=samples,
         target_step=target_step,
     )
 
@@ -1076,6 +1121,7 @@ def generate_ideogram4_t2i(
             sigmas=sigmas,
             latent=latent,
             pid_capture_step=pid_capture_step,
+            progress=progress,
         )
     image = None
     decode_inpaint_sample = (
@@ -1131,6 +1177,7 @@ def generate_ideogram4_t2i(
             sampler=sampler,
             sigmas=second_sigmas,
             latent=second_latent,
+            progress=progress,
         )
 
     image, sampled_latent, loaded_vae = apply_second_sampler_pass(
@@ -1210,6 +1257,7 @@ def generate_z_image_turbo_t2i(
         negative=negative,
         latent=latent,
         pid_capture_step=pid_capture_step,
+        progress=progress,
     )
     image = None
     loaded_vae = None
@@ -1238,6 +1286,7 @@ def generate_z_image_turbo_t2i(
             negative=negative,
             latent=second_latent,
             denoise=denoise,
+            progress=progress,
         )
 
     image, sampled_latent, loaded_vae = apply_second_sampler_pass(
@@ -1360,6 +1409,7 @@ def generate_krea2_t2i(
             latent=latent,
             denoise=inpaint_denoise,
             pid_capture_step=pid_capture_step,
+            progress=progress,
         )
     image = None
     decode_inpaint_sample = (
@@ -1409,6 +1459,7 @@ def generate_krea2_t2i(
             negative=negative,
             latent=second_latent,
             denoise=denoise,
+            progress=progress,
         )
 
     image, sampled_latent, loaded_vae = apply_second_sampler_pass(
@@ -1601,6 +1652,7 @@ def generate_flux2_klein_t2i(
                 latent=latent,
                 sigmas=sigmas,
                 pid_capture_step=pid_capture_step,
+                progress=progress,
             )
         else:
             _phase(progress, "sampling")
@@ -1616,6 +1668,7 @@ def generate_flux2_klein_t2i(
                 latent=latent,
                 denoise=inpaint_denoise,
                 pid_capture_step=pid_capture_step,
+                progress=progress,
             )
     image = None
     decode_inpaint_sample = (
@@ -1676,6 +1729,7 @@ def generate_flux2_klein_t2i(
                 negative=negative,
                 latent=second_latent,
                 sigmas=second_sigmas,
+                progress=progress,
             )
         return sample_with_comfy_ksampler(
             model=model,
@@ -1688,6 +1742,7 @@ def generate_flux2_klein_t2i(
             negative=negative,
             latent=second_latent,
             denoise=denoise,
+            progress=progress,
         )
 
     image, sampled_latent, loaded_vae = apply_second_sampler_pass(

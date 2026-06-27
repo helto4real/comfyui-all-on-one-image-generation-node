@@ -19,6 +19,12 @@ const SEED_CONTROL_MODES = ["fixed", "increment", "decrement", "randomize"];
 const AIO_SEED_QUEUE_WRAPPER_KEY = "__aioGenerateSeedQueuePromptWrapper";
 const AIO_SEED_QUEUE_INSTALL_KEY = "__aioGenerateSeedQueuePromptInstallScheduled";
 const AIO_SEED_QUEUE_INSTALL_ATTEMPT_LIMIT = 80;
+const AIO_PROGRESS_TEXT_CLEANUP_KEY = "__aioGenerateProgressTextCleanupInstalled";
+const AIO_RUNTIME_PHASE_BRIDGE_KEY = "__aioGenerateRuntimePhaseBridgeInstalled";
+const AIO_RUNTIME_PHASE_STYLE_ID = "aio-generate-runtime-phase-style";
+const AIO_RUNTIME_PHASE_LABEL_CLASS = "aio-generate-runtime-phase-label";
+const AIO_RUNTIME_PHASE_NODE_KEY = "__aioGenerateRuntimePhase";
+const PROGRESS_TEXT_WIDGET_NAME = "$$node-text-preview";
 const LORA_HEADER_TOOLTIP = "Toggle every configured LoRA row on or off.";
 const LORA_ROW_TOOLTIP = "LoRA row: choose a LoRA, toggle it, inspect metadata, and adjust strength.";
 const ADD_LORA_TOOLTIP = "Add a LoRA row filtered by the match field.";
@@ -102,6 +108,40 @@ function markNodeDirty(node) {
   }
   node?.graph?.setDirtyCanvas?.(true, true);
   app.canvas?.setDirty?.(true, true);
+}
+
+function installAioGenerateRuntimePhaseStyles() {
+  ensureHeltoTokens();
+  if (document.getElementById(AIO_RUNTIME_PHASE_STYLE_ID)) {
+    return;
+  }
+  const style = document.createElement("style");
+  style.id = AIO_RUNTIME_PHASE_STYLE_ID;
+  style.textContent = `
+    .${AIO_RUNTIME_PHASE_LABEL_CLASS} {
+      position: absolute;
+      top: 34px;
+      right: 10px;
+      z-index: 8;
+      max-width: calc(100% - 20px);
+      min-height: 18px;
+      padding: 2px 8px;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 9px;
+      background: rgba(9, 14, 24, 0.72);
+      color: #fff;
+      font: 600 11px/14px var(--helto-font-sans, system-ui, sans-serif);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      pointer-events: none;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+    }
+    .lg-node[data-collapsed] > .${AIO_RUNTIME_PHASE_LABEL_CLASS} {
+      top: 8px;
+    }
+  `;
+  document.head.appendChild(style);
 }
 
 function randomUnit53() {
@@ -259,6 +299,249 @@ function graphNodes(graph = defaultGraph()) {
 
   visit(graph);
   return nodes;
+}
+
+function removeAioGenerateProgressTextWidget(node) {
+  if (!isAioGenerateNode(node) || !Array.isArray(node.widgets)) {
+    return false;
+  }
+  let removed = false;
+  for (let index = node.widgets.length - 1; index >= 0; index -= 1) {
+    if (node.widgets[index]?.name !== PROGRESS_TEXT_WIDGET_NAME) {
+      continue;
+    }
+    const [widget] = node.widgets.splice(index, 1);
+    widget?.onRemove?.();
+    removed = true;
+  }
+  if (removed) {
+    markNodeDirty(node);
+  }
+  return removed;
+}
+
+function aioGenerateRuntimePhaseText(text) {
+  const phase = String(text ?? "").trim();
+  if (!phase) {
+    return "";
+  }
+  return phase.length > 96 ? `${phase.slice(0, 93)}...` : phase;
+}
+
+function aioGenerateNodeIdCandidates(nodeId) {
+  const value = String(nodeId ?? "").trim();
+  if (!value) {
+    return new Set();
+  }
+  const candidates = new Set([value]);
+  const parts = value.split(":").filter(Boolean);
+  if (parts.length > 1) {
+    candidates.add(parts[parts.length - 1]);
+  }
+  return candidates;
+}
+
+function findAioGenerateNodeById(nodeId) {
+  const candidates = aioGenerateNodeIdCandidates(nodeId);
+  if (!candidates.size) {
+    return null;
+  }
+  for (const node of graphNodes()) {
+    if (isAioGenerateNode(node) && candidates.has(String(node.id))) {
+      return node;
+    }
+  }
+  return null;
+}
+
+function aioGenerateVueNodeElement(node) {
+  const nodeId = String(node?.id ?? "");
+  if (!nodeId) {
+    return null;
+  }
+  for (const element of document.querySelectorAll(".lg-node[data-node-id]")) {
+    if (element.dataset?.nodeId === nodeId) {
+      return element;
+    }
+  }
+  return null;
+}
+
+function aioGenerateRuntimePhaseLabel(nodeElement) {
+  if (!nodeElement) {
+    return null;
+  }
+  for (const child of nodeElement.children || []) {
+    if (child.classList?.contains(AIO_RUNTIME_PHASE_LABEL_CLASS)) {
+      return child;
+    }
+  }
+  return null;
+}
+
+function updateAioGenerateRuntimePhaseDom(node) {
+  const nodeElement = aioGenerateVueNodeElement(node);
+  if (!nodeElement) {
+    return;
+  }
+  const phase = node?.[AIO_RUNTIME_PHASE_NODE_KEY] || "";
+  let label = aioGenerateRuntimePhaseLabel(nodeElement);
+  if (!phase) {
+    label?.remove();
+    return;
+  }
+  installAioGenerateRuntimePhaseStyles();
+  if (!label) {
+    label = document.createElement("div");
+    label.className = AIO_RUNTIME_PHASE_LABEL_CLASS;
+    nodeElement.appendChild(label);
+  }
+  label.textContent = phase;
+  label.title = phase;
+}
+
+function scheduleAioGenerateRuntimePhaseDomUpdate(node) {
+  updateAioGenerateRuntimePhaseDom(node);
+  const update = () => updateAioGenerateRuntimePhaseDom(node);
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(update);
+  } else {
+    setTimeout(update, 0);
+  }
+}
+
+function setAioGenerateRuntimePhase(node, text) {
+  if (!isAioGenerateNode(node)) {
+    return false;
+  }
+  const phase = aioGenerateRuntimePhaseText(text);
+  if (!phase) {
+    return false;
+  }
+  node[AIO_RUNTIME_PHASE_NODE_KEY] = phase;
+  scheduleAioGenerateRuntimePhaseDomUpdate(node);
+  markNodeDirty(node);
+  return true;
+}
+
+function clearAioGenerateRuntimePhase(node) {
+  if (!isAioGenerateNode(node) || !node[AIO_RUNTIME_PHASE_NODE_KEY]) {
+    return false;
+  }
+  delete node[AIO_RUNTIME_PHASE_NODE_KEY];
+  scheduleAioGenerateRuntimePhaseDomUpdate(node);
+  markNodeDirty(node);
+  return true;
+}
+
+function clearAioGenerateRuntimePhases() {
+  let removed = false;
+  for (const node of graphNodes()) {
+    removed = clearAioGenerateRuntimePhase(node) || removed;
+  }
+  for (const label of document.querySelectorAll(`.${AIO_RUNTIME_PHASE_LABEL_CLASS}`)) {
+    label.remove();
+  }
+  return removed;
+}
+
+function drawAioGenerateRuntimePhase(ctx, node) {
+  const phase = node?.[AIO_RUNTIME_PHASE_NODE_KEY];
+  if (!phase || !isAioGenerateNode(node)) {
+    return;
+  }
+  const width = Number(node.size?.[0] || 0);
+  if (!width || width < 96) {
+    return;
+  }
+  const paddingX = 8;
+  const height = 18;
+  const maxWidth = Math.max(60, width - 20);
+  ctx.save();
+  ctx.font = "600 11px sans-serif";
+  const text = fitString(ctx, phase, maxWidth - paddingX * 2);
+  const textWidth = Math.min(ctx.measureText(text).width, maxWidth - paddingX * 2);
+  const boxWidth = Math.ceil(textWidth + paddingX * 2);
+  const x = Math.max(10, width - boxWidth - 10);
+  const y = 4;
+  ctx.globalAlpha = app.canvas?.editor_alpha ?? 1;
+  ctx.fillStyle = "rgba(9, 14, 24, 0.72)";
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.18)";
+  ctx.beginPath();
+  ctx.roundRect(x, y, boxWidth, height, [height * 0.5]);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#fff";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, x + paddingX, y + height * 0.5);
+  ctx.restore();
+}
+
+function handleAioGenerateProgressText(event) {
+  const { nodeId, text } = event?.detail || {};
+  const node = findAioGenerateNodeById(nodeId);
+  if (!node) {
+    return;
+  }
+  setAioGenerateRuntimePhase(node, text);
+}
+
+function installAioGenerateRuntimePhaseBridge() {
+  if (api[AIO_RUNTIME_PHASE_BRIDGE_KEY]) {
+    return;
+  }
+  api[AIO_RUNTIME_PHASE_BRIDGE_KEY] = true;
+  api.addEventListener?.("progress_text", handleAioGenerateProgressText);
+}
+
+function ensureAioGenerateRuntimePhaseUi(node) {
+  if (!isAioGenerateNode(node)) {
+    return;
+  }
+  installAioGenerateRuntimePhaseStyles();
+  if (node._aioGenerateRuntimePhaseUiInstalled) {
+    scheduleAioGenerateRuntimePhaseDomUpdate(node);
+    return;
+  }
+  node._aioGenerateRuntimePhaseUiInstalled = true;
+  const originalDrawForeground = node.onDrawForeground;
+  node.onDrawForeground = function (ctx) {
+    const result = originalDrawForeground?.apply(this, arguments);
+    drawAioGenerateRuntimePhase(ctx, this);
+    return result;
+  };
+  scheduleAioGenerateRuntimePhaseDomUpdate(node);
+}
+
+function clearAioGenerateProgressTextWidgets() {
+  let removed = false;
+  for (const node of graphNodes()) {
+    removed = removeAioGenerateProgressTextWidget(node) || removed;
+  }
+  return removed;
+}
+
+function scheduleAioGenerateProgressTextCleanup() {
+  const cleanup = () => {
+    clearAioGenerateProgressTextWidgets();
+    clearAioGenerateRuntimePhases();
+  };
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(cleanup);
+  } else {
+    setTimeout(cleanup, 0);
+  }
+}
+
+function installAioGenerateProgressTextCleanup() {
+  if (api[AIO_PROGRESS_TEXT_CLEANUP_KEY]) {
+    return;
+  }
+  api[AIO_PROGRESS_TEXT_CLEANUP_KEY] = true;
+  api.addEventListener?.("execution_success", scheduleAioGenerateProgressTextCleanup);
+  api.addEventListener?.("execution_error", scheduleAioGenerateProgressTextCleanup);
+  api.addEventListener?.("execution_interrupted", scheduleAioGenerateProgressTextCleanup);
 }
 
 function suspendSeedControlCallbacks(controlWidget) {
@@ -2482,6 +2765,7 @@ function patchAioGenerateNodeType(nodeType) {
       ensureAioGenerateSizingUi(this);
       ensureAioGeneratePrivacyUi(this);
       ensureAioGenerateSeedButton(this);
+      ensureAioGenerateRuntimePhaseUi(this);
     }
   };
 }
@@ -2492,12 +2776,15 @@ app.registerExtension({
   name: "aio.image.generate",
   setup() {
     scheduleAioSeedQueuePatch("setup");
+    installAioGenerateProgressTextCleanup();
+    installAioGenerateRuntimePhaseBridge();
     requestAnimationFrame(() => {
       for (const node of app.graph?._nodes || []) {
         ensureLoraUi(node);
         ensureAioGenerateSizingUi(node);
         ensureAioGeneratePrivacyUi(node);
         ensureAioGenerateSeedButton(node);
+        ensureAioGenerateRuntimePhaseUi(node);
       }
     });
   },
@@ -2514,11 +2801,13 @@ app.registerExtension({
     ensureAioGenerateSizingUi(node);
     ensureAioGeneratePrivacyUi(node);
     ensureAioGenerateSeedButton(node);
+    ensureAioGenerateRuntimePhaseUi(node);
   },
   loadedGraphNode(node) {
     ensureLoraUi(node);
     ensureAioGenerateSizingUi(node);
     ensureAioGeneratePrivacyUi(node);
     ensureAioGenerateSeedButton(node);
+    ensureAioGenerateRuntimePhaseUi(node);
   },
 });

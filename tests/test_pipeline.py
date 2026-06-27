@@ -3310,6 +3310,283 @@ def test_sample_with_sigmas_forwards_noise_mask(monkeypatch):
     assert calls["sample"]["sigmas"] is sigmas
 
 
+def test_sample_with_comfy_ksampler_uses_progress_callback(monkeypatch):
+    calls = {}
+
+    class FakeSigmas:
+        shape = (5,)
+
+        def __getitem__(self, index):
+            return [1.0, 0.75, 0.5, 0.25, 0.0][index]
+
+    class FakeKSampler:
+        def __init__(self, *args, **kwargs):
+            calls["ksampler"] = {"args": args, "kwargs": kwargs}
+            self.sigmas = FakeSigmas()
+
+    class FakeProgress:
+        def prepare_sampling_callback(self, model, steps, x0_output_dict=None):
+            calls["progress"] = {
+                "model": model,
+                "steps": steps,
+                "x0_output_dict": x0_output_dict,
+            }
+
+            def callback(step, x0, x, total_steps):
+                calls["progress_callback"] = (step, x0, x, total_steps)
+
+            return callback
+
+    comfy_module = ModuleType("comfy")
+    sample_module = ModuleType("comfy.sample")
+    samplers_module = ModuleType("comfy.samplers")
+    utils_module = ModuleType("comfy.utils")
+    model = SimpleNamespace(load_device="cuda", model_options={})
+
+    def fake_sample(*args, **kwargs):
+        calls["sample"] = {"args": args, "kwargs": kwargs}
+        kwargs["callback"](0, "x0", "x", 4)
+        return "sampled_samples"
+
+    sample_module.fix_empty_latent_channels = lambda model, latent_image, downscale_ratio_spacial, downscale_ratio_temporal: latent_image
+    sample_module.prepare_noise = lambda latent_image, seed, batch_inds: "noise"
+    sample_module.sample = fake_sample
+    samplers_module.KSampler = FakeKSampler
+    utils_module.PROGRESS_BAR_ENABLED = True
+    comfy_module.sample = sample_module
+    comfy_module.samplers = samplers_module
+    comfy_module.utils = utils_module
+
+    monkeypatch.setitem(sys.modules, "comfy", comfy_module)
+    monkeypatch.setitem(sys.modules, "comfy.sample", sample_module)
+    monkeypatch.setitem(sys.modules, "comfy.samplers", samplers_module)
+    monkeypatch.setitem(sys.modules, "comfy.utils", utils_module)
+
+    out = pipeline.sample_with_comfy_ksampler(
+        model=model,
+        seed=123,
+        steps=4,
+        cfg=1.0,
+        sampler="euler",
+        scheduler="normal",
+        positive="positive",
+        negative="negative",
+        latent={"samples": "latent_samples"},
+        progress=FakeProgress(),
+    )
+
+    assert out == {"samples": "sampled_samples"}
+    assert calls["progress"]["model"] is model
+    assert calls["progress"]["steps"] == 4
+    assert calls["progress_callback"] == (0, "x0", "x", 4)
+
+
+def test_sample_with_sigmas_uses_progress_callback_and_pid_capture(monkeypatch):
+    calls = {}
+
+    class FakeTensor:
+        def detach(self):
+            return self
+
+        def to(self, device):
+            calls["capture_device"] = device
+            return self
+
+        def contiguous(self):
+            return "captured_samples"
+
+    class FakeSigmas:
+        shape = (5,)
+
+        def __getitem__(self, index):
+            return [1.0, 0.75, 0.5, 0.25, 0.0][index]
+
+    class FakeProgress:
+        def prepare_sampling_callback(self, model, steps, x0_output_dict=None):
+            calls["progress"] = {
+                "model": model,
+                "steps": steps,
+                "x0_output_dict": x0_output_dict,
+            }
+
+            def callback(step, x0, x, total_steps):
+                calls["progress_callback"] = (step, x0, x, total_steps)
+
+            return callback
+
+    comfy_module = ModuleType("comfy")
+    sample_module = ModuleType("comfy.sample")
+    utils_module = ModuleType("comfy.utils")
+    latent_preview_module = ModuleType("latent_preview")
+    sigmas = FakeSigmas()
+    model = SimpleNamespace(load_device="cuda", model_options={})
+
+    def fail_prepare_callback(*args, **kwargs):
+        raise AssertionError("progress callback should be used before latent_preview fallback")
+
+    def fake_sample(*args, **kwargs):
+        calls["sample"] = {"args": args, "kwargs": kwargs}
+        kwargs["callback"](1, "x0", FakeTensor(), 4)
+        return "sampled_samples"
+
+    sample_module.fix_empty_latent_channels = lambda model, latent_image, downscale_ratio_spacial, downscale_ratio_temporal: latent_image
+    sample_module.prepare_noise = lambda latent_image, seed, batch_inds: "noise"
+    sample_module.sample = fake_sample
+    utils_module.PROGRESS_BAR_ENABLED = True
+    latent_preview_module.prepare_callback = fail_prepare_callback
+    comfy_module.sample = sample_module
+    comfy_module.utils = utils_module
+
+    monkeypatch.setitem(sys.modules, "comfy", comfy_module)
+    monkeypatch.setitem(sys.modules, "comfy.sample", sample_module)
+    monkeypatch.setitem(sys.modules, "comfy.utils", utils_module)
+    monkeypatch.setitem(sys.modules, "latent_preview", latent_preview_module)
+
+    out = pipeline.sample_with_sigmas(
+        model=model,
+        seed=123,
+        steps=4,
+        cfg=1.0,
+        sampler="euler",
+        scheduler="normal",
+        positive="positive",
+        negative="negative",
+        latent={"samples": "latent_samples"},
+        sigmas=sigmas,
+        pid_capture_step=2,
+        progress=FakeProgress(),
+    )
+
+    assert out["samples"] == "sampled_samples"
+    assert calls["progress"]["steps"] == 4
+    assert calls["progress_callback"][0:2] == (1, "x0")
+    assert calls["capture_device"] == "cpu"
+    pid = out[pipeline.PID_CAPTURE_KEY]
+    assert pid["sigma"] == 0.75
+    assert pid["step"] == 2
+    assert pid["latent"]["samples"] == "captured_samples"
+    assert pid["latent"]["pid_sigma"] == 0.75
+    assert pid["latent"]["pid_capture_step"] == 2
+
+
+def test_sample_with_custom_guider_uses_progress_callback(monkeypatch):
+    calls = {}
+
+    class FakeSigmas:
+        shape = (3,)
+
+        def __getitem__(self, index):
+            return [1.0, 0.5, 0.0][index]
+
+    class FakeNoise:
+        def __init__(self, seed):
+            self.seed = seed
+
+        def generate_noise(self, latent):
+            calls["noise_latent"] = latent
+            return "noise"
+
+    class FakeRandomNoise:
+        @staticmethod
+        def execute(noise_seed):
+            calls["noise_seed"] = noise_seed
+            return (FakeNoise(noise_seed),)
+
+    class FakeKSamplerSelect:
+        @staticmethod
+        def execute(sampler_name):
+            calls["sampler_name"] = sampler_name
+            return ("sampler_obj",)
+
+    class FakeProgress:
+        def prepare_sampling_callback(self, model, steps, x0_output_dict=None):
+            calls["progress"] = {
+                "model": model,
+                "steps": steps,
+                "x0_output_dict": x0_output_dict,
+            }
+
+            def callback(step, x0, x, total_steps):
+                calls["progress_callback"] = (step, x0, x, total_steps)
+
+            return callback
+
+    class FakeGuider:
+        def __init__(self):
+            self.model_patcher = SimpleNamespace(
+                load_device="cuda",
+                model=SimpleNamespace(latent_format="flux"),
+            )
+
+        def sample(
+            self,
+            noise,
+            latent_image,
+            sampler,
+            sigmas,
+            *,
+            denoise_mask=None,
+            callback=None,
+            disable_pbar=None,
+            seed=None,
+        ):
+            calls["guider_sample"] = {
+                "noise": noise,
+                "latent_image": latent_image,
+                "sampler": sampler,
+                "sigmas": sigmas,
+                "denoise_mask": denoise_mask,
+                "disable_pbar": disable_pbar,
+                "seed": seed,
+            }
+            callback(0, "x0", "x", 2)
+            return "sampled_samples"
+
+    comfy_module = ModuleType("comfy")
+    sample_module = ModuleType("comfy.sample")
+    utils_module = ModuleType("comfy.utils")
+    model_management_module = ModuleType("comfy.model_management")
+    comfy_extras_module = ModuleType("comfy_extras")
+    custom_sampler_module = ModuleType("comfy_extras.nodes_custom_sampler")
+    sigmas = FakeSigmas()
+    guider = FakeGuider()
+
+    sample_module.fix_empty_latent_channels = lambda model, latent_image, downscale_ratio_spacial, downscale_ratio_temporal: latent_image
+    utils_module.PROGRESS_BAR_ENABLED = False
+    model_management_module.intermediate_device = lambda: "intermediate"
+    custom_sampler_module.RandomNoise = FakeRandomNoise
+    custom_sampler_module.KSamplerSelect = FakeKSamplerSelect
+    comfy_module.sample = sample_module
+    comfy_module.utils = utils_module
+    comfy_module.model_management = model_management_module
+
+    monkeypatch.setitem(sys.modules, "comfy", comfy_module)
+    monkeypatch.setitem(sys.modules, "comfy.sample", sample_module)
+    monkeypatch.setitem(sys.modules, "comfy.utils", utils_module)
+    monkeypatch.setitem(sys.modules, "comfy.model_management", model_management_module)
+    monkeypatch.setitem(sys.modules, "comfy_extras", comfy_extras_module)
+    monkeypatch.setitem(sys.modules, "comfy_extras.nodes_custom_sampler", custom_sampler_module)
+
+    out = pipeline.sample_with_custom_guider(
+        guider=guider,
+        seed=321,
+        sampler="euler",
+        sigmas=sigmas,
+        latent={"samples": "latent_samples", "noise_mask": "mask"},
+        progress=FakeProgress(),
+    )
+
+    assert out == {"samples": "sampled_samples", "noise_mask": "mask"}
+    assert calls["noise_seed"] == 321
+    assert calls["sampler_name"] == "euler"
+    assert calls["progress"]["model"] is guider.model_patcher
+    assert calls["progress"]["steps"] == 2
+    assert calls["progress_callback"] == (0, "x0", "x", 2)
+    assert calls["guider_sample"]["denoise_mask"] == "mask"
+    assert calls["guider_sample"]["disable_pbar"] is True
+    assert calls["guider_sample"]["seed"] == 321
+
+
 def test_pid_capture_step_defaults_near_end_and_clamps():
     assert pipeline.resolve_pid_capture_step(None, 50) is None
     assert pipeline.resolve_pid_capture_step(0, 50) == 46
