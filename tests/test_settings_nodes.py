@@ -1,3 +1,4 @@
+import json
 import pytest
 
 from nodes.flux2_klein_settings import AIOFlux2Klein9BSettings
@@ -75,6 +76,36 @@ def test_krea2_settings_returns_workflow_defaults():
     assert settings["torch_compile_backend"] == "inductor"
     assert settings["performance_apply_timing"] == "after_loras"
     assert settings["fp16_accumulation_enabled"] is True
+    assert "positive_prompt_override" not in settings
+    assert "positive_prompt_source" not in settings
+
+
+def test_krea2_settings_accepts_inpaint_positive_prompt():
+    settings = AIOKrea2Settings().build_settings(
+        True,
+        1.0,
+        "auto",
+        inpaint_positive_prompt="  replace the jacket with red silk  ",
+    )[0]
+
+    assert settings["positive_prompt_override"] == "replace the jacket with red silk"
+    assert settings["positive_prompt_source"] == "krea2_inpaint_settings"
+
+
+@pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
+def test_krea2_settings_decrypts_private_inpaint_positive_prompt(monkeypatch, tmp_path):
+    monkeypatch.setattr(privacy, "config_dir", lambda: tmp_path)
+    encrypted_prompt = json.dumps(privacy.encrypt_state({"value": "private inpaint prompt"}, base_dir=tmp_path))
+
+    settings = AIOKrea2Settings().build_settings(
+        True,
+        1.0,
+        "auto",
+        inpaint_positive_prompt=encrypted_prompt,
+    )[0]
+
+    assert settings["positive_prompt_override"] == "private inpaint prompt"
+    assert settings["positive_prompt_source"] == "krea2_inpaint_settings"
 
 
 def test_ideogram4_settings_returns_default_family_dict():

@@ -7,6 +7,8 @@ const NODE_NAME = "AIOLoraConfiguration";
 const NODE_DISPLAY_NAME = "AIO LoRA Configuration";
 const GENERATE_NODE_NAME = "AIOImageGenerate";
 const GENERATE_NODE_DISPLAY_NAME = "AIO Image Generate";
+const KREA_SETTINGS_NODE_NAME = "AIOKrea2Settings";
+const KREA_SETTINGS_NODE_DISPLAY_NAME = "Krea 2 Settings";
 const ROW_PREFIX = "lora_";
 const HEADER_NAME = "aio_lora_header";
 const ADD_BUTTON_LABEL = "+ Add LoRA";
@@ -31,6 +33,7 @@ const ADD_LORA_TOOLTIP = "Add a LoRA row filtered by the match field.";
 const FIXED_SEED_BUTTON_TOOLTIP = "Generate a new fixed random seed and write it into the seed field.";
 const PRIVACY_WIDGET_NAME = "privacy_mode";
 const PROMPT_WIDGET_NAMES = ["positive_prompt", "negative_prompt"];
+const KREA_INPAINT_PROMPT_WIDGET_NAME = "inpaint_positive_prompt";
 const PRIVACY_STYLE_ID = "aio-generate-privacy-style";
 const MASKED_PROMPT_VALUE = "Private prompt - hover to reveal";
 
@@ -62,6 +65,10 @@ function isAioGenerateNodeData(nodeData) {
   return nodeData?.name === GENERATE_NODE_NAME || nodeData?.display_name === GENERATE_NODE_DISPLAY_NAME;
 }
 
+function isAioKrea2SettingsNodeData(nodeData) {
+  return nodeData?.name === KREA_SETTINGS_NODE_NAME || nodeData?.display_name === KREA_SETTINGS_NODE_DISPLAY_NAME;
+}
+
 function isAioGenerateNode(node) {
   return (
     node?.type === GENERATE_NODE_NAME ||
@@ -69,6 +76,16 @@ function isAioGenerateNode(node) {
     node?.constructor?.type === GENERATE_NODE_NAME ||
     node?.constructor?.comfyClass === GENERATE_NODE_NAME ||
     node?.title === GENERATE_NODE_DISPLAY_NAME
+  );
+}
+
+function isAioKrea2SettingsNode(node) {
+  return (
+    node?.type === KREA_SETTINGS_NODE_NAME ||
+    node?.comfyClass === KREA_SETTINGS_NODE_NAME ||
+    node?.constructor?.type === KREA_SETTINGS_NODE_NAME ||
+    node?.constructor?.comfyClass === KREA_SETTINGS_NODE_NAME ||
+    node?.title === KREA_SETTINGS_NODE_DISPLAY_NAME
   );
 }
 
@@ -716,8 +733,95 @@ function configureInfoWithoutSeedButtonSlot(node, info) {
   return values === info.widgets_values ? info : { ...info, widgets_values: values };
 }
 
-function privacyEnabled(node) {
+function privacyPromptWidgetNames(node) {
+  return isAioKrea2SettingsNode(node) ? [KREA_INPAINT_PROMPT_WIDGET_NAME] : PROMPT_WIDGET_NAMES;
+}
+
+function graphNodeList(node = null) {
+  return node?.graph?._nodes || app.graph?._nodes || [];
+}
+
+function graphNodeById(graph, id) {
+  if (id == null) {
+    return null;
+  }
+  if (typeof graph?.getNodeById === "function") {
+    const found = graph.getNodeById(id);
+    if (found) {
+      return found;
+    }
+  }
+  return (graph?._nodes || app.graph?._nodes || []).find((node) => String(node.id) === String(id)) || null;
+}
+
+function graphLinkByRef(graph, linkRef) {
+  if (linkRef == null) {
+    return null;
+  }
+  if (typeof linkRef === "object" && "target_id" in linkRef) {
+    return linkRef;
+  }
+  const links = graph?.links || app.graph?.links;
+  if (Array.isArray(links)) {
+    return links.find((link) => String(link?.id) === String(linkRef)) || null;
+  }
+  if (links && typeof links === "object") {
+    return links[linkRef] || links[String(linkRef)] || null;
+  }
+  return null;
+}
+
+function targetInputName(node, slot) {
+  const index = Number(slot);
+  if (!Number.isInteger(index) || index < 0) {
+    return "";
+  }
+  return String(node?.inputs?.[index]?.name || "");
+}
+
+function connectedGenerateNodesForKreaSettings(node) {
+  if (!isAioKrea2SettingsNode(node)) {
+    return [];
+  }
+  const graph = node.graph || app.graph;
+  const targets = [];
+  for (const output of node.outputs || []) {
+    for (const linkRef of output?.links || []) {
+      const link = graphLinkByRef(graph, linkRef);
+      const target = graphNodeById(graph, link?.target_id);
+      if (!isAioGenerateNode(target) || targetInputName(target, link?.target_slot) !== "model_settings") {
+        continue;
+      }
+      if (!targets.includes(target)) {
+        targets.push(target);
+      }
+    }
+  }
+  return targets;
+}
+
+function connectedKreaSettingsNodesForGenerate(node) {
+  if (!isAioGenerateNode(node)) {
+    return [];
+  }
+  return graphNodeList(node).filter((candidate) =>
+    isAioKrea2SettingsNode(candidate) && connectedGenerateNodesForKreaSettings(candidate).includes(node)
+  );
+}
+
+function generatePrivacyEnabled(node) {
   return Boolean(widgetByName(node, PRIVACY_WIDGET_NAME)?.value);
+}
+
+function kreaInpaintPromptPrivacyEnabled(node) {
+  return connectedGenerateNodesForKreaSettings(node).some((target) => generatePrivacyEnabled(target));
+}
+
+function privacyEnabled(node) {
+  if (isAioKrea2SettingsNode(node)) {
+    return kreaInpaintPromptPrivacyEnabled(node);
+  }
+  return generatePrivacyEnabled(node);
 }
 
 function setPrivacyStatus(node, message = "") {
@@ -821,7 +925,7 @@ function syncPromptWidgetFromDom(node, widget) {
 }
 
 function syncPromptWidgetsFromDom(node) {
-  for (const name of PROMPT_WIDGET_NAMES) {
+  for (const name of privacyPromptWidgetNames(node)) {
     syncPromptWidgetFromDom(node, widgetByName(node, name));
   }
 }
@@ -869,6 +973,25 @@ function sanitizeGenerateWorkflowSerialization(node, output) {
   }
 }
 
+function sanitizeKreaSettingsWorkflowSerialization(node, output) {
+  if (!output) {
+    return;
+  }
+  restorePromptWidgetsAfterDraw(node);
+  const values = output.widgets_values;
+  if (!Array.isArray(values)) {
+    return;
+  }
+  const widget = widgetByName(node, KREA_INPAINT_PROMPT_WIDGET_NAME);
+  const index = serializedWidgetIndex(node, widget);
+  if (!widget || index == null || index < 0 || index >= values.length) {
+    return;
+  }
+  values[index] = privacyEnabled(node)
+    ? encryptedOrEncryptPromptValue(node, widget)
+    : syncPromptWidgetFromDom(node, widget);
+}
+
 function promptWidgetDomElements(widget) {
   const elements = [];
   for (const candidate of [widget?.inputEl, widget?.element, widget?.inputElement, widget?.textarea, widget?.textElement]) {
@@ -912,7 +1035,7 @@ function patchPromptPrivacyElement(node, element) {
   element._aioGeneratePrivacyRevealCleanup?.();
 
   const onPromptInput = () => {
-    const widget = PROMPT_WIDGET_NAMES.map((name) => widgetByName(node, name))
+    const widget = privacyPromptWidgetNames(node).map((name) => widgetByName(node, name))
       .find((candidate) => promptWidgetDomElements(candidate).includes(element));
     syncPromptWidgetFromDom(node, widget);
     markNodeDirty(node);
@@ -948,7 +1071,7 @@ function patchPromptPrivacyElement(node, element) {
 
 function updatePromptDomPrivacy(node) {
   const masked = privacyEnabled(node) && !privacyRevealed(node);
-  for (const name of PROMPT_WIDGET_NAMES) {
+  for (const name of privacyPromptWidgetNames(node)) {
     const widget = widgetByName(node, name);
     for (const element of promptWidgetDomElements(widget)) {
       patchPromptPrivacyElement(node, element);
@@ -981,7 +1104,7 @@ function maskPromptWidgetsForDraw(node) {
     return;
   }
   const restore = [];
-  for (const name of PROMPT_WIDGET_NAMES) {
+  for (const name of privacyPromptWidgetNames(node)) {
     const widget = widgetByName(node, name);
     if (!widget) {
       continue;
@@ -1051,7 +1174,7 @@ function patchPromptPrivacyWidget(node, widget) {
 }
 
 function refreshAioGeneratePrivacyWidgets(node) {
-  for (const name of PROMPT_WIDGET_NAMES) {
+  for (const name of privacyPromptWidgetNames(node)) {
     const widget = widgetByName(node, name);
     patchPromptPrivacyWidget(node, widget);
     decryptPromptWidget(node, widget);
@@ -1081,6 +1204,7 @@ function ensureAioGeneratePrivacyUi(node) {
   const privacyWidget = widgetByName(node, PRIVACY_WIDGET_NAME);
   patchWidgetCallback(privacyWidget, "_aioPrivacyModeCallbackPatched", () => {
     updatePromptDomPrivacy(node);
+    refreshConnectedKreaSettingsPrivacyUi(node);
     markNodeDirty(node);
   });
 
@@ -1121,6 +1245,58 @@ function ensureAioGeneratePrivacyUi(node) {
   node.onSerialize = function (output) {
     const result = originalOnSerialize?.apply(this, arguments);
     sanitizeGenerateWorkflowSerialization(this, output);
+    return result;
+  };
+
+  markNodeDirty(node);
+  requestAnimationFrame(() => updatePromptDomPrivacy(node));
+}
+
+function refreshConnectedKreaSettingsPrivacyUi(node) {
+  for (const kreaNode of connectedKreaSettingsNodesForGenerate(node)) {
+    refreshAioGeneratePrivacyWidgets(kreaNode);
+    markNodeDirty(kreaNode);
+  }
+}
+
+function ensureKrea2SettingsPrivacyUi(node) {
+  if (!isAioKrea2SettingsNode(node)) {
+    return;
+  }
+  if (node._aioKreaSettingsPrivacyInstalled) {
+    refreshAioGeneratePrivacyWidgets(node);
+    return;
+  }
+  node._aioKreaSettingsPrivacyInstalled = true;
+  node._aioPrivacyRevealSources = {
+    node: false,
+    prompt: false,
+    focus: false,
+  };
+  node._aioPrivacyReveal = false;
+  installGeneratePrivacyStyles();
+
+  refreshAioGeneratePrivacyWidgets(node);
+
+  const originalDrawBackground = node.onDrawBackground;
+  node.onDrawBackground = function (ctx) {
+    const result = originalDrawBackground?.apply(this, arguments);
+    updatePromptDomPrivacy(this);
+    maskPromptWidgetsForDraw(this);
+    return result;
+  };
+
+  const originalDrawForeground = node.onDrawForeground;
+  node.onDrawForeground = function (ctx) {
+    restorePromptWidgetsAfterDraw(this);
+    const result = originalDrawForeground?.apply(this, arguments);
+    return result;
+  };
+
+  const originalOnSerialize = node.onSerialize;
+  node.onSerialize = function (output) {
+    const result = originalOnSerialize?.apply(this, arguments);
+    sanitizeKreaSettingsWorkflowSerialization(this, output);
     return result;
   };
 
@@ -2770,6 +2946,20 @@ function patchAioGenerateNodeType(nodeType) {
   };
 }
 
+function patchKrea2SettingsNodeType(nodeType) {
+  if (nodeType.prototype.__aioKrea2SettingsConfigurePatched) {
+    return;
+  }
+  nodeType.prototype.__aioKrea2SettingsConfigurePatched = true;
+
+  const originalConfigure = nodeType.prototype.configure;
+  nodeType.prototype.configure = function () {
+    const result = originalConfigure?.apply(this, arguments);
+    ensureKrea2SettingsPrivacyUi(this);
+    return result;
+  };
+}
+
 scheduleAioSeedQueuePatch();
 
 app.registerExtension({
@@ -2783,6 +2973,7 @@ app.registerExtension({
         ensureLoraUi(node);
         ensureAioGenerateSizingUi(node);
         ensureAioGeneratePrivacyUi(node);
+        ensureKrea2SettingsPrivacyUi(node);
         ensureAioGenerateSeedButton(node);
         ensureAioGenerateRuntimePhaseUi(node);
       }
@@ -2795,11 +2986,15 @@ app.registerExtension({
     if (isAioGenerateNodeData(nodeData)) {
       patchAioGenerateNodeType(nodeType);
     }
+    if (isAioKrea2SettingsNodeData(nodeData)) {
+      patchKrea2SettingsNodeType(nodeType);
+    }
   },
   nodeCreated(node) {
     ensureLoraUi(node);
     ensureAioGenerateSizingUi(node);
     ensureAioGeneratePrivacyUi(node);
+    ensureKrea2SettingsPrivacyUi(node);
     ensureAioGenerateSeedButton(node);
     ensureAioGenerateRuntimePhaseUi(node);
   },
@@ -2807,6 +3002,7 @@ app.registerExtension({
     ensureLoraUi(node);
     ensureAioGenerateSizingUi(node);
     ensureAioGeneratePrivacyUi(node);
+    ensureKrea2SettingsPrivacyUi(node);
     ensureAioGenerateSeedButton(node);
     ensureAioGenerateRuntimePhaseUi(node);
   },

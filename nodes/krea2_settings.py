@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 try:
+    from ..services import privacy
     from ..services.performance import (
         ATTENTION_MODES,
         PERFORMANCE_APPLY_TIMINGS,
@@ -10,6 +11,7 @@ try:
         TORCH_COMPILE_MODES,
     )
 except ImportError:  # pragma: no cover - direct test imports
+    from services import privacy
     from services.performance import (
         ATTENTION_MODES,
         PERFORMANCE_APPLY_TIMINGS,
@@ -71,6 +73,15 @@ class AIOKrea2Settings:
                         "tooltip": "Enable torch CUDA fp16 accumulation callbacks during Krea 2 sampling when supported.",
                     },
                 ),
+                "inpaint_positive_prompt": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "multiline": True,
+                        "dynamicPrompts": True,
+                        "tooltip": "Optional positive prompt to use only for Krea 2 inpaint runs.",
+                    },
+                ),
             }
         }
 
@@ -84,17 +95,23 @@ class AIOKrea2Settings:
         torch_compile_backend: str = "inductor",
         performance_apply_timing: str = "after_loras",
         fp16_accumulation_enabled: bool = True,
+        inpaint_positive_prompt: str = "",
     ):
+        prompt = privacy.decrypt_text_if_encrypted(inpaint_positive_prompt).strip()
+        settings = {
+            "family": "krea2",
+            "enhancer_enabled": bool(enhancer_enabled),
+            "enhancer_strength": enhancer_strength,
+            "precision_policy": precision_policy,
+            "attention_mode": attention_mode,
+            "torch_compile_mode": torch_compile_mode,
+            "torch_compile_backend": torch_compile_backend,
+            "performance_apply_timing": performance_apply_timing,
+            "fp16_accumulation_enabled": bool(fp16_accumulation_enabled),
+        }
+        if prompt:
+            settings["positive_prompt_override"] = prompt
+            settings["positive_prompt_source"] = "krea2_inpaint_settings"
         return (
-            {
-                "family": "krea2",
-                "enhancer_enabled": bool(enhancer_enabled),
-                "enhancer_strength": enhancer_strength,
-                "precision_policy": precision_policy,
-                "attention_mode": attention_mode,
-                "torch_compile_mode": torch_compile_mode,
-                "torch_compile_backend": torch_compile_backend,
-                "performance_apply_timing": performance_apply_timing,
-                "fp16_accumulation_enabled": bool(fp16_accumulation_enabled),
-            },
+            settings,
         )

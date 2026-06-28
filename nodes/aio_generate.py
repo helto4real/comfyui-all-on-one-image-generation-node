@@ -94,6 +94,7 @@ AIO_GENERATE_SERIALIZED_WIDGET_NAMES = (
     "second_pass_upscale_method",
 )
 MASKED_PROMPT_VALUE = "Private prompt - hover to reveal"
+KREA_INPAINT_PROMPT_SOURCE = "krea2_inpaint_settings"
 
 
 def _filename_list(category: str) -> list[str]:
@@ -347,6 +348,20 @@ def _resolve_prompt_text(
         return resolved
     fallback_text = privacy.decrypt_text_if_encrypted(fallback)
     return fallback_text if fallback_text.strip() else resolved
+
+
+def _positive_prompt_override_applies(
+    *,
+    model_type: str,
+    settings: dict[str, Any],
+    inpaint_config: dict[str, Any] | None,
+) -> bool:
+    if not settings.get("positive_prompt_override"):
+        return False
+    source = settings.get("positive_prompt_source")
+    if source == KREA_INPAINT_PROMPT_SOURCE:
+        return model_type == "krea2" and inpaint_config is not None
+    return True
 
 
 def _class_is_output_node(class_type: str) -> bool:
@@ -862,9 +877,14 @@ class AIOImageGenerate:
         effective_sampler = str(settings["sampler"])
         effective_scheduler = str(settings["scheduler"])
         positive_prompt_override = settings.get("positive_prompt_override")
+        positive_prompt_override_applies = _positive_prompt_override_applies(
+            model_type=model_type,
+            settings=settings,
+            inpaint_config=normalized_inpaint_config,
+        )
         effective_positive_prompt = (
             privacy.decrypt_text_if_encrypted(positive_prompt_override)
-            if positive_prompt_override
+            if positive_prompt_override_applies
             else resolved_positive_prompt
         )
         run_info_privacy_mode = bool(
@@ -917,7 +937,10 @@ class AIOImageGenerate:
                 "effective_positive_prompt": effective_positive_prompt,
                 "effective_negative_prompt": resolved_negative_prompt,
                 "positive_prompt_override_present": bool(positive_prompt_override),
-                "positive_prompt_source": settings.get("positive_prompt_source", "node"),
+                "positive_prompt_override_applied": bool(positive_prompt_override_applies),
+                "positive_prompt_source": settings.get("positive_prompt_source", "node")
+                if positive_prompt_override_applies
+                else "node",
                 "privacy_mode": bool(privacy_mode),
                 "run_info_privacy_mode": run_info_privacy_mode,
                 "lengths": {

@@ -26,6 +26,10 @@ class FakeGeneratedImage:
     shape = (1, 769, 513, 3)
 
 
+class FakeMask:
+    shape = (1, 768, 512)
+
+
 def _inpaint_config(monkeypatch, **kwargs):
     del monkeypatch
     torch = pytest.importorskip("torch")
@@ -1002,6 +1006,129 @@ def test_ideogram_prompt_builder_overrides_prompt_and_dimensions(monkeypatch):
     assert parsed["width"] == 1088
     assert parsed["height"] == 608
     assert parsed["settings"]["positive_prompt_source"] == "ideogram4_prompt_builder"
+
+
+def test_krea2_inpaint_settings_prompt_overrides_main_prompt(monkeypatch):
+    from nodes import aio_generate
+
+    captured = {}
+
+    class FakeAdapter:
+        version = "test"
+        dimension_multiple = 16
+
+        def resolve_settings(self, **kwargs):
+            resolved = dict(kwargs["model_settings"])
+            resolved.update(
+                {
+                    "width": kwargs["width"],
+                    "height": kwargs["height"],
+                    "steps": 8,
+                    "cfg": 1.0,
+                    "sampler": "auto",
+                    "scheduler": "auto",
+                }
+            )
+            return resolved
+
+        def validate_inputs(self, **kwargs):
+            captured["validated"] = kwargs
+            return []
+
+        def generate(self, **kwargs):
+            captured["generated"] = kwargs
+            return "image", {"samples": "latent"}, "positive", "negative", "vae"
+
+    monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
+
+    _, _, run_info, *_ = AIOImageGenerate().generate(
+        model_type="krea2",
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="main prompt",
+        negative_prompt="",
+        seed=0,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+        model_settings={
+            "family": "krea2",
+            "positive_prompt_override": "krea inpaint prompt",
+            "positive_prompt_source": "krea2_inpaint_settings",
+        },
+        inpaint={"image": FakeImage(), "mask": FakeMask()},
+    )
+
+    assert captured["validated"]["positive_prompt"] == "krea inpaint prompt"
+    assert captured["generated"]["positive_prompt"] == "krea inpaint prompt"
+    parsed = json.loads(run_info)
+    assert parsed["debug"]["prompts"]["effective_positive_prompt"] == "krea inpaint prompt"
+    assert parsed["debug"]["prompts"]["positive_prompt_override_applied"] is True
+    assert parsed["debug"]["prompts"]["positive_prompt_source"] == "krea2_inpaint_settings"
+
+
+def test_krea2_inpaint_settings_prompt_is_ignored_without_inpaint(monkeypatch):
+    from nodes import aio_generate
+
+    captured = {}
+
+    class FakeAdapter:
+        version = "test"
+        dimension_multiple = 16
+
+        def resolve_settings(self, **kwargs):
+            resolved = dict(kwargs["model_settings"])
+            resolved.update(
+                {
+                    "width": kwargs["width"],
+                    "height": kwargs["height"],
+                    "steps": 8,
+                    "cfg": 1.0,
+                    "sampler": "auto",
+                    "scheduler": "auto",
+                }
+            )
+            return resolved
+
+        def validate_inputs(self, **kwargs):
+            captured["validated"] = kwargs
+            return []
+
+        def generate(self, **kwargs):
+            captured["generated"] = kwargs
+            return "image", {"samples": "latent"}, "positive", "negative", "vae"
+
+    monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
+
+    _, _, run_info, *_ = AIOImageGenerate().generate(
+        model_type="krea2",
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="main prompt",
+        negative_prompt="",
+        width=1024,
+        height=1024,
+        seed=0,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+        model_settings={
+            "family": "krea2",
+            "positive_prompt_override": "krea inpaint prompt",
+            "positive_prompt_source": "krea2_inpaint_settings",
+        },
+    )
+
+    assert captured["validated"]["positive_prompt"] == "main prompt"
+    assert captured["generated"]["positive_prompt"] == "main prompt"
+    parsed = json.loads(run_info)
+    assert parsed["debug"]["prompts"]["effective_positive_prompt"] == "main prompt"
+    assert parsed["debug"]["prompts"]["positive_prompt_override_applied"] is False
+    assert parsed["debug"]["prompts"]["positive_prompt_source"] == "node"
 
 
 @pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
