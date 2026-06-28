@@ -98,6 +98,8 @@ The prompt builder's JSON output is KJ-compatible: compact output uses the same 
 
 Encrypted workflows require the same local privacy key to decrypt. If the key is missing or different, the node keeps a locked/error state instead of restoring private text as clear text.
 
+Privacy mode protects prompt text and prompt-builder state from being stored as plaintext in workflow JSON. It does not protect against clients or processes that can reach the ComfyUI server and ask its local privacy routes to decrypt with the local key.
+
 All settings nodes expose `attention_mode` (`auto`, `off`, `sage`, `sage3`, `flash`, `xformers`, `pytorch`, `split`, `sub_quad`), `torch_compile_mode` (`auto`, `off`, `on`), `torch_compile_backend` (`inductor`, `cudagraphs`), and `performance_apply_timing` (`after_loras`, `before_loras`). `auto` attention selects the best installed compatible backend, `off` leaves ComfyUI defaults untouched, and `after_loras` applies attention/compile patches to the final LoRA-patched model.
 
 Krea 2 additionally exposes `fp16_accumulation_enabled`, matching the provided workflow's torch matmul setting behavior when the runtime supports ComfyUI model callbacks.

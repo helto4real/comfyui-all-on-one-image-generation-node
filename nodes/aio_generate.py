@@ -14,6 +14,7 @@ try:
         SIZE_MODE_ASPECT_RATIO,
         SIZE_MODE_IMAGE_1,
         SIZE_MODES,
+        image_tensor_dimensions,
         resolve_dimensions_from_controls,
     )
     from ..services.progress import ProgressReporter
@@ -44,6 +45,7 @@ except ImportError:  # pragma: no cover - direct test imports
         SIZE_MODE_ASPECT_RATIO,
         SIZE_MODE_IMAGE_1,
         SIZE_MODES,
+        image_tensor_dimensions,
         resolve_dimensions_from_controls,
     )
     from services.progress import ProgressReporter
@@ -67,12 +69,6 @@ except ImportError:  # pragma: no cover - direct test imports
 
 
 DEFAULT_PROMPT = "A luminous studio portrait, crisp details, natural color, soft light"
-PID_LATENT_OUTPUT_INDEX = 6
-PID_SIGMA_OUTPUT_INDEX = 7
-INPAINT_SOURCE_OUTPUT_INDEX = 10
-INPAINT_SAMPLE_OUTPUT_INDEX = 11
-INPAINT_MASK_OUTPUT_INDEX = 12
-IMAGE_ORIGINAL_OUTPUT_INDEX = 13
 AIO_GENERATE_SERIALIZED_WIDGET_NAMES = (
     "model_type",
     "diffusion_model",
@@ -213,13 +209,6 @@ def _workflow_widget_value(extra_pnginfo: Any, unique_id: str | None, widget_nam
     if index < 0 or index >= len(values):
         return None
     return values[index]
-
-
-def _image_dimensions(image: Any) -> tuple[int, int] | None:
-    shape = getattr(image, "shape", None)
-    if shape is None or len(shape) < 3:
-        return None
-    return int(shape[2]), int(shape[1])
 
 
 def _shape_info(value: Any) -> list[Any] | None:
@@ -1048,7 +1037,7 @@ class AIOImageGenerate:
         progress.done()
         output_width = effective_width
         output_height = effective_height
-        image_dimensions = _image_dimensions(image)
+        image_dimensions = image_tensor_dimensions(image)
         if image_dimensions is not None:
             output_width, output_height = image_dimensions
         elif second_pass_info.get("final_size"):
@@ -1109,3 +1098,15 @@ class AIOImageGenerate:
             inpaint_previews[pipeline.INPAINT_PREVIEW_MASK],
             image_original,
         )
+
+
+def _return_index(name: str) -> int:
+    return AIOImageGenerate.RETURN_NAMES.index(name)
+
+
+PID_LATENT_OUTPUT_INDEX = _return_index("pid_latent")
+PID_SIGMA_OUTPUT_INDEX = _return_index("pid_sigma")
+INPAINT_SOURCE_OUTPUT_INDEX = _return_index("inpaint_source")
+INPAINT_SAMPLE_OUTPUT_INDEX = _return_index("inpaint_sample")
+INPAINT_MASK_OUTPUT_INDEX = _return_index("inpaint_mask")
+IMAGE_ORIGINAL_OUTPUT_INDEX = _return_index("image_original")

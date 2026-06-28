@@ -1,4 +1,8 @@
-from services.dimensions import infer_nearest_aspect_ratio, resolve_dimensions_from_controls
+from services.dimensions import (
+    image_tensor_dimensions,
+    infer_nearest_aspect_ratio,
+    resolve_dimensions_from_controls,
+)
 
 
 class FakeImage:
@@ -16,6 +20,11 @@ def test_dimensions_resolve_square_aspect_ratio():
     )
 
     assert (dimensions.width, dimensions.height) == (1024, 1024)
+
+
+def test_image_tensor_dimensions_reads_comfy_image_shape():
+    assert image_tensor_dimensions(FakeImage()) == (512, 768)
+    assert image_tensor_dimensions(object()) is None
 
 
 def test_dimensions_resolve_landscape_aspect_ratio():

@@ -12,7 +12,7 @@ from typing import Any
 
 try:
     from ..loaders import gguf_backend, safetensors_backend
-    from .dimensions import parse_multiple_value, round_to_multiple
+    from .dimensions import image_tensor_dimensions, parse_multiple_value, round_to_multiple
     from . import inpaint as inpaint_service
     from . import krea2_enhancer
     from .lora_application import apply_lora_config
@@ -26,7 +26,7 @@ try:
     )
 except ImportError:  # pragma: no cover - direct test imports
     from loaders import gguf_backend, safetensors_backend
-    from services.dimensions import parse_multiple_value, round_to_multiple
+    from services.dimensions import image_tensor_dimensions, parse_multiple_value, round_to_multiple
     from services import inpaint as inpaint_service
     from services import krea2_enhancer
     from services.lora_application import apply_lora_config
@@ -80,13 +80,6 @@ def _node_output_first(value: Any) -> Any:
 def _phase(progress: Any, message: str) -> None:
     if progress is not None:
         progress.phase(message)
-
-
-def _image_dimensions(image: Any) -> tuple[int, int] | None:
-    shape = getattr(image, "shape", None)
-    if shape is None or len(shape) < 3:
-        return None
-    return int(shape[2]), int(shape[1])
 
 
 def _size_info(width_height: tuple[int, int] | None) -> dict[str, int] | None:
@@ -429,7 +422,7 @@ def upscale_image_by_ratio(
 ) -> tuple[Any, int, int]:
     import comfy.utils  # type: ignore
 
-    dimensions = _image_dimensions(image)
+    dimensions = image_tensor_dimensions(image)
     if dimensions is None:
         raise ValueError("second pass source image must be an IMAGE tensor with shape [B, H, W, C].")
     source_width, source_height = dimensions
@@ -463,7 +456,7 @@ def apply_second_sampler_pass(
     if not second_pass["enabled"]:
         return image, latent, loaded_vae
 
-    first_pass_size = _image_dimensions(image)
+    first_pass_size = image_tensor_dimensions(image)
     if image is None or first_pass_size is None:
         out = latent.copy()
         out[SECOND_PASS_INFO_KEY] = second_pass_status(

@@ -2169,6 +2169,13 @@ def test_flux2_pipeline_passes_inpaint_denoise_to_ksampler_scheduler(monkeypatch
         "apply_inpaint_model_conditioning",
         lambda **kwargs: ("inpaint_positive", "inpaint_negative", {"samples": "inpaint", "noise_mask": "mask"}),
     )
+    monkeypatch.setattr(
+        pipeline.inpaint_service,
+        "resolve_denoise_schedule_steps",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("non-auto schedulers should delegate denoise schedule expansion to ComfyUI KSampler")
+        ),
+    )
 
     def fake_sample(**kwargs):
         calls["sample"] = kwargs

@@ -8,9 +8,19 @@ from dataclasses import dataclass
 from typing import Any
 
 try:
-    from .dimensions import ResolvedDimensions, infer_nearest_aspect_ratio, round_to_multiple
+    from .dimensions import (
+        ResolvedDimensions,
+        image_tensor_dimensions,
+        infer_nearest_aspect_ratio,
+        round_to_multiple,
+    )
 except ImportError:  # pragma: no cover - direct test imports
-    from services.dimensions import ResolvedDimensions, infer_nearest_aspect_ratio, round_to_multiple
+    from services.dimensions import (
+        ResolvedDimensions,
+        image_tensor_dimensions,
+        infer_nearest_aspect_ratio,
+        round_to_multiple,
+    )
 
 
 INPAINT_CONFIG_VERSION = 1
@@ -221,17 +231,17 @@ def resolve_denoise_schedule_steps(steps: int, denoise: float) -> int:
 
 def inpaint_image_dimensions(config: Mapping[str, Any]) -> tuple[int, int]:
     image = config["image"]
-    shape = getattr(image, "shape", None)
-    if shape is None or len(shape) < 3:
+    dimensions = image_tensor_dimensions(image)
+    if dimensions is None:
         raise ValueError("inpaint image must be an IMAGE tensor with shape [B, H, W, C].")
-    return int(shape[2]), int(shape[1])
+    return dimensions
 
 
 def _image_dimensions(image: Any, *, fallback_width: int, fallback_height: int) -> tuple[int, int]:
-    shape = getattr(image, "shape", None)
-    if shape is None or len(shape) < 3:
+    dimensions = image_tensor_dimensions(image)
+    if dimensions is None:
         return int(fallback_width), int(fallback_height)
-    return int(shape[2]), int(shape[1])
+    return dimensions
 
 
 def resolve_dimensions_from_inpaint_config(

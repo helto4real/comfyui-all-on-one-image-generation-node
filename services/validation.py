@@ -7,6 +7,7 @@ from typing import Any
 
 from .dimensions import parse_multiple_value
 from .model_resolution import infer_model_format
+from .profiles import ModelProfile
 from .registry import list_model_types
 
 

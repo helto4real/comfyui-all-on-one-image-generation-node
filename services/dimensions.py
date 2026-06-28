@@ -27,6 +27,13 @@ class ResolvedDimensions:
     multiple_value: str
 
 
+def image_tensor_dimensions(image: object) -> tuple[int, int] | None:
+    shape = getattr(image, "shape", None)
+    if shape is None or len(shape) < 3:
+        return None
+    return int(shape[2]), int(shape[1])
+
+
 def round_to_multiple(value: float, multiple: int | None) -> int:
     if multiple is None:
         return max(1, int(round(value)))
