@@ -162,7 +162,7 @@ def test_pipeline_applies_loras_before_prompt_encoding(monkeypatch):
         cfg=1.0,
         sampler="auto",
         scheduler="auto",
-        settings={},
+        settings={"use_zero_negative_conditioning": False},
         lora_config={"lora_1": {"on": True, "lora": "style", "strength": 1}},
     )
 
@@ -268,7 +268,7 @@ def test_z_image_batch_samples_per_seed_with_loaded_models_reused(monkeypatch):
         cfg=1.0,
         sampler="auto",
         scheduler="auto",
-        settings={},
+        settings={"use_zero_negative_conditioning": False},
         batch_count=3,
         lora_config={"lora_1": {"on": True, "lora": "style", "strength": 1}},
         second_pass_config={"enabled": True},
@@ -331,7 +331,11 @@ def test_pipeline_applies_performance_after_loras_by_default(monkeypatch):
         cfg=1.0,
         sampler="auto",
         scheduler="auto",
-        settings={"attention_mode": "off", "performance_apply_timing": "after_loras"},
+        settings={
+            "attention_mode": "off",
+            "performance_apply_timing": "after_loras",
+            "use_zero_negative_conditioning": False,
+        },
         lora_config={"loras": [{"enabled": True, "name": "style"}]},
     )
 
@@ -384,7 +388,11 @@ def test_pipeline_can_apply_performance_before_loras(monkeypatch):
         cfg=1.0,
         sampler="auto",
         scheduler="auto",
-        settings={"attention_mode": "off", "performance_apply_timing": "before_loras"},
+        settings={
+            "attention_mode": "off",
+            "performance_apply_timing": "before_loras",
+            "use_zero_negative_conditioning": False,
+        },
         lora_config={"loras": [{"enabled": True, "name": "style"}]},
     )
 
@@ -445,7 +453,7 @@ def test_z_image_pipeline_uses_connected_post_lora_model_and_clip(monkeypatch):
         cfg=1.0,
         sampler="auto",
         scheduler="auto",
-        settings={},
+        settings={"use_zero_negative_conditioning": False},
         lora_config={"loras": [{"enabled": True, "name": "style"}]},
         loaded_model="post_lora_patched_model",
         loaded_clip="post_lora_clip",
@@ -500,7 +508,7 @@ def test_z_image_pipeline_skips_vae_when_image_decode_disabled(monkeypatch):
         cfg=1.0,
         sampler="auto",
         scheduler="auto",
-        settings={},
+        settings={"use_zero_negative_conditioning": False},
         decode_image=False,
     )
 
@@ -508,6 +516,47 @@ def test_z_image_pipeline_skips_vae_when_image_decode_disabled(monkeypatch):
     assert latent == {"samples": "sampled"}
     assert positive == "conditioning:prompt"
     assert negative == "conditioning:"
+    assert loaded_vae is None
+
+
+def test_z_image_pipeline_uses_zero_negative_conditioning_by_default(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model", "clip", []))
+    monkeypatch.setattr(pipeline, "encode_z_image_prompt", lambda **kwargs: f"conditioning:{kwargs['prompt']}")
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: f"zeroed:{conditioning}")
+    monkeypatch.setattr(pipeline, "make_empty_z_image_latent", lambda **kwargs: {"samples": "empty"})
+
+    def fake_sample(**kwargs):
+        captured["sample"] = kwargs
+        return {"samples": "sampled"}
+
+    monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", fake_sample)
+
+    image, latent, positive, negative, loaded_vae = pipeline.generate_z_image_turbo_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="avoid blur",
+        width=1024,
+        height=1024,
+        seed=0,
+        steps=8,
+        cfg=1.0,
+        sampler="auto",
+        scheduler="auto",
+        settings={},
+        decode_image=False,
+    )
+
+    assert image is None
+    assert latent == {"samples": "sampled"}
+    assert positive == "conditioning:prompt"
+    assert negative == "zeroed:conditioning:prompt"
+    assert captured["sample"]["negative"] == "zeroed:conditioning:prompt"
     assert loaded_vae is None
 
 
@@ -671,6 +720,59 @@ def test_krea2_pipeline_can_disable_enhancer_and_decode(monkeypatch):
     assert latent == {"samples": "sampled"}
     assert positive == "positive"
     assert negative == "zeroed_negative"
+    assert loaded_vae is None
+
+
+def test_krea2_pipeline_encodes_negative_prompt_when_zero_negative_disabled(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model", "clip", []))
+    monkeypatch.setattr(
+        pipeline,
+        "encode_krea2_prompt",
+        lambda **kwargs: f"conditioning:{kwargs['prompt']}",
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "zero_out_conditioning",
+        lambda conditioning: (_ for _ in ()).throw(AssertionError("zero_out_conditioning should not be called")),
+    )
+    monkeypatch.setattr(pipeline.krea2_enhancer, "apply_krea2_enhancer", lambda model, **kwargs: model)
+    monkeypatch.setattr(pipeline, "make_empty_krea2_latent", lambda **kwargs: {"samples": "empty"})
+
+    def fake_sample(**kwargs):
+        captured["sample"] = kwargs
+        return {"samples": "sampled"}
+
+    monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", fake_sample)
+
+    image, latent, positive, negative, loaded_vae = pipeline.generate_krea2_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="avoid blur",
+        width=1344,
+        height=2048,
+        seed=0,
+        steps=8,
+        cfg=1.0,
+        sampler="er_sde",
+        scheduler="simple",
+        settings={
+            "enhancer_enabled": False,
+            "use_zero_negative_conditioning": False,
+        },
+        decode_image=False,
+    )
+
+    assert image is None
+    assert latent == {"samples": "sampled"}
+    assert positive == "conditioning:prompt"
+    assert negative == "conditioning:avoid blur"
+    assert captured["sample"]["negative"] == "conditioning:avoid blur"
     assert loaded_vae is None
 
 
@@ -1008,6 +1110,62 @@ def test_ideogram4_pipeline_uses_dual_model_flow_and_ideogram_sigmas(monkeypatch
     assert calls["sample"]["guider"] == "guider"
     assert calls["sample"]["sampler"] == "euler"
     assert calls["sample"]["sigmas"] == "ideogram_sigmas"
+
+
+def test_ideogram4_pipeline_encodes_negative_prompt_when_zero_negative_disabled(monkeypatch):
+    calls = {}
+
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_model_sampling_aura", lambda **kwargs: kwargs["model"])
+    monkeypatch.setattr(pipeline, "apply_lora_config_model_only", lambda **kwargs: (kwargs["model"], []))
+    monkeypatch.setattr(
+        pipeline,
+        "encode_ideogram4_prompt",
+        lambda **kwargs: f"conditioning:{kwargs['prompt']}",
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "zero_out_conditioning",
+        lambda conditioning: (_ for _ in ()).throw(AssertionError("zero_out_conditioning should not be called")),
+    )
+
+    def fake_guider(**kwargs):
+        calls["guider"] = kwargs
+        return "guider"
+
+    monkeypatch.setattr(pipeline, "build_dual_model_guider", fake_guider)
+    monkeypatch.setattr(pipeline, "ideogram4_sigmas", lambda **kwargs: "sigmas")
+    monkeypatch.setattr(pipeline, "sample_with_custom_guider", lambda **kwargs: {"samples": "sampled"})
+    monkeypatch.setattr(pipeline, "make_empty_ideogram4_latent", lambda **kwargs: {"samples": "empty"})
+
+    image, latent, positive, negative, loaded_vae = pipeline.generate_ideogram4_t2i(
+        diffusion_model="model.safetensors",
+        unconditional_model="",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="avoid blur",
+        width=1024,
+        height=1024,
+        seed=0,
+        steps=20,
+        sampler="euler",
+        scheduler="ideogram4",
+        settings={
+            "run_unconditional_model": False,
+            "cfg_override_enabled": False,
+            "use_zero_negative_conditioning": False,
+        },
+        decode_image=False,
+    )
+
+    assert image is None
+    assert latent == {"samples": "sampled"}
+    assert positive == "conditioning:prompt"
+    assert negative == "conditioning:avoid blur"
+    assert loaded_vae is None
+    assert calls["guider"]["negative"] == "conditioning:avoid blur"
 
 
 def test_ideogram4_pipeline_uses_crop_inpaint_latent_and_stitches_output(monkeypatch):
@@ -1541,7 +1699,7 @@ def test_z_image_pipeline_returns_vae_without_decoding_when_requested(monkeypatc
         cfg=1.0,
         sampler="auto",
         scheduler="auto",
-        settings={},
+        settings={"use_zero_negative_conditioning": False},
         decode_image=False,
         return_vae=True,
     )
@@ -1605,7 +1763,7 @@ def test_flux2_pipeline_uses_connected_post_lora_model_and_clip(monkeypatch):
         cfg=1.0,
         sampler="auto",
         scheduler="auto",
-        settings={},
+        settings={"use_zero_negative_conditioning": False},
         loaded_model="post_lora_patched_model",
         loaded_clip="post_lora_clip",
     )
@@ -1613,9 +1771,10 @@ def test_flux2_pipeline_uses_connected_post_lora_model_and_clip(monkeypatch):
     assert image == "image"
     assert latent == {"samples": "sampled"}
     assert positive == "conditioning"
-    assert negative == "zeroed"
+    assert negative == "conditioning"
     assert loaded_vae == "vae"
-    assert events[:2] == [
+    assert events[:3] == [
+        "encode:post_lora_clip",
         "encode:post_lora_clip",
         "load_vae",
     ]
@@ -1655,14 +1814,14 @@ def test_flux2_pipeline_skips_vae_when_image_decode_disabled_without_references(
         cfg=1.0,
         sampler="auto",
         scheduler="auto",
-        settings={},
+        settings={"use_zero_negative_conditioning": False},
         decode_image=False,
     )
 
     assert image is None
     assert latent == {"samples": "sampled"}
     assert positive == "prompt"
-    assert negative == "zeroed:prompt"
+    assert negative == "negative"
     assert loaded_vae is None
 
 
@@ -1761,7 +1920,7 @@ def test_flux2_pipeline_uses_inpaint_latent_and_final_blend(monkeypatch):
         cfg=1.0,
         sampler="auto",
         scheduler="auto",
-        settings={},
+        settings={"use_zero_negative_conditioning": False},
         inpaint_config={
             "image": "image",
             "mask": "mask",
@@ -1853,7 +2012,7 @@ def test_flux2_pipeline_applies_color_match_before_stitch(monkeypatch):
         cfg=1.0,
         sampler="auto",
         scheduler="auto",
-        settings={},
+        settings={"use_zero_negative_conditioning": False},
         inpaint_config={
             "image": "image",
             "mask": "mask",
@@ -2179,7 +2338,7 @@ def test_flux2_pipeline_skips_decode_and_blend_for_latent_only_inpaint(monkeypat
         cfg=1.0,
         sampler="auto",
         scheduler="auto",
-        settings={},
+        settings={"use_zero_negative_conditioning": False},
         inpaint_config={"image": "image", "mask": "mask", "denoise": 1.0},
         decode_image=False,
     )
@@ -2247,7 +2406,7 @@ def test_flux2_pipeline_decodes_inpaint_sample_preview_without_final_image(monke
         cfg=1.0,
         sampler="auto",
         scheduler="auto",
-        settings={},
+        settings={"use_zero_negative_conditioning": False},
         inpaint_config={"image": "image", "mask": "mask", "denoise": 1.0},
         inpaint_previews=previews,
         decode_image=False,
@@ -2312,7 +2471,7 @@ def test_flux2_pipeline_passes_inpaint_denoise_to_ksampler_scheduler(monkeypatch
         cfg=1.0,
         sampler="euler",
         scheduler="normal",
-        settings={},
+        settings={"use_zero_negative_conditioning": False},
         inpaint_config={"image": "image", "mask": "mask", "denoise": 0.35, "steps": 3},
         decode_image=False,
     )
@@ -2395,7 +2554,7 @@ def test_flux2_pipeline_downscales_no_crop_inpaint_before_sampling(monkeypatch):
         cfg=1.0,
         sampler="euler",
         scheduler="normal",
-        settings={},
+        settings={"use_zero_negative_conditioning": False},
         inpaint_config={
             "image": image,
             "mask": mask,
@@ -2563,7 +2722,7 @@ def test_flux2_pipeline_loads_vae_for_references_when_image_decode_disabled(monk
         cfg=1.5,
         sampler="auto",
         scheduler="normal",
-        settings={},
+        settings={"use_zero_negative_conditioning": False},
         reference_inputs=SimpleNamespace(images=("first",)),
         decode_image=False,
     )
@@ -2639,7 +2798,7 @@ def test_flux2_pipeline_shares_vae_for_references_and_inpaint(monkeypatch):
         cfg=1.5,
         sampler="auto",
         scheduler="auto",
-        settings={},
+        settings={"use_zero_negative_conditioning": False},
         reference_inputs=SimpleNamespace(images=("first",)),
         inpaint_config={"image": "image", "mask": "mask", "denoise": 1.0},
         decode_image=False,
@@ -2709,7 +2868,7 @@ def test_pipeline_applies_loras_when_only_model_is_connected(monkeypatch):
         cfg=1.0,
         sampler="auto",
         scheduler="auto",
-        settings={},
+        settings={"use_zero_negative_conditioning": False},
         lora_config={"loras": [{"enabled": True, "name": "style"}]},
         loaded_model="patched_model",
     )
@@ -2824,7 +2983,7 @@ def test_flux2_pipeline_zeroes_negative_conditioning_after_references_when_cfg_o
     assert events.index("zero_out:positive+refs") < events.index("sample")
 
 
-def test_flux2_pipeline_keeps_negative_prompt_conditioning_when_cfg_not_one(monkeypatch):
+def test_flux2_pipeline_keeps_negative_prompt_conditioning_when_zero_negative_disabled(monkeypatch):
     events = []
     captured = {}
 
@@ -2871,7 +3030,7 @@ def test_flux2_pipeline_keeps_negative_prompt_conditioning_when_cfg_not_one(monk
         return "positive+refs", "negative+refs"
 
     def fail_zero_out(conditioning):
-        raise AssertionError("zero_out_conditioning should not be called when cfg is not 1.0")
+        raise AssertionError("zero_out_conditioning should not be called when disabled")
 
     def fake_sample(**kwargs):
         events.append("sample")
@@ -2900,10 +3059,10 @@ def test_flux2_pipeline_keeps_negative_prompt_conditioning_when_cfg_not_one(monk
         height=1024,
         seed=0,
         steps=4,
-        cfg=1.5,
+        cfg=1.0,
         sampler="auto",
         scheduler="normal",
-        settings={},
+        settings={"use_zero_negative_conditioning": False},
         reference_inputs=reference_inputs,
     )
 
@@ -3035,7 +3194,7 @@ def test_z_image_pipeline_second_pass_reuses_ksampler_without_final_decode(monke
         cfg=1.0,
         sampler="euler",
         scheduler="normal",
-        settings={},
+        settings={"use_zero_negative_conditioning": False},
         second_pass_config={"enabled": True, "decode_image": False, "return_image_original": True},
     )
 

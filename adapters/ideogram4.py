@@ -87,10 +87,15 @@ class Ideogram4Adapter(BaseImageAdapter):
             model_names.append(unconditional_model)
         if any(infer_model_format(name) == "gguf" for name in model_names):
             raise ValueError("Ideogram 4 does not currently support GGUF model files in this adapter.")
-        warning = validation.validate_negative_prompt_policy(
-            profile,
-            negative_prompt,
-            ignored_by_default=True,
+        use_zero_negative_conditioning = bool(settings.get("use_zero_negative_conditioning", True))
+        warning = (
+            validation.validate_negative_prompt_policy(
+                profile,
+                negative_prompt,
+                ignored_by_default=True,
+            )
+            if use_zero_negative_conditioning
+            else None
         )
         validation.validate_gguf_available_for_models(
             gguf_backend.is_available(), *model_names
@@ -107,6 +112,7 @@ class Ideogram4Adapter(BaseImageAdapter):
             text_encoder=kwargs["text_encoder"],
             vae=kwargs["vae"],
             positive_prompt=kwargs["positive_prompt"],
+            negative_prompt=kwargs["negative_prompt"],
             width=kwargs["width"],
             height=kwargs["height"],
             seed=kwargs["seed"],

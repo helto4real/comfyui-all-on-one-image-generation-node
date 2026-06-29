@@ -76,6 +76,7 @@ AIO_GENERATE_SERIALIZED_WIDGET_NAMES = (
     "vae",
     "positive_prompt",
     "negative_prompt",
+    "use_zero_negative_conditioning",
     "privacy_mode",
     "size mode",
     "max side",
@@ -708,6 +709,13 @@ class AIOImageGenerate:
                         "tooltip": "Prompt describing content to avoid. Some model families ignore this input by default.",
                     },
                 ),
+                "use_zero_negative_conditioning": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "Use zero negative conditioning. Disable to encode and use the negative prompt as real sampler negative conditioning.",
+                    },
+                ),
                 "privacy_mode": (
                     "BOOLEAN",
                     {
@@ -881,6 +889,7 @@ class AIOImageGenerate:
         vae: str,
         positive_prompt: str,
         negative_prompt: str,
+        use_zero_negative_conditioning: bool = True,
         width: int | None = None,
         height: int | None = None,
         seed: int = 0,
@@ -1088,6 +1097,7 @@ class AIOImageGenerate:
             sampler=sampler,
             scheduler=scheduler,
         )
+        settings["use_zero_negative_conditioning"] = bool(use_zero_negative_conditioning)
         settings["max_side"] = dimensions.max_side
         settings["aspect_ratio"] = dimensions.aspect_ratio
         settings["size_mode"] = dimensions.size_mode
@@ -1164,6 +1174,7 @@ class AIOImageGenerate:
                 "resolved_negative_prompt": resolved_negative_prompt,
                 "effective_positive_prompt": effective_positive_prompt,
                 "effective_negative_prompt": resolved_negative_prompt,
+                "use_zero_negative_conditioning": bool(use_zero_negative_conditioning),
                 "positive_prompt_override_present": bool(positive_prompt_override),
                 "positive_prompt_override_applied": bool(positive_prompt_override_applies),
                 "positive_prompt_source": settings.get("positive_prompt_source", "node")

@@ -487,6 +487,10 @@ def zero_out_conditioning(conditioning: Any):
     return nodes.ConditioningZeroOut().zero_out(conditioning)[0]
 
 
+def use_zero_negative_conditioning(settings: dict[str, Any]) -> bool:
+    return bool(settings.get("use_zero_negative_conditioning", True))
+
+
 def scale_image_to_total_pixels(
     *,
     image: Any,
@@ -1090,6 +1094,7 @@ def generate_ideogram4_t2i(
     text_encoder: str,
     vae: str,
     positive_prompt: str,
+    negative_prompt: str = "",
     width: int,
     height: int,
     seed: int,
@@ -1161,7 +1166,10 @@ def generate_ideogram4_t2i(
         )
     _phase(progress, "encoding prompts")
     positive = encode_ideogram4_prompt(clip=clip, prompt=positive_prompt)
-    negative = zero_out_conditioning(positive)
+    if use_zero_negative_conditioning(settings):
+        negative = zero_out_conditioning(positive)
+    else:
+        negative = encode_ideogram4_prompt(clip=clip, prompt=negative_prompt or "")
     loaded_vae = None
     if inpaint_config is not None:
         _phase(progress, "loading vae")
@@ -1336,6 +1344,7 @@ def generate_z_image_turbo_t2i(
     text_encoder: str,
     vae: str,
     positive_prompt: str,
+    negative_prompt: str = "",
     width: int,
     height: int,
     seed: int,
@@ -1380,7 +1389,10 @@ def generate_z_image_turbo_t2i(
         model = _apply_model_performance_if_configured(model=model, settings=settings, progress=progress)
     _phase(progress, "encoding prompts")
     positive = encode_z_image_prompt(clip=clip, prompt=positive_prompt)
-    negative = encode_z_image_prompt(clip=clip, prompt="")
+    if use_zero_negative_conditioning(settings):
+        negative = zero_out_conditioning(positive)
+    else:
+        negative = encode_z_image_prompt(clip=clip, prompt=negative_prompt or "")
     batch_seeds = incrementing_batch_seeds(seed, batch_count)
     images: list[Any] = []
     latents: list[Any] = []
@@ -1464,6 +1476,7 @@ def generate_krea2_t2i(
     text_encoder: str,
     vae: str,
     positive_prompt: str,
+    negative_prompt: str = "",
     width: int,
     height: int,
     seed: int,
@@ -1527,7 +1540,10 @@ def generate_krea2_t2i(
     )
     _phase(progress, "encoding prompts")
     positive = encode_krea2_prompt(clip=clip, prompt=positive_prompt)
-    negative = zero_out_conditioning(positive)
+    if use_zero_negative_conditioning(settings):
+        negative = zero_out_conditioning(positive)
+    else:
+        negative = encode_krea2_prompt(clip=clip, prompt=negative_prompt or "")
     loaded_vae = None
     if inpaint_config is not None:
         _phase(progress, "loading vae")
@@ -1724,7 +1740,7 @@ def generate_flux2_klein_t2i(
         )
     _phase(progress, "encoding prompts")
     guidance = float(settings.get("guidance", settings.get("cfg", 1.0)))
-    zero_negative_conditioning = math.isclose(float(cfg), 1.0)
+    zero_negative_conditioning = use_zero_negative_conditioning(settings)
     positive = encode_flux2_prompt(clip=clip, prompt=positive_prompt, guidance=guidance)
     negative = None
     if not zero_negative_conditioning:

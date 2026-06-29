@@ -54,6 +54,7 @@ def test_z_image_adapter_calls_real_generation_pipeline(monkeypatch):
     assert negative == "negative"
     assert calls["steps"] == 8
     assert calls["positive_prompt"] == "prompt"
+    assert calls["negative_prompt"] == "ignored"
     assert calls["loaded_model"] == "patched_model"
     assert calls["loaded_clip"] == "patched_clip"
     assert calls["decode_image"] is True
@@ -108,6 +109,7 @@ def test_krea2_adapter_calls_real_generation_pipeline(monkeypatch):
     assert calls["sampler"] == "er_sde"
     assert calls["scheduler"] == "simple"
     assert calls["positive_prompt"] == "prompt"
+    assert calls["negative_prompt"] == "ignored"
     assert calls["loaded_model"] == "patched_model"
     assert calls["loaded_clip"] == "patched_clip"
     assert calls["inpaint_config"] is inpaint_config
@@ -618,6 +620,20 @@ def test_ideogram4_negative_prompt_returns_warning():
         "negative_prompt was ignored."
     ]
 
+    assert adapter.validate_inputs(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="used",
+        width=1024,
+        height=1024,
+        settings={
+            "unconditional_model": "uncond.safetensors",
+            "use_zero_negative_conditioning": False,
+        },
+    ) == []
+
 
 def test_krea2_validation_rejects_unsupported_inputs_and_warns_for_negative_prompt(monkeypatch):
     adapter = Krea2Adapter()
@@ -651,6 +667,13 @@ def test_krea2_validation_rejects_unsupported_inputs_and_warns_for_negative_prom
         "Krea 2 profile does not use negative prompts by default; "
         "negative_prompt was ignored."
     ]
+    assert adapter.validate_inputs(
+        **{
+            **base,
+            "negative_prompt": "used",
+            "settings": {"family": "krea2", "use_zero_negative_conditioning": False},
+        }
+    ) == []
 
 
 def test_ideogram4_resolve_settings_uses_presets_and_workflow_scheduler():
@@ -705,6 +728,23 @@ def test_flux2_allows_exact_dimensions_when_multiple_value_is_none(monkeypatch):
         width=1025,
         height=1024,
         settings={"multiple_value": "none"},
+    )
+
+    assert warnings == []
+
+
+def test_z_image_validation_accepts_negative_prompt_when_zero_negative_disabled():
+    adapter = ZImageTurboAdapter()
+
+    warnings = adapter.validate_inputs(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="used",
+        width=1024,
+        height=1024,
+        settings={"family": "z_image_turbo", "use_zero_negative_conditioning": False},
     )
 
     assert warnings == []

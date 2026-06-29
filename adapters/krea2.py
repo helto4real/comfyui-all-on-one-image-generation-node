@@ -59,10 +59,15 @@ class Krea2Adapter(BaseImageAdapter):
             mask=mask,
         )
         validation.validate_inpaint_config(profile, inpaint_config)
-        warning = validation.validate_negative_prompt_policy(
-            profile,
-            negative_prompt,
-            ignored_by_default=True,
+        use_zero_negative_conditioning = bool(settings.get("use_zero_negative_conditioning", True))
+        warning = (
+            validation.validate_negative_prompt_policy(
+                profile,
+                negative_prompt,
+                ignored_by_default=True,
+            )
+            if use_zero_negative_conditioning
+            else None
         )
         validation.validate_gguf_available_for_models(
             gguf_backend.is_available(), diffusion_model, text_encoder, vae
@@ -78,6 +83,7 @@ class Krea2Adapter(BaseImageAdapter):
             text_encoder=kwargs["text_encoder"],
             vae=kwargs["vae"],
             positive_prompt=kwargs["positive_prompt"],
+            negative_prompt=kwargs["negative_prompt"],
             width=kwargs["width"],
             height=kwargs["height"],
             seed=kwargs["seed"],

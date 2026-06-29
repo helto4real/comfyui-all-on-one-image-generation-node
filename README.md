@@ -22,10 +22,12 @@ All nodes appear under `AIO/Image`.
 
 ## Supported Model Families
 
-- `z_image_turbo`: text-to-image generation, defaults to 8 steps and CFG 1.0. Negative prompts are ignored by default and reported in `run_info.warnings`.
+- `z_image_turbo`: text-to-image generation, defaults to 8 steps and CFG 1.0.
 - `flux2_klein_9b`: text-to-image, reference-image, and AIO Inpaint generation, distilled defaults to 4 steps and CFG 1.0. Reference mode is inferred from how many reference images are connected. When `ComfyUI-Inpaint-CropAndStitch` is installed, Flux inpaint samples a cropped working area and stitches the decoded result back to the original canvas size.
-- `ideogram4`: local open-weight Ideogram 4 text-to-image generation, defaults to the official 20-step Ideogram scheduler preset with dual-model CFG 7.0. Negative prompts are ignored by default and reported in `run_info.warnings`.
-- `krea2`: local Krea 2 text-to-image generation, defaults to the provided workflow's 8-step `er_sde` / `simple` sampler path, CFG 1.0, and 1344x2048 canvas. Negative prompts are ignored by default through zeroed positive conditioning.
+- `ideogram4`: local open-weight Ideogram 4 text-to-image generation, defaults to the official 20-step Ideogram scheduler preset with dual-model CFG 7.0.
+- `krea2`: local Krea 2 text-to-image generation, defaults to the provided workflow's 8-step `er_sde` / `simple` sampler path, CFG 1.0, and 1344x2048 canvas.
+
+`AIO Image Generate` defaults `use_zero_negative_conditioning` to enabled. When enabled, every model uses zeroed positive conditioning for sampler negative conditioning and non-empty negative prompts on models that previously ignored them are still reported in `run_info.warnings`. Disable it to encode and use the `negative_prompt` for every model, regardless of CFG value.
 
 ## Supported Formats
 
@@ -80,7 +82,7 @@ The node is not an output node, so it is safe for API-mode workflows.
 
 ## Settings Nodes
 
-`Z-Image Turbo Settings` returns an `AIO_MODEL_SETTINGS` dict with speed preset, forced steps, prompt enhancement, negative-prompt policy, precision policy, attention backend, Torch compile, and performance-apply timing.
+`Z-Image Turbo Settings` returns an `AIO_MODEL_SETTINGS` dict with speed preset, forced steps, prompt enhancement, legacy negative-prompt policy, precision policy, attention backend, Torch compile, and performance-apply timing.
 
 `FLUX.2 Klein 9B Settings` returns an `AIO_MODEL_SETTINGS` dict with distilled/base variant, guidance, reference strength, precision policy, memory policy, shift parameters, reference scaling controls, attention backend, Torch compile, and performance-apply timing. FLUX.2 Klein edit mode is inferred from connected reference image sockets.
 
@@ -184,9 +186,9 @@ These grouped sockets replace the old direct model/conditioning/VAE, PID, and in
 - Without the optional crop/stitch node pack, Flux falls back to full-frame masked sampling and final blend. The fallback path downsizes large full-frame inputs using `max_full_frame_megapixels` and `max_full_frame_side` from `AIO Inpaint` before VAE/sampling, so the fallback output may be smaller than the original source.
 - FLUX.2 Klein latent-only inpaint output returns the sampled working latent; decoded image output is the path that restores the original canvas size.
 - The legacy `mask` input is still only accepted alongside `image 1` and is not the inpaint contract.
-- Ideogram 4 supports text-to-image and `AIO Inpaint` in this adapter. With `ComfyUI-Inpaint-CropAndStitch` installed, Ideogram inpaint uses the shared crop/stitch controls by default, samples a clean-source latent with `noise_mask`, and stitches the decoded crop back to the original image size; `source_latent_mode=full image` instead encodes the whole bounded source frame and blends the decoded result directly. It does not use Flux `InpaintModelConditioning`. Reference images, legacy masks, negative prompts, and GGUF model files are not implemented for Ideogram 4.
+- Ideogram 4 supports text-to-image and `AIO Inpaint` in this adapter. With `ComfyUI-Inpaint-CropAndStitch` installed, Ideogram inpaint uses the shared crop/stitch controls by default, samples a clean-source latent with `noise_mask`, and stitches the decoded crop back to the original image size; `source_latent_mode=full image` instead encodes the whole bounded source frame and blends the decoded result directly. It does not use Flux `InpaintModelConditioning`. Reference images, legacy masks, and GGUF model files are not implemented for Ideogram 4.
 - Ideogram 4 output dimensions must be multiples of 16, between 256 and 2048 pixels per side, with aspect ratio no wider than 6:1.
-- Krea 2 supports text-to-image and `AIO Inpaint` in this adapter. The Krea inpaint path uses the shared crop/stitch controls by default, samples a clean-source latent with `noise_mask`, and stitches or blends the decoded result back into the source image; `source_latent_mode=full image` instead encodes the whole bounded source frame and blends the decoded result directly. It does not use Flux `InpaintModelConditioning`. Reference images, legacy masks, and negative prompts are not implemented for Krea 2. GGUF requires a compatible external backend and Krea-compatible GGUF model files.
+- Krea 2 supports text-to-image and `AIO Inpaint` in this adapter. The Krea inpaint path uses the shared crop/stitch controls by default, samples a clean-source latent with `noise_mask`, and stitches or blends the decoded result back into the source image; `source_latent_mode=full image` instead encodes the whole bounded source frame and blends the decoded result directly. It does not use Flux `InpaintModelConditioning`. Reference images and legacy masks are not implemented for Krea 2. GGUF requires a compatible external backend and Krea-compatible GGUF model files.
 - Krea 2 output dimensions must be multiples of 16.
 - Z-Image reference-image and mask paths are staged for a later adapter pass.
 

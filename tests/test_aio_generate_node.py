@@ -50,6 +50,7 @@ def test_main_node_exposes_core_inputs():
     assert "weight_format" not in required
     assert "positive_prompt" in required
     assert "negative_prompt" in required
+    assert required["use_zero_negative_conditioning"][1]["default"] is True
     assert required["privacy_mode"][1]["default"] is False
     assert "pid_enabled" not in required
     assert "pid_save_vram" not in required
@@ -73,6 +74,8 @@ def test_main_node_exposes_core_inputs():
     assert required["batch_count"][1]["max"] == 64
     assert required["batch_count"][1]["step"] == 1
     required_names = list(required)
+    assert required_names[required_names.index("use_zero_negative_conditioning") - 1] == "negative_prompt"
+    assert required_names[required_names.index("use_zero_negative_conditioning") + 1] == "privacy_mode"
     assert required_names[required_names.index("batch_count") - 1] == "seed"
     assert required_names[required_names.index("batch_count") + 1] == "steps"
     assert required["second_pass_enabled"][1]["default"] is False
@@ -95,6 +98,12 @@ def test_main_node_exposes_core_inputs():
         "second_pass_upscale_ratio",
         "second_pass_upscale_method",
     )
+    assert AIO_GENERATE_SERIALIZED_WIDGET_NAMES[
+        AIO_GENERATE_SERIALIZED_WIDGET_NAMES.index("use_zero_negative_conditioning") - 1
+    ] == "negative_prompt"
+    assert AIO_GENERATE_SERIALIZED_WIDGET_NAMES[
+        AIO_GENERATE_SERIALIZED_WIDGET_NAMES.index("use_zero_negative_conditioning") + 1
+    ] == "privacy_mode"
     assert AIO_GENERATE_SERIALIZED_WIDGET_NAMES[
         AIO_GENERATE_SERIALIZED_WIDGET_NAMES.index("batch_count") - 1
     ] == "seed"
@@ -235,13 +244,19 @@ def test_aio_frontend_inserts_missing_batch_count_after_seed_on_restore():
     source = (ROOT / "web/js/aio_image_generate.js").read_text(encoding="utf-8")
 
     assert 'const BATCH_COUNT_WIDGET_NAME = "batch_count";' in source
+    assert 'const USE_ZERO_NEGATIVE_CONDITIONING_WIDGET_NAME = "use_zero_negative_conditioning";' in source
+    assert "function valuesWithMissingZeroNegativeConditioningSlot" in source
+    assert "zeroNegativeIndex !== negativePromptIndex + 1" in source
+    assert "values.length !== count - 1 && values.length !== count - 2" in source
+    assert "normalized.splice(zeroNegativeIndex, 0, true)" in source
     assert "function valuesWithMissingBatchCountSlot" in source
     assert "batchIndex !== seedIndex + 1" in source
     assert "values.length !== count - 1" in source
     assert "normalized.splice(batchIndex, 0, 1)" in source
     assert "function normalizedAioGenerateWidgetValues" in source
     assert "valuesWithoutSeedButtonSlot(node, values)" in source
-    assert "valuesWithMissingBatchCountSlot(node, withoutSeedButton)" in source
+    assert "valuesWithMissingZeroNegativeConditioningSlot(node, withoutSeedButton)" in source
+    assert "valuesWithMissingBatchCountSlot(node, withZeroNegativeConditioning)" in source
     assert "configureInfoWithNormalizedGenerateWidgets" in source
 
 
@@ -449,8 +464,64 @@ def test_main_node_passes_lora_config_to_adapter(monkeypatch):
     assert captured["lora_config"]["loras"][0]["name"] == "style"
     assert captured["loaded_model"] == "patched_model"
     assert captured["loaded_clip"] == "patched_clip"
-    assert json.loads(run_info)["loras"][0]["name"] == "style"
+    parsed = json.loads(run_info)
+    assert captured["settings"]["use_zero_negative_conditioning"] is True
+    assert parsed["settings"]["use_zero_negative_conditioning"] is True
+    assert parsed["debug"]["prompts"]["use_zero_negative_conditioning"] is True
+    assert parsed["loras"][0]["name"] == "style"
     assert (output_width, output_height) == (1024, 1024)
+
+
+def test_main_node_can_disable_zero_negative_conditioning(monkeypatch):
+    from nodes import aio_generate
+
+    captured = {}
+
+    class FakeAdapter:
+        version = "test"
+
+        def resolve_settings(self, **kwargs):
+            return {
+                "width": kwargs["width"],
+                "height": kwargs["height"],
+                "steps": 8,
+                "cfg": 1.0,
+                "sampler": "auto",
+                "scheduler": "auto",
+            }
+
+        def validate_inputs(self, **kwargs):
+            captured["validated"] = kwargs
+            return []
+
+        def generate(self, **kwargs):
+            captured["generated"] = kwargs
+            return "image", {"samples": "latent"}, "positive", "negative", "vae"
+
+    monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
+
+    _image, _latent, run_info, *_ = AIOImageGenerate().generate(
+        model_type="z_image_turbo",
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="avoid blur",
+        use_zero_negative_conditioning=False,
+        width=1024,
+        height=1024,
+        seed=0,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+    )
+
+    parsed = json.loads(run_info)
+    assert captured["validated"]["settings"]["use_zero_negative_conditioning"] is False
+    assert captured["generated"]["settings"]["use_zero_negative_conditioning"] is False
+    assert parsed["settings"]["use_zero_negative_conditioning"] is False
+    assert parsed["debug"]["prompts"]["use_zero_negative_conditioning"] is False
 
 
 def test_main_node_passes_second_pass_config_and_strips_latent_sidecars(monkeypatch):

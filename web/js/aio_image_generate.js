@@ -33,6 +33,7 @@ const ADD_LORA_TOOLTIP = "Add a LoRA row filtered by the match field.";
 const FIXED_SEED_BUTTON_TOOLTIP = "Generate a new fixed random seed and write it into the seed field.";
 const PRIVACY_WIDGET_NAME = "privacy_mode";
 const PROMPT_WIDGET_NAMES = ["positive_prompt", "negative_prompt"];
+const USE_ZERO_NEGATIVE_CONDITIONING_WIDGET_NAME = "use_zero_negative_conditioning";
 const KREA_INPAINT_PROMPT_WIDGET_NAME = "inpaint_positive_prompt";
 const BATCH_COUNT_WIDGET_NAME = "batch_count";
 const PRIVACY_STYLE_ID = "aio-generate-privacy-style";
@@ -759,9 +760,33 @@ function valuesWithMissingBatchCountSlot(node, values) {
   return normalized;
 }
 
+function valuesWithMissingZeroNegativeConditioningSlot(node, values) {
+  if (!Array.isArray(values)) {
+    return values;
+  }
+  const negativePromptWidget = widgetByName(node, "negative_prompt");
+  const zeroNegativeWidget = widgetByName(node, USE_ZERO_NEGATIVE_CONDITIONING_WIDGET_NAME);
+  const negativePromptIndex = serializedWidgetIndex(node, negativePromptWidget);
+  const zeroNegativeIndex = serializedWidgetIndex(node, zeroNegativeWidget);
+  const count = serializedWidgetCount(node);
+  if (
+    !negativePromptWidget ||
+    !zeroNegativeWidget ||
+    negativePromptIndex < 0 ||
+    zeroNegativeIndex !== negativePromptIndex + 1 ||
+    (values.length !== count - 1 && values.length !== count - 2)
+  ) {
+    return values;
+  }
+  const normalized = values.slice();
+  normalized.splice(zeroNegativeIndex, 0, true);
+  return normalized;
+}
+
 function normalizedAioGenerateWidgetValues(node, values) {
   const withoutSeedButton = valuesWithoutSeedButtonSlot(node, values);
-  return valuesWithMissingBatchCountSlot(node, withoutSeedButton);
+  const withZeroNegativeConditioning = valuesWithMissingZeroNegativeConditioningSlot(node, withoutSeedButton);
+  return valuesWithMissingBatchCountSlot(node, withZeroNegativeConditioning);
 }
 
 function configureInfoWithNormalizedGenerateWidgets(node, info) {
