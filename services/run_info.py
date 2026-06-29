@@ -95,6 +95,7 @@ def build_run_info(
     privacy_mode: bool = False,
     debug: dict[str, Any] | None = None,
     second_pass: dict[str, Any] | None = None,
+    batch: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     settings_info = settings_info_from_settings(settings, privacy_mode=privacy_mode)
     info = {
@@ -109,6 +110,7 @@ def build_run_info(
         "width": width,
         "height": height,
         "seed": seed,
+        "batch": batch or {"count": 1, "seeds": [seed], "seed_mode": "increment"},
         "steps": steps,
         "cfg": cfg,
         "sampler": sampler,

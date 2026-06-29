@@ -75,10 +75,11 @@ class ProgressReporter:
         self.phases.append(message)
         if self.debug:
             print(f"[AIO Image Generate] {message}")
-        if message in SAMPLING_PHASE_WINDOWS:
-            self._active_sampling_window = SAMPLING_PHASE_WINDOWS[message]
+        phase_key = self._phase_key(message)
+        if phase_key in SAMPLING_PHASE_WINDOWS:
+            self._active_sampling_window = SAMPLING_PHASE_WINDOWS[phase_key]
         self._send_progress_text(message)
-        percent = PHASE_PERCENT_HINTS.get(message)
+        percent = PHASE_PERCENT_HINTS.get(phase_key)
         if percent is not None:
             self.update_percent(percent)
 
@@ -151,3 +152,10 @@ class ProgressReporter:
                 server.send_progress_text(message, str(self.node_id))
         except Exception:
             return
+
+    @staticmethod
+    def _phase_key(message: str) -> str:
+        for phase in sorted(PHASE_PERCENT_HINTS, key=len, reverse=True):
+            if message == phase or message.startswith(f"{phase} "):
+                return phase
+        return message

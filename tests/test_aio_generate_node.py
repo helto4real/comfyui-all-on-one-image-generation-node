@@ -7,6 +7,7 @@ from nodes.aio_generate import (
     AIOImageGenerate,
     AIO_GENERATE_SERIALIZED_WIDGET_NAMES,
     IMAGE_ORIGINAL_OUTPUT_INDEX,
+    _validate_batch_count,
     image_output_is_required,
     output_is_reachable,
     workflow_output_has_link,
@@ -66,6 +67,13 @@ def test_main_node_exposes_core_inputs():
     assert "aspect ratio" in required
     assert required["multiple value"][0] == ["none", "8", "16", "32"]
     assert required["seed"][1]["control_after_generate"] == "fixed"
+    assert required["batch_count"][1]["default"] == 1
+    assert required["batch_count"][1]["min"] == 1
+    assert required["batch_count"][1]["max"] == 64
+    assert required["batch_count"][1]["step"] == 1
+    required_names = list(required)
+    assert required_names[required_names.index("batch_count") - 1] == "seed"
+    assert required_names[required_names.index("batch_count") + 1] == "steps"
     assert required["second_pass_enabled"][1]["default"] is False
     assert required["second_pass_steps"][1]["default"] == 0
     assert required["second_pass_steps"][1]["min"] == 0
@@ -86,6 +94,12 @@ def test_main_node_exposes_core_inputs():
         "second_pass_upscale_ratio",
         "second_pass_upscale_method",
     )
+    assert AIO_GENERATE_SERIALIZED_WIDGET_NAMES[
+        AIO_GENERATE_SERIALIZED_WIDGET_NAMES.index("batch_count") - 1
+    ] == "seed"
+    assert AIO_GENERATE_SERIALIZED_WIDGET_NAMES[
+        AIO_GENERATE_SERIALIZED_WIDGET_NAMES.index("batch_count") + 1
+    ] == "steps"
     assert "width" not in required
     assert "height" not in required
     assert "model_settings" in optional
@@ -195,6 +209,29 @@ def test_aio_fixed_seed_button_sets_control_back_to_fixed():
     assert "writeAioSeedValue(node, seed)" in block
     assert 'writeAioSeedControlMode(node, "fixed")' in block
     assert "markNodeDirty(node)" in block
+
+
+def test_aio_frontend_inserts_missing_batch_count_after_seed_on_restore():
+    source = (ROOT / "web/js/aio_image_generate.js").read_text(encoding="utf-8")
+
+    assert 'const BATCH_COUNT_WIDGET_NAME = "batch_count";' in source
+    assert "function valuesWithMissingBatchCountSlot" in source
+    assert "batchIndex !== seedIndex + 1" in source
+    assert "values.length !== count - 1" in source
+    assert "normalized.splice(batchIndex, 0, 1)" in source
+    assert "function normalizedAioGenerateWidgetValues" in source
+    assert "valuesWithoutSeedButtonSlot(node, values)" in source
+    assert "valuesWithMissingBatchCountSlot(node, withoutSeedButton)" in source
+    assert "configureInfoWithNormalizedGenerateWidgets" in source
+
+
+def test_aio_batch_count_validation_rejects_non_integer_and_out_of_range_values():
+    assert _validate_batch_count(1) == 1
+    assert _validate_batch_count(64) == 64
+
+    for value in (0, 65, 1.5, "2", True):
+        with pytest.raises(ValueError, match="batch_count"):
+            _validate_batch_count(value)
 
 
 def test_image_output_is_required_for_connected_output_node(monkeypatch):

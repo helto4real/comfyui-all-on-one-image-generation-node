@@ -48,6 +48,93 @@ INPAINT_PREVIEW_SOURCE = "inpaint_source"
 INPAINT_PREVIEW_SAMPLE = "inpaint_sample"
 INPAINT_PREVIEW_MASK = "inpaint_mask"
 INPAINT_PREVIEW_REQUESTED = "requested"
+SEED_WRAP = 2**63
+
+
+def incrementing_batch_seeds(seed: int, batch_count: int) -> tuple[int, ...]:
+    count = int(batch_count)
+    if count < 1:
+        raise ValueError("batch_count must be at least 1.")
+    base = int(seed) % SEED_WRAP
+    return tuple((base + index) % SEED_WRAP for index in range(count))
+
+
+def _concat_optional_tensors(values: list[Any]) -> Any:
+    present = [value for value in values if value is not None]
+    if not present:
+        return None
+    if len(present) == 1:
+        return present[0]
+    import torch  # type: ignore
+
+    return torch.cat(present, dim=0)
+
+
+def _combine_pid_capture_batch(captures: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not captures:
+        return None
+    first = captures[0]
+    latents = [capture.get("latent") for capture in captures]
+    if not all(isinstance(latent, dict) and "samples" in latent for latent in latents):
+        return first
+    combined_latent = latents[0].copy()
+    combined_latent["samples"] = _concat_optional_tensors([latent["samples"] for latent in latents])
+    return {
+        "latent": combined_latent,
+        "sigma": float(first.get("sigma", 0.0)),
+        "step": int(first.get("step", combined_latent.get("pid_capture_step", 0))),
+    }
+
+
+def _combine_second_pass_info_batch(infos: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not infos:
+        return None
+    first = dict(infos[0])
+    if len(infos) > 1:
+        first["batch_count"] = len(infos)
+        first["items"] = infos
+    return first
+
+
+def _combine_latent_batch(latents: list[Any]) -> Any:
+    present = [latent for latent in latents if latent is not None]
+    if not present:
+        return None
+    if len(present) == 1:
+        return present[0]
+    if not all(isinstance(latent, dict) and "samples" in latent for latent in present):
+        return present[0]
+
+    combined = present[0].copy()
+    combined["samples"] = _concat_optional_tensors([latent["samples"] for latent in present])
+
+    captures = [
+        latent[PID_CAPTURE_KEY]
+        for latent in present
+        if isinstance(latent.get(PID_CAPTURE_KEY), dict)
+    ]
+    if captures:
+        pid_capture = _combine_pid_capture_batch(captures)
+        if pid_capture is not None:
+            combined[PID_CAPTURE_KEY] = pid_capture
+
+    second_pass_infos = [
+        latent[SECOND_PASS_INFO_KEY]
+        for latent in present
+        if isinstance(latent.get(SECOND_PASS_INFO_KEY), dict)
+    ]
+    if second_pass_infos:
+        combined[SECOND_PASS_INFO_KEY] = _combine_second_pass_info_batch(second_pass_infos)
+
+    original_images = [
+        latent.get(SECOND_PASS_ORIGINAL_IMAGE_KEY)
+        for latent in present
+        if latent.get(SECOND_PASS_ORIGINAL_IMAGE_KEY) is not None
+    ]
+    if original_images:
+        combined[SECOND_PASS_ORIGINAL_IMAGE_KEY] = _concat_optional_tensors(original_images)
+
+    return combined
 
 
 def _inpaint_preview_requested(previews: dict[str, Any] | None, name: str) -> bool:
@@ -991,6 +1078,7 @@ def generate_ideogram4_t2i(
     sampler: str,
     scheduler: str,
     settings: dict[str, Any],
+    batch_count: int = 1,
     lora_config: dict[str, Any] | None = None,
     loaded_model: Any = None,
     loaded_clip: Any = None,
@@ -1090,9 +1178,13 @@ def generate_ideogram4_t2i(
     )
     inpaint_denoise = float(inpaint_config.get("denoise", 1.0)) if inpaint_config is not None else 1.0
     inpaint_steps = inpaint_service.resolve_inpaint_steps(inpaint_config, steps)
-    if inpaint_config is not None and inpaint_denoise <= 0.0:
-        sampled_latent = latent
-    else:
+    decode_inpaint_sample = (
+        inpaint_config is not None
+        and _inpaint_preview_requested(inpaint_previews, INPAINT_PREVIEW_SAMPLE)
+    )
+    use_sampling = not (inpaint_config is not None and inpaint_denoise <= 0.0)
+    sigmas = None
+    if use_sampling:
         schedule_steps = (
             inpaint_service.resolve_denoise_schedule_steps(inpaint_steps, inpaint_denoise)
             if inpaint_config is not None
@@ -1114,85 +1206,101 @@ def generate_ideogram4_t2i(
                 inpaint_denoise,
                 steps=inpaint_steps,
             )
-        _phase(progress, "sampling")
-        sampled_latent = sample_with_custom_guider(
-            guider=guider,
-            seed=seed,
-            sampler=sampler,
-            sigmas=sigmas,
-            latent=latent,
-            pid_capture_step=pid_capture_step,
-            progress=progress,
-        )
-    image = None
-    decode_inpaint_sample = (
-        inpaint_config is not None
-        and _inpaint_preview_requested(inpaint_previews, INPAINT_PREVIEW_SAMPLE)
-    )
-    if decode_image or decode_inpaint_sample or return_vae:
-        if loaded_vae is None:
-            _phase(progress, "loading vae")
-            loaded_vae = load_vae(vae=vae)
-    if decode_image or decode_inpaint_sample:
-        _phase(progress, "decoding")
-        decoded_image = decode_latent(vae=loaded_vae, latent=sampled_latent)
-        _set_inpaint_preview(inpaint_previews, INPAINT_PREVIEW_SAMPLE, decoded_image)
-        image = decoded_image if decode_image else None
-    if decode_image:
-        if inpaint_config is not None and inpaint_source is not None:
-            if inpaint_source.stitcher is not None:
-                _phase(progress, "stitching inpaint")
-                image = inpaint_service.stitch_inpaint_image(
-                    stitcher=inpaint_source.stitcher,
-                    inpainted_image=image,
-                )
-            elif bool(inpaint_config.get("final_blend", True)):
-                _phase(progress, "blending inpaint")
-                image = inpaint_service.blend_inpaint_image(
-                    source_image=inpaint_source.image,
-                    generated_image=image,
-                    mask=inpaint_source.mask,
-                    feather=int(inpaint_config.get("mask_feather", 24)),
-                )
-    def sample_second_pass(
-        second_latent: dict[str, Any],
-        second_width: int,
-        second_height: int,
-        denoise: float,
-        second_steps: int,
-    ):
-        if settings.get("schedule_mode") == "basic":
-            second_sigmas = basic_sigmas(model=scheduler_model, scheduler=scheduler, steps=second_steps)
-        else:
-            second_sigmas = ideogram4_sigmas(
-                steps=second_steps,
-                width=second_width,
-                height=second_height,
-                mu=float(settings.get("mu", 0.0)),
-                std=float(settings.get("std", 1.75)),
-            )
-        second_sigmas = inpaint_service.apply_denoise_to_sigmas(second_sigmas, denoise)
-        return sample_with_custom_guider(
-            guider=guider,
-            seed=seed,
-            sampler=sampler,
-            sigmas=second_sigmas,
-            latent=second_latent,
-            progress=progress,
-        )
+    batch_seeds = incrementing_batch_seeds(seed, batch_count)
+    images: list[Any] = []
+    latents: list[Any] = []
+    inpaint_sample_images: list[Any] = []
 
-    image, sampled_latent, loaded_vae = apply_second_sampler_pass(
-        config=second_pass_config,
-        image=image,
-        latent=sampled_latent,
-        vae=vae,
-        loaded_vae=loaded_vae,
-        sample_latent=sample_second_pass,
-        dimension_multiple=second_pass_dimension_multiple,
-        main_steps=steps,
-        progress=progress,
-    )
-    return image, sampled_latent, positive, negative, loaded_vae
+    for index, batch_seed in enumerate(batch_seeds):
+        if not use_sampling:
+            sampled_latent = latent
+        else:
+            _phase(progress, "sampling" if len(batch_seeds) == 1 else f"sampling {index + 1}/{len(batch_seeds)}")
+            sampled_latent = sample_with_custom_guider(
+                guider=guider,
+                seed=batch_seed,
+                sampler=sampler,
+                sigmas=sigmas,
+                latent=latent,
+                pid_capture_step=pid_capture_step,
+                progress=progress,
+            )
+        image = None
+        if decode_image or decode_inpaint_sample or return_vae:
+            if loaded_vae is None:
+                _phase(progress, "loading vae")
+                loaded_vae = load_vae(vae=vae)
+        if decode_image or decode_inpaint_sample:
+            _phase(progress, "decoding")
+            decoded_image = decode_latent(vae=loaded_vae, latent=sampled_latent)
+            if decode_inpaint_sample:
+                inpaint_sample_images.append(decoded_image)
+            image = decoded_image if decode_image else None
+        if decode_image:
+            if inpaint_config is not None and inpaint_source is not None:
+                if inpaint_source.stitcher is not None:
+                    _phase(progress, "stitching inpaint")
+                    image = inpaint_service.stitch_inpaint_image(
+                        stitcher=inpaint_source.stitcher,
+                        inpainted_image=image,
+                    )
+                elif bool(inpaint_config.get("final_blend", True)):
+                    _phase(progress, "blending inpaint")
+                    image = inpaint_service.blend_inpaint_image(
+                        source_image=inpaint_source.image,
+                        generated_image=image,
+                        mask=inpaint_source.mask,
+                        feather=int(inpaint_config.get("mask_feather", 24)),
+                    )
+
+        def sample_second_pass(
+            second_latent: dict[str, Any],
+            second_width: int,
+            second_height: int,
+            denoise: float,
+            second_steps: int,
+        ):
+            if settings.get("schedule_mode") == "basic":
+                second_sigmas = basic_sigmas(model=scheduler_model, scheduler=scheduler, steps=second_steps)
+            else:
+                second_sigmas = ideogram4_sigmas(
+                    steps=second_steps,
+                    width=second_width,
+                    height=second_height,
+                    mu=float(settings.get("mu", 0.0)),
+                    std=float(settings.get("std", 1.75)),
+                )
+            second_sigmas = inpaint_service.apply_denoise_to_sigmas(second_sigmas, denoise)
+            return sample_with_custom_guider(
+                guider=guider,
+                seed=batch_seed,
+                sampler=sampler,
+                sigmas=second_sigmas,
+                latent=second_latent,
+                progress=progress,
+            )
+
+        image, sampled_latent, loaded_vae = apply_second_sampler_pass(
+            config=second_pass_config,
+            image=image,
+            latent=sampled_latent,
+            vae=vae,
+            loaded_vae=loaded_vae,
+            sample_latent=sample_second_pass,
+            dimension_multiple=second_pass_dimension_multiple,
+            main_steps=steps,
+            progress=progress,
+        )
+        images.append(image)
+        latents.append(sampled_latent)
+
+    if decode_inpaint_sample:
+        _set_inpaint_preview(
+            inpaint_previews,
+            INPAINT_PREVIEW_SAMPLE,
+            _concat_optional_tensors(inpaint_sample_images),
+        )
+    return _concat_optional_tensors(images), _combine_latent_batch(latents), positive, negative, loaded_vae
 
 
 def generate_z_image_turbo_t2i(
@@ -1209,6 +1317,7 @@ def generate_z_image_turbo_t2i(
     sampler: str,
     scheduler: str,
     settings: dict[str, Any],
+    batch_count: int = 1,
     lora_config: dict[str, Any] | None = None,
     loaded_model: Any = None,
     loaded_clip: Any = None,
@@ -1245,63 +1354,73 @@ def generate_z_image_turbo_t2i(
     _phase(progress, "encoding prompts")
     positive = encode_z_image_prompt(clip=clip, prompt=positive_prompt)
     negative = encode_z_image_prompt(clip=clip, prompt="")
-    latent = make_empty_z_image_latent(width=width, height=height)
-    _phase(progress, "sampling")
-    sampled_latent = sample_with_comfy_ksampler(
-        model=model,
-        seed=seed,
-        steps=steps,
-        cfg=cfg,
-        sampler=sampler,
-        scheduler=scheduler,
-        positive=positive,
-        negative=negative,
-        latent=latent,
-        pid_capture_step=pid_capture_step,
-        progress=progress,
-    )
-    image = None
+    batch_seeds = incrementing_batch_seeds(seed, batch_count)
+    images: list[Any] = []
+    latents: list[Any] = []
     loaded_vae = None
-    if decode_image or return_vae:
-        _phase(progress, "loading vae")
-        loaded_vae = load_vae(vae=vae)
-    if decode_image:
-        _phase(progress, "decoding")
-        image = decode_latent(vae=loaded_vae, latent=sampled_latent)
-    def sample_second_pass(
-        second_latent: dict[str, Any],
-        second_width: int,
-        second_height: int,
-        denoise: float,
-        second_steps: int,
-    ):
-        del second_width, second_height
-        return sample_with_comfy_ksampler(
+
+    for index, batch_seed in enumerate(batch_seeds):
+        latent = make_empty_z_image_latent(width=width, height=height)
+        _phase(progress, "sampling" if len(batch_seeds) == 1 else f"sampling {index + 1}/{len(batch_seeds)}")
+        sampled_latent = sample_with_comfy_ksampler(
             model=model,
-            seed=seed,
-            steps=second_steps,
+            seed=batch_seed,
+            steps=steps,
             cfg=cfg,
             sampler=sampler,
             scheduler=scheduler,
             positive=positive,
             negative=negative,
-            latent=second_latent,
-            denoise=denoise,
+            latent=latent,
+            pid_capture_step=pid_capture_step,
             progress=progress,
         )
+        image = None
+        if decode_image or return_vae:
+            if loaded_vae is None:
+                _phase(progress, "loading vae")
+                loaded_vae = load_vae(vae=vae)
+        if decode_image:
+            _phase(progress, "decoding")
+            image = decode_latent(vae=loaded_vae, latent=sampled_latent)
 
-    image, sampled_latent, loaded_vae = apply_second_sampler_pass(
-        config=second_pass_config,
-        image=image,
-        latent=sampled_latent,
-        vae=vae,
-        loaded_vae=loaded_vae,
-        sample_latent=sample_second_pass,
-        dimension_multiple=second_pass_dimension_multiple,
-        main_steps=steps,
-        progress=progress,
-    )
-    return image, sampled_latent, positive, negative, loaded_vae
+        def sample_second_pass(
+            second_latent: dict[str, Any],
+            second_width: int,
+            second_height: int,
+            denoise: float,
+            second_steps: int,
+        ):
+            del second_width, second_height
+            return sample_with_comfy_ksampler(
+                model=model,
+                seed=batch_seed,
+                steps=second_steps,
+                cfg=cfg,
+                sampler=sampler,
+                scheduler=scheduler,
+                positive=positive,
+                negative=negative,
+                latent=second_latent,
+                denoise=denoise,
+                progress=progress,
+            )
+
+        image, sampled_latent, loaded_vae = apply_second_sampler_pass(
+            config=second_pass_config,
+            image=image,
+            latent=sampled_latent,
+            vae=vae,
+            loaded_vae=loaded_vae,
+            sample_latent=sample_second_pass,
+            dimension_multiple=second_pass_dimension_multiple,
+            main_steps=steps,
+            progress=progress,
+        )
+        images.append(image)
+        latents.append(sampled_latent)
+
+    return _concat_optional_tensors(images), _combine_latent_batch(latents), positive, negative, loaded_vae
 
 
 def generate_krea2_t2i(
@@ -1318,6 +1437,7 @@ def generate_krea2_t2i(
     sampler: str,
     scheduler: str,
     settings: dict[str, Any],
+    batch_count: int = 1,
     lora_config: dict[str, Any] | None = None,
     loaded_model: Any = None,
     loaded_clip: Any = None,
@@ -1395,87 +1515,104 @@ def generate_krea2_t2i(
         latent = make_empty_krea2_latent(width=width, height=height)
     inpaint_denoise = float(inpaint_config.get("denoise", 1.0)) if inpaint_config is not None else 1.0
     inpaint_steps = inpaint_service.resolve_inpaint_steps(inpaint_config, steps)
-    if inpaint_config is not None and inpaint_denoise <= 0.0:
-        sampled_latent = latent
-    else:
-        _phase(progress, "sampling")
-        sampled_latent = sample_with_comfy_ksampler(
-            model=model,
-            seed=seed,
-            steps=inpaint_steps,
-            cfg=cfg,
-            sampler=sampler,
-            scheduler=scheduler,
-            positive=positive,
-            negative=negative,
-            latent=latent,
-            denoise=inpaint_denoise,
-            pid_capture_step=pid_capture_step,
-            progress=progress,
-        )
-    image = None
     decode_inpaint_sample = (
         inpaint_config is not None
         and _inpaint_preview_requested(inpaint_previews, INPAINT_PREVIEW_SAMPLE)
     )
-    if (decode_image or decode_inpaint_sample or return_vae) and loaded_vae is None:
-        _phase(progress, "loading vae")
-        loaded_vae = load_vae(vae=vae)
-    if decode_image or decode_inpaint_sample:
-        _phase(progress, "decoding")
-        decoded_image = decode_latent(vae=loaded_vae, latent=sampled_latent)
-        _set_inpaint_preview(inpaint_previews, INPAINT_PREVIEW_SAMPLE, decoded_image)
-        image = decoded_image if decode_image else None
-    if decode_image:
-        if inpaint_config is not None and inpaint_source is not None:
-            if inpaint_source.stitcher is not None:
-                _phase(progress, "stitching inpaint")
-                image = inpaint_service.stitch_inpaint_image(
-                    stitcher=inpaint_source.stitcher,
-                    inpainted_image=image,
-                )
-            elif bool(inpaint_config.get("final_blend", True)):
-                _phase(progress, "blending inpaint")
-                image = inpaint_service.blend_inpaint_image(
-                    source_image=inpaint_source.image,
-                    generated_image=image,
-                    mask=inpaint_source.mask,
-                    feather=int(inpaint_config.get("mask_feather", 24)),
-                )
-    def sample_second_pass(
-        second_latent: dict[str, Any],
-        second_width: int,
-        second_height: int,
-        denoise: float,
-        second_steps: int,
-    ):
-        del second_width, second_height
-        return sample_with_comfy_ksampler(
-            model=model,
-            seed=seed,
-            steps=second_steps,
-            cfg=cfg,
-            sampler=sampler,
-            scheduler=scheduler,
-            positive=positive,
-            negative=negative,
-            latent=second_latent,
-            denoise=denoise,
+    batch_seeds = incrementing_batch_seeds(seed, batch_count)
+    images: list[Any] = []
+    latents: list[Any] = []
+    inpaint_sample_images: list[Any] = []
+
+    for index, batch_seed in enumerate(batch_seeds):
+        if inpaint_config is not None and inpaint_denoise <= 0.0:
+            sampled_latent = latent
+        else:
+            _phase(progress, "sampling" if len(batch_seeds) == 1 else f"sampling {index + 1}/{len(batch_seeds)}")
+            sampled_latent = sample_with_comfy_ksampler(
+                model=model,
+                seed=batch_seed,
+                steps=inpaint_steps,
+                cfg=cfg,
+                sampler=sampler,
+                scheduler=scheduler,
+                positive=positive,
+                negative=negative,
+                latent=latent,
+                denoise=inpaint_denoise,
+                pid_capture_step=pid_capture_step,
+                progress=progress,
+            )
+        image = None
+        if (decode_image or decode_inpaint_sample or return_vae) and loaded_vae is None:
+            _phase(progress, "loading vae")
+            loaded_vae = load_vae(vae=vae)
+        if decode_image or decode_inpaint_sample:
+            _phase(progress, "decoding")
+            decoded_image = decode_latent(vae=loaded_vae, latent=sampled_latent)
+            if decode_inpaint_sample:
+                inpaint_sample_images.append(decoded_image)
+            image = decoded_image if decode_image else None
+        if decode_image:
+            if inpaint_config is not None and inpaint_source is not None:
+                if inpaint_source.stitcher is not None:
+                    _phase(progress, "stitching inpaint")
+                    image = inpaint_service.stitch_inpaint_image(
+                        stitcher=inpaint_source.stitcher,
+                        inpainted_image=image,
+                    )
+                elif bool(inpaint_config.get("final_blend", True)):
+                    _phase(progress, "blending inpaint")
+                    image = inpaint_service.blend_inpaint_image(
+                        source_image=inpaint_source.image,
+                        generated_image=image,
+                        mask=inpaint_source.mask,
+                        feather=int(inpaint_config.get("mask_feather", 24)),
+                    )
+
+        def sample_second_pass(
+            second_latent: dict[str, Any],
+            second_width: int,
+            second_height: int,
+            denoise: float,
+            second_steps: int,
+        ):
+            del second_width, second_height
+            return sample_with_comfy_ksampler(
+                model=model,
+                seed=batch_seed,
+                steps=second_steps,
+                cfg=cfg,
+                sampler=sampler,
+                scheduler=scheduler,
+                positive=positive,
+                negative=negative,
+                latent=second_latent,
+                denoise=denoise,
+                progress=progress,
+            )
+
+        image, sampled_latent, loaded_vae = apply_second_sampler_pass(
+            config=second_pass_config,
+            image=image,
+            latent=sampled_latent,
+            vae=vae,
+            loaded_vae=loaded_vae,
+            sample_latent=sample_second_pass,
+            dimension_multiple=second_pass_dimension_multiple,
+            main_steps=steps,
             progress=progress,
         )
+        images.append(image)
+        latents.append(sampled_latent)
 
-    image, sampled_latent, loaded_vae = apply_second_sampler_pass(
-        config=second_pass_config,
-        image=image,
-        latent=sampled_latent,
-        vae=vae,
-        loaded_vae=loaded_vae,
-        sample_latent=sample_second_pass,
-        dimension_multiple=second_pass_dimension_multiple,
-        main_steps=steps,
-        progress=progress,
-    )
-    return image, sampled_latent, positive, negative, loaded_vae
+    if decode_inpaint_sample:
+        _set_inpaint_preview(
+            inpaint_previews,
+            INPAINT_PREVIEW_SAMPLE,
+            _concat_optional_tensors(inpaint_sample_images),
+        )
+    return _concat_optional_tensors(images), _combine_latent_batch(latents), positive, negative, loaded_vae
 
 
 def generate_flux2_klein_t2i(
@@ -1493,6 +1630,7 @@ def generate_flux2_klein_t2i(
     sampler: str,
     scheduler: str,
     settings: dict[str, Any],
+    batch_count: int = 1,
     lora_config: dict[str, Any] | None = None,
     loaded_model: Any = None,
     loaded_clip: Any = None,
@@ -1629,9 +1767,13 @@ def generate_flux2_klein_t2i(
         latent = make_empty_flux2_latent(width=width, height=height)
     inpaint_denoise = float(inpaint_config.get("denoise", 1.0)) if inpaint_config is not None else 1.0
     inpaint_steps = inpaint_service.resolve_inpaint_steps(inpaint_config, steps)
-    if inpaint_config is not None and inpaint_denoise <= 0.0:
-        sampled_latent = latent
-    else:
+    decode_inpaint_sample = (
+        inpaint_config is not None
+        and _inpaint_preview_requested(inpaint_previews, INPAINT_PREVIEW_SAMPLE)
+    )
+    use_sampling = not (inpaint_config is not None and inpaint_denoise <= 0.0)
+    sigmas = None
+    if use_sampling:
         _apply_memory_policy_before_sampling_if_configured(settings=settings, progress=progress)
         if scheduler == "auto":
             sigma_width, sigma_height = (
@@ -1651,10 +1793,19 @@ def generate_flux2_klein_t2i(
                     inpaint_denoise,
                     steps=inpaint_steps,
                 )
-            _phase(progress, "sampling")
+    batch_seeds = incrementing_batch_seeds(seed, batch_count)
+    images: list[Any] = []
+    latents: list[Any] = []
+    inpaint_sample_images: list[Any] = []
+
+    for index, batch_seed in enumerate(batch_seeds):
+        if not use_sampling:
+            sampled_latent = latent
+        elif scheduler == "auto":
+            _phase(progress, "sampling" if len(batch_seeds) == 1 else f"sampling {index + 1}/{len(batch_seeds)}")
             sampled_latent = sample_with_sigmas(
                 model=model,
-                seed=seed,
+                seed=batch_seed,
                 steps=inpaint_steps if inpaint_config is not None else steps,
                 cfg=cfg,
                 sampler=sampler,
@@ -1667,10 +1818,10 @@ def generate_flux2_klein_t2i(
                 progress=progress,
             )
         else:
-            _phase(progress, "sampling")
+            _phase(progress, "sampling" if len(batch_seeds) == 1 else f"sampling {index + 1}/{len(batch_seeds)}")
             sampled_latent = sample_with_comfy_ksampler(
                 model=model,
-                seed=seed,
+                seed=batch_seed,
                 steps=inpaint_steps,
                 cfg=cfg,
                 sampler=sampler,
@@ -1682,90 +1833,97 @@ def generate_flux2_klein_t2i(
                 pid_capture_step=pid_capture_step,
                 progress=progress,
             )
-    image = None
-    decode_inpaint_sample = (
-        inpaint_config is not None
-        and _inpaint_preview_requested(inpaint_previews, INPAINT_PREVIEW_SAMPLE)
-    )
-    if (decode_image or decode_inpaint_sample or return_vae) and loaded_vae is None:
-        _phase(progress, "loading vae")
-        loaded_vae = load_vae(vae=vae)
-    if decode_image or decode_inpaint_sample:
-        _phase(progress, "decoding")
-        decoded_image = decode_latent(vae=loaded_vae, latent=sampled_latent)
-        _set_inpaint_preview(inpaint_previews, INPAINT_PREVIEW_SAMPLE, decoded_image)
-        image = decoded_image if decode_image else None
-    if decode_image:
-        if inpaint_config is not None and flux_inpaint_source is not None:
-            color_match_strength = float(inpaint_config.get("color_match_strength", 0.0))
-            if color_match_strength > 0.0:
-                _phase(progress, "matching inpaint color")
-                image = inpaint_service.apply_inpaint_color_match(
-                    target_image=image,
-                    reference_image=flux_inpaint_source.image,
-                    exclude_mask=flux_inpaint_source.sampling_mask,
-                    strength=color_match_strength,
+        image = None
+        if (decode_image or decode_inpaint_sample or return_vae) and loaded_vae is None:
+            _phase(progress, "loading vae")
+            loaded_vae = load_vae(vae=vae)
+        if decode_image or decode_inpaint_sample:
+            _phase(progress, "decoding")
+            decoded_image = decode_latent(vae=loaded_vae, latent=sampled_latent)
+            if decode_inpaint_sample:
+                inpaint_sample_images.append(decoded_image)
+            image = decoded_image if decode_image else None
+        if decode_image:
+            if inpaint_config is not None and flux_inpaint_source is not None:
+                color_match_strength = float(inpaint_config.get("color_match_strength", 0.0))
+                if color_match_strength > 0.0:
+                    _phase(progress, "matching inpaint color")
+                    image = inpaint_service.apply_inpaint_color_match(
+                        target_image=image,
+                        reference_image=flux_inpaint_source.image,
+                        exclude_mask=flux_inpaint_source.sampling_mask,
+                        strength=color_match_strength,
+                    )
+                if flux_inpaint_source.stitcher is not None:
+                    _phase(progress, "stitching inpaint")
+                    image = inpaint_service.stitch_inpaint_image(
+                        stitcher=flux_inpaint_source.stitcher,
+                        inpainted_image=image,
+                    )
+                elif bool(inpaint_config.get("final_blend", True)):
+                    _phase(progress, "blending inpaint")
+                    image = inpaint_service.blend_inpaint_image(
+                        source_image=flux_inpaint_source.image,
+                        generated_image=image,
+                        mask=flux_inpaint_source.mask,
+                        feather=int(inpaint_config.get("mask_feather", 24)),
+                    )
+
+        def sample_second_pass(
+            second_latent: dict[str, Any],
+            second_width: int,
+            second_height: int,
+            denoise: float,
+            second_steps: int,
+        ):
+            if scheduler == "auto":
+                second_sigmas = flux2_sigmas(steps=second_steps, width=second_width, height=second_height)
+                second_sigmas = inpaint_service.apply_denoise_to_sigmas(second_sigmas, denoise)
+                return sample_with_sigmas(
+                    model=model,
+                    seed=batch_seed,
+                    steps=second_steps,
+                    cfg=cfg,
+                    sampler=sampler,
+                    scheduler="normal",
+                    positive=positive,
+                    negative=negative,
+                    latent=second_latent,
+                    sigmas=second_sigmas,
+                    progress=progress,
                 )
-            if flux_inpaint_source.stitcher is not None:
-                _phase(progress, "stitching inpaint")
-                image = inpaint_service.stitch_inpaint_image(
-                    stitcher=flux_inpaint_source.stitcher,
-                    inpainted_image=image,
-                )
-            elif bool(inpaint_config.get("final_blend", True)):
-                _phase(progress, "blending inpaint")
-                image = inpaint_service.blend_inpaint_image(
-                    source_image=flux_inpaint_source.image,
-                    generated_image=image,
-                    mask=flux_inpaint_source.mask,
-                    feather=int(inpaint_config.get("mask_feather", 24)),
-                )
-    def sample_second_pass(
-        second_latent: dict[str, Any],
-        second_width: int,
-        second_height: int,
-        denoise: float,
-        second_steps: int,
-    ):
-        if scheduler == "auto":
-            second_sigmas = flux2_sigmas(steps=second_steps, width=second_width, height=second_height)
-            second_sigmas = inpaint_service.apply_denoise_to_sigmas(second_sigmas, denoise)
-            return sample_with_sigmas(
+            return sample_with_comfy_ksampler(
                 model=model,
-                seed=seed,
+                seed=batch_seed,
                 steps=second_steps,
                 cfg=cfg,
                 sampler=sampler,
-                scheduler="normal",
+                scheduler=scheduler,
                 positive=positive,
                 negative=negative,
                 latent=second_latent,
-                sigmas=second_sigmas,
+                denoise=denoise,
                 progress=progress,
             )
-        return sample_with_comfy_ksampler(
-            model=model,
-            seed=seed,
-            steps=second_steps,
-            cfg=cfg,
-            sampler=sampler,
-            scheduler=scheduler,
-            positive=positive,
-            negative=negative,
-            latent=second_latent,
-            denoise=denoise,
+
+        image, sampled_latent, loaded_vae = apply_second_sampler_pass(
+            config=second_pass_config,
+            image=image,
+            latent=sampled_latent,
+            vae=vae,
+            loaded_vae=loaded_vae,
+            sample_latent=sample_second_pass,
+            dimension_multiple=second_pass_dimension_multiple,
+            main_steps=steps,
             progress=progress,
         )
+        images.append(image)
+        latents.append(sampled_latent)
 
-    image, sampled_latent, loaded_vae = apply_second_sampler_pass(
-        config=second_pass_config,
-        image=image,
-        latent=sampled_latent,
-        vae=vae,
-        loaded_vae=loaded_vae,
-        sample_latent=sample_second_pass,
-        dimension_multiple=second_pass_dimension_multiple,
-        main_steps=steps,
-        progress=progress,
-    )
-    return image, sampled_latent, positive, negative, loaded_vae
+    if decode_inpaint_sample:
+        _set_inpaint_preview(
+            inpaint_previews,
+            INPAINT_PREVIEW_SAMPLE,
+            _concat_optional_tensors(inpaint_sample_images),
+        )
+    return _concat_optional_tensors(images), _combine_latent_batch(latents), positive, negative, loaded_vae

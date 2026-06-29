@@ -115,3 +115,14 @@ def test_sampling_callback_preserves_preview_and_maps_weighted_progress(monkeypa
     assert updates[-1]["preview"] == ("JPEG", "cuda", "flux", "x0")
     assert reporter._percent_to_value(FIRST_SAMPLE_WINDOW[0]) <= updates[-1]["value"]
     assert updates[-1]["value"] <= reporter._percent_to_value(FIRST_SAMPLE_WINDOW[1])
+
+
+def test_sampling_phase_suffix_uses_base_sampling_window(monkeypatch):
+    progress_calls = []
+    _install_progress_bar(monkeypatch, progress_calls)
+
+    reporter = ProgressReporter(node_id="9")
+    reporter.phase("sampling second pass")
+    reporter.phase("sampling 2/3")
+
+    assert reporter._active_sampling_window == FIRST_SAMPLE_WINDOW

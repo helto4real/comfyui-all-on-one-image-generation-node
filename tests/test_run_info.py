@@ -50,6 +50,7 @@ def test_run_info_json_serializable_and_contains_core_fields():
     assert parsed["text_encoder_format"] == "safetensors"
     assert parsed["vae_format"] == "safetensors"
     assert parsed["seed"] == 123
+    assert parsed["batch"] == {"count": 1, "seeds": [123], "seed_mode": "increment"}
     assert parsed["steps"] == 8
     assert parsed["warnings"] == ["warning"]
     assert parsed["loras"][0]["name"] == "style.safetensors"
@@ -102,6 +103,43 @@ def test_run_info_reports_performance_defaults_when_settings_are_absent():
         "resolved_torch_compile_mode": "off",
         "resolved_torch_compile_backend": "off",
         "performance_apply_timing": "after_loras",
+    }
+
+
+def test_run_info_reports_explicit_batch_metadata():
+    run_info = build_run_info(
+        model_type="z_image_turbo",
+        display_name="Z-Image Turbo",
+        diffusion_model="diffusion_models/model.safetensors",
+        diffusion_model_format="safetensors",
+        text_encoder="text_encoders/text.safetensors",
+        text_encoder_format="safetensors",
+        vae="vae/vae.safetensors",
+        vae_format="safetensors",
+        width=1024,
+        height=1024,
+        seed=9223372036854775807,
+        steps=8,
+        cfg=1.0,
+        sampler="auto",
+        scheduler="auto",
+        settings={"family": "z_image_turbo", "steps": 8},
+        warnings=[],
+        adapter_version="0.1.0",
+        batch={
+            "count": 3,
+            "seeds": [9223372036854775807, 0, 1],
+            "seed_mode": "increment",
+        },
+    )
+
+    parsed = json.loads(to_json(run_info))
+
+    assert parsed["seed"] == 9223372036854775807
+    assert parsed["batch"] == {
+        "count": 3,
+        "seeds": [9223372036854775807, 0, 1],
+        "seed_mode": "increment",
     }
 
 

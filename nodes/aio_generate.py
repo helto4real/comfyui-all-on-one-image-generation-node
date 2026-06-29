@@ -82,6 +82,7 @@ AIO_GENERATE_SERIALIZED_WIDGET_NAMES = (
     "aspect ratio",
     "multiple value",
     "seed",
+    "batch_count",
     "steps",
     "cfg",
     "sampler",
@@ -142,6 +143,14 @@ def _is_link(value: Any) -> bool:
         and len(value) == 2
         and isinstance(value[1], int)
     )
+
+
+def _validate_batch_count(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("batch_count must be an integer.")
+    if value < 1 or value > 64:
+        raise ValueError("batch_count must be between 1 and 64.")
+    return int(value)
 
 
 def _prompt_input_is_link(prompt: Any, unique_id: str | None, input_name: str) -> bool:
@@ -609,6 +618,16 @@ class AIOImageGenerate:
                         "tooltip": "Random seed for generation. Reuse the same seed and settings for repeatable results.",
                     },
                 ),
+                "batch_count": (
+                    "INT",
+                    {
+                        "default": 1,
+                        "min": 1,
+                        "max": 64,
+                        "step": 1,
+                        "tooltip": "Number of images to generate in one loaded run. Each image uses the next seed.",
+                    },
+                ),
                 "steps": (
                     "INT",
                     {
@@ -736,6 +755,7 @@ class AIOImageGenerate:
         width: int | None = None,
         height: int | None = None,
         seed: int = 0,
+        batch_count: int = 1,
         steps: int = 0,
         cfg: float = 0.0,
         sampler: str = "auto",
@@ -761,6 +781,8 @@ class AIOImageGenerate:
         **reference_values: Any,
     ):
         del weight_format
+        resolved_batch_count = _validate_batch_count(batch_count)
+        batch_seeds = pipeline.incrementing_batch_seeds(seed, resolved_batch_count)
         resolved_positive_prompt = _resolve_prompt_text(
             value=positive_prompt,
             input_name="positive_prompt",
@@ -955,6 +977,9 @@ class AIOImageGenerate:
                 "seed_input": int(seed),
                 "seed_received": int(seed),
                 "effective_seed": int(seed),
+                "batch_count": resolved_batch_count,
+                "batch_seeds": list(batch_seeds),
+                "batch_seed_mode": "increment",
                 "steps_received": int(steps),
                 "cfg_received": float(cfg),
                 "sampler_received": sampler,
@@ -1030,6 +1055,7 @@ class AIOImageGenerate:
             width=effective_width,
             height=effective_height,
             seed=seed,
+            batch_count=resolved_batch_count,
             settings=settings,
             sampler=effective_sampler,
             scheduler=effective_scheduler,
@@ -1093,6 +1119,11 @@ class AIOImageGenerate:
             width=output_width,
             height=output_height,
             seed=seed,
+            batch={
+                "count": resolved_batch_count,
+                "seeds": list(batch_seeds),
+                "seed_mode": "increment",
+            },
             steps=effective_steps,
             cfg=effective_cfg,
             sampler=effective_sampler,

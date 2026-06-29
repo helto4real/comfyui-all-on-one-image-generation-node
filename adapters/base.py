@@ -78,6 +78,7 @@ class BaseImageAdapter(ABC):
         settings: dict[str, Any],
         sampler: str,
         scheduler: str,
+        batch_count: int = 1,
         reference_image: Any = None,
         reference_inputs: Any = None,
         mask: Any = None,

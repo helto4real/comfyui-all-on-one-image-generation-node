@@ -34,6 +34,7 @@ const FIXED_SEED_BUTTON_TOOLTIP = "Generate a new fixed random seed and write it
 const PRIVACY_WIDGET_NAME = "privacy_mode";
 const PROMPT_WIDGET_NAMES = ["positive_prompt", "negative_prompt"];
 const KREA_INPAINT_PROMPT_WIDGET_NAME = "inpaint_positive_prompt";
+const BATCH_COUNT_WIDGET_NAME = "batch_count";
 const PRIVACY_STYLE_ID = "aio-generate-privacy-style";
 const MASKED_PROMPT_VALUE = "Private prompt - hover to reveal";
 
@@ -686,6 +687,16 @@ function serializedWidgetIndex(node, targetWidget) {
   return -1;
 }
 
+function serializedWidgetCount(node) {
+  let count = 0;
+  for (const widget of node?.widgets || []) {
+    if (widgetSerializesToWorkflow(widget)) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
 function removeAioGenerateSeedButton(node) {
   const widgets = node?.widgets;
   if (!Array.isArray(widgets)) {
@@ -725,11 +736,39 @@ function valuesWithoutSeedButtonSlot(node, values) {
   return normalized;
 }
 
-function configureInfoWithoutSeedButtonSlot(node, info) {
+function valuesWithMissingBatchCountSlot(node, values) {
+  if (!Array.isArray(values)) {
+    return values;
+  }
+  const seedWidget = widgetByName(node, "seed");
+  const batchWidget = widgetByName(node, BATCH_COUNT_WIDGET_NAME);
+  const seedIndex = serializedWidgetIndex(node, seedWidget);
+  const batchIndex = serializedWidgetIndex(node, batchWidget);
+  const count = serializedWidgetCount(node);
+  if (
+    !seedWidget ||
+    !batchWidget ||
+    seedIndex < 0 ||
+    batchIndex !== seedIndex + 1 ||
+    values.length !== count - 1
+  ) {
+    return values;
+  }
+  const normalized = values.slice();
+  normalized.splice(batchIndex, 0, 1);
+  return normalized;
+}
+
+function normalizedAioGenerateWidgetValues(node, values) {
+  const withoutSeedButton = valuesWithoutSeedButtonSlot(node, values);
+  return valuesWithMissingBatchCountSlot(node, withoutSeedButton);
+}
+
+function configureInfoWithNormalizedGenerateWidgets(node, info) {
   if (!info || !Array.isArray(info.widgets_values)) {
     return info;
   }
-  const values = valuesWithoutSeedButtonSlot(node, info.widgets_values);
+  const values = normalizedAioGenerateWidgetValues(node, info.widgets_values);
   return values === info.widgets_values ? info : { ...info, widgets_values: values };
 }
 
@@ -956,7 +995,7 @@ function sanitizeGenerateWorkflowSerialization(node, output) {
   if (!Array.isArray(values)) {
     return;
   }
-  const normalizedValues = valuesWithoutSeedButtonSlot(node, values);
+  const normalizedValues = normalizedAioGenerateWidgetValues(node, values);
   if (normalizedValues !== values) {
     output.widgets_values = normalizedValues;
     values = normalizedValues;
@@ -2932,7 +2971,7 @@ function patchAioGenerateNodeType(nodeType) {
 
   const originalConfigure = nodeType.prototype.configure;
   nodeType.prototype.configure = function () {
-    const normalizedInfo = configureInfoWithoutSeedButtonSlot(this, arguments[0]);
+    const normalizedInfo = configureInfoWithNormalizedGenerateWidgets(this, arguments[0]);
     const args = arguments.length ? [normalizedInfo, ...Array.prototype.slice.call(arguments, 1)] : arguments;
     removeAioGenerateSeedButton(this);
     try {

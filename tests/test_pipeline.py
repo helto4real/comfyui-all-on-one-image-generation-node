@@ -179,6 +179,117 @@ def test_pipeline_applies_loras_before_prompt_encoding(monkeypatch):
     ]
 
 
+def test_incrementing_batch_seeds_wraps_at_int64():
+    assert pipeline.incrementing_batch_seeds(2**63 - 2, 4) == (
+        9223372036854775806,
+        9223372036854775807,
+        0,
+        1,
+    )
+
+
+def test_z_image_batch_samples_per_seed_with_loaded_models_reused(monkeypatch):
+    torch = pytest.importorskip("torch")
+    calls = {
+        "load_model": 0,
+        "load_clip": 0,
+        "load_vae": 0,
+        "main_seeds": [],
+        "second_pass_seeds": [],
+    }
+
+    monkeypatch.setattr(
+        pipeline,
+        "load_diffusion_model",
+        lambda **kwargs: calls.__setitem__("load_model", calls["load_model"] + 1) or "model",
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "load_text_encoder",
+        lambda **kwargs: calls.__setitem__("load_clip", calls["load_clip"] + 1) or "clip",
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "apply_lora_config",
+        lambda **kwargs: ("model+lora", "clip+lora", []),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "load_vae",
+        lambda **kwargs: calls.__setitem__("load_vae", calls["load_vae"] + 1) or "vae",
+    )
+    monkeypatch.setattr(pipeline, "encode_z_image_prompt", lambda **kwargs: "conditioning")
+    monkeypatch.setattr(
+        pipeline,
+        "make_empty_z_image_latent",
+        lambda **kwargs: {"samples": torch.zeros((1, 4, 2, 2))},
+    )
+
+    def fake_sample_with_comfy_ksampler(**kwargs):
+        seed = int(kwargs["seed"])
+        if kwargs["latent"].get("second_pass"):
+            calls["second_pass_seeds"].append(seed)
+        else:
+            calls["main_seeds"].append(seed)
+        return {"samples": torch.full((1, 4, 2, 2), float(seed))}
+
+    def fake_decode_latent(**kwargs):
+        value = float(kwargs["latent"]["samples"][0, 0, 0, 0].item())
+        return torch.full((1, 2, 2, 3), value)
+
+    def fake_apply_second_sampler_pass(**kwargs):
+        second_latent = kwargs["sample_latent"](
+            {"samples": torch.zeros((1, 4, 2, 2)), "second_pass": True},
+            16,
+            16,
+            0.15,
+            4,
+        )
+        second_latent[pipeline.SECOND_PASS_INFO_KEY] = {
+            "enabled": True,
+            "applied": True,
+        }
+        second_latent[pipeline.SECOND_PASS_ORIGINAL_IMAGE_KEY] = kwargs["image"]
+        return kwargs["image"], second_latent, kwargs["loaded_vae"]
+
+    monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", fake_sample_with_comfy_ksampler)
+    monkeypatch.setattr(pipeline, "decode_latent", fake_decode_latent)
+    monkeypatch.setattr(pipeline, "apply_second_sampler_pass", fake_apply_second_sampler_pass)
+
+    image, latent, positive, negative, loaded_vae = pipeline.generate_z_image_turbo_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        width=1024,
+        height=1024,
+        seed=10,
+        steps=8,
+        cfg=1.0,
+        sampler="auto",
+        scheduler="auto",
+        settings={},
+        batch_count=3,
+        lora_config={"lora_1": {"on": True, "lora": "style", "strength": 1}},
+        second_pass_config={"enabled": True},
+    )
+
+    assert calls["load_model"] == 1
+    assert calls["load_clip"] == 1
+    assert calls["load_vae"] == 1
+    assert calls["main_seeds"] == [10, 11, 12]
+    assert calls["second_pass_seeds"] == [10, 11, 12]
+    assert image.shape == (3, 2, 2, 3)
+    assert image[:, 0, 0, 0].tolist() == [10.0, 11.0, 12.0]
+    assert latent["samples"].shape == (3, 4, 2, 2)
+    assert latent["samples"][:, 0, 0, 0].tolist() == [10.0, 11.0, 12.0]
+    assert latent[pipeline.SECOND_PASS_INFO_KEY]["batch_count"] == 3
+    assert latent[pipeline.SECOND_PASS_ORIGINAL_IMAGE_KEY].shape == (3, 2, 2, 3)
+    assert positive == "conditioning"
+    assert negative == "conditioning"
+    assert loaded_vae == "vae"
+
+
 def test_pipeline_applies_performance_after_loras_by_default(monkeypatch):
     events = []
 

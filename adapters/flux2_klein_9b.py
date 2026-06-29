@@ -126,6 +126,7 @@ class Flux2Klein9BAdapter(BaseImageAdapter):
             width=kwargs["width"],
             height=kwargs["height"],
             seed=kwargs["seed"],
+            batch_count=kwargs.get("batch_count", 1),
             steps=int(kwargs["settings"]["steps"]),
             cfg=float(kwargs["settings"]["cfg"]),
             sampler=kwargs["sampler"],
