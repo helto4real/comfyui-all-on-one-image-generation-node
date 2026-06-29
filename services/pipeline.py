@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 try:
@@ -49,6 +50,24 @@ INPAINT_PREVIEW_SAMPLE = "inpaint_sample"
 INPAINT_PREVIEW_MASK = "inpaint_mask"
 INPAINT_PREVIEW_REQUESTED = "requested"
 SEED_WRAP = 2**63
+
+
+@dataclass
+class GenerationResult:
+    image: Any
+    latent: Any
+    positive: Any
+    negative: Any
+    vae: Any
+    model: Any = None
+    clip: Any = None
+
+    def __iter__(self):
+        yield self.image
+        yield self.latent
+        yield self.positive
+        yield self.negative
+        yield self.vae
 
 
 def incrementing_batch_seeds(seed: int, batch_count: int) -> tuple[int, ...]:
@@ -1300,7 +1319,15 @@ def generate_ideogram4_t2i(
             INPAINT_PREVIEW_SAMPLE,
             _concat_optional_tensors(inpaint_sample_images),
         )
-    return _concat_optional_tensors(images), _combine_latent_batch(latents), positive, negative, loaded_vae
+    return GenerationResult(
+        image=_concat_optional_tensors(images),
+        latent=_combine_latent_batch(latents),
+        positive=positive,
+        negative=negative,
+        vae=loaded_vae,
+        model=model,
+        clip=clip,
+    )
 
 
 def generate_z_image_turbo_t2i(
@@ -1420,7 +1447,15 @@ def generate_z_image_turbo_t2i(
         images.append(image)
         latents.append(sampled_latent)
 
-    return _concat_optional_tensors(images), _combine_latent_batch(latents), positive, negative, loaded_vae
+    return GenerationResult(
+        image=_concat_optional_tensors(images),
+        latent=_combine_latent_batch(latents),
+        positive=positive,
+        negative=negative,
+        vae=loaded_vae,
+        model=model,
+        clip=clip,
+    )
 
 
 def generate_krea2_t2i(
@@ -1612,7 +1647,15 @@ def generate_krea2_t2i(
             INPAINT_PREVIEW_SAMPLE,
             _concat_optional_tensors(inpaint_sample_images),
         )
-    return _concat_optional_tensors(images), _combine_latent_batch(latents), positive, negative, loaded_vae
+    return GenerationResult(
+        image=_concat_optional_tensors(images),
+        latent=_combine_latent_batch(latents),
+        positive=positive,
+        negative=negative,
+        vae=loaded_vae,
+        model=model,
+        clip=clip,
+    )
 
 
 def generate_flux2_klein_t2i(
@@ -1926,4 +1969,12 @@ def generate_flux2_klein_t2i(
             INPAINT_PREVIEW_SAMPLE,
             _concat_optional_tensors(inpaint_sample_images),
         )
-    return _concat_optional_tensors(images), _combine_latent_batch(latents), positive, negative, loaded_vae
+    return GenerationResult(
+        image=_concat_optional_tensors(images),
+        latent=_combine_latent_batch(latents),
+        positive=positive,
+        negative=negative,
+        vae=loaded_vae,
+        model=model,
+        clip=clip,
+    )

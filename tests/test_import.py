@@ -33,6 +33,9 @@ def test_custom_node_package_imports_without_torch_or_gguf_dependency():
         "AIOInpaint",
         "AIOLoraConfiguration",
         "AIOLoadPipelineModels",
+        "AIOModelInfo",
+        "AIOPIDInfo",
+        "AIOInpaintInfo",
     }
     assert "torch" not in sys.modules
     assert "gguf" not in sys.modules

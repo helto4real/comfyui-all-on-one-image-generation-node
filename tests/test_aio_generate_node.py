@@ -12,6 +12,7 @@ from nodes.aio_generate import (
     output_is_reachable,
     workflow_output_has_link,
 )
+from nodes.info import AIOInpaintInfo, AIOModelInfo, AIOPIDInfo
 from nodes.inpaint import AIOInpaint
 from services import pipeline, privacy
 
@@ -116,35 +117,54 @@ def test_main_node_exposes_core_inputs():
         "IMAGE",
         "LATENT",
         "STRING",
-        "CONDITIONING",
-        "CONDITIONING",
-        "VAE",
-        "LATENT",
-        "FLOAT",
+        "AIO_MODEL_INFO",
+        "AIO_PID_INFO",
         "INT",
         "INT",
-        "IMAGE",
-        "IMAGE",
-        "MASK",
+        "AIO_INPAINT_INFO",
         "IMAGE",
     )
     assert AIOImageGenerate.RETURN_NAMES == (
         "image",
         "latent",
         "run_info",
-        "positive",
-        "negative",
-        "vae",
-        "pid_latent",
-        "pid_sigma",
+        "model_info",
+        "pid_info",
         "width",
         "height",
-        "inpaint_source",
-        "inpaint_sample",
-        "inpaint_mask",
+        "inpaint_info",
         "image_original",
     )
-    assert IMAGE_ORIGINAL_OUTPUT_INDEX == 13
+    assert IMAGE_ORIGINAL_OUTPUT_INDEX == 8
+
+
+def test_info_nodes_expose_bundle_extractors():
+    assert AIOModelInfo.RETURN_TYPES == ("MODEL", "CLIP", "CONDITIONING", "CONDITIONING", "VAE")
+    assert AIOModelInfo.RETURN_NAMES == ("model", "clip", "positive", "negative", "vae")
+    assert "model_info" in AIOModelInfo.INPUT_TYPES()["required"]
+    assert AIOModelInfo().extract(
+        {
+            "model": "model",
+            "clip": "clip",
+            "positive": "positive",
+            "negative": "negative",
+            "vae": "vae",
+        }
+    ) == ("model", "clip", "positive", "negative", "vae")
+
+    assert AIOPIDInfo.RETURN_TYPES == ("LATENT", "FLOAT", "INT")
+    assert AIOPIDInfo.RETURN_NAMES == ("latent", "sigma", "step")
+    assert "pid_info" in AIOPIDInfo.INPUT_TYPES()["required"]
+    assert AIOPIDInfo().extract({"latent": "latent", "sigma": 0.5, "step": 3}) == ("latent", 0.5, 3)
+
+    assert AIOInpaintInfo.RETURN_TYPES == ("IMAGE", "IMAGE", "MASK")
+    assert AIOInpaintInfo.RETURN_NAMES == ("source", "sample", "mask")
+    assert "inpaint_info" in AIOInpaintInfo.INPUT_TYPES()["required"]
+    assert AIOInpaintInfo().extract({"source": "source", "sample": "sample", "mask": "mask"}) == (
+        "source",
+        "sample",
+        "mask",
+    )
 
 
 def test_aio_seed_frontend_randomizes_live_seed_before_queue():
@@ -279,12 +299,23 @@ def test_vae_output_reachability_uses_socket_index(monkeypatch):
     monkeypatch.setattr(aio_generate, "_class_is_output_node", lambda class_type: class_type == "VAEConsumer")
     prompt = {
         "1": {"class_type": "AIOImageGenerate", "inputs": {}},
-        "2": {"class_type": "VAEConsumer", "inputs": {"vae": ["1", 5]}},
+        "2": {
+            "class_type": "AIOModelInfo",
+            "inputs": {"model_info": ["1", aio_generate.MODEL_INFO_OUTPUT_INDEX]},
+        },
+        "3": {"class_type": "VAEConsumer", "inputs": {"vae": ["2", aio_generate.MODEL_INFO_VAE_OUTPUT_INDEX]}},
     }
 
     assert output_is_reachable(prompt, "1", 0) is False
     assert output_is_reachable(prompt, "1", 1) is False
-    assert output_is_reachable(prompt, "1", 5) is True
+    assert aio_generate.info_output_is_reachable(
+        prompt,
+        None,
+        "1",
+        aio_generate.MODEL_INFO_OUTPUT_INDEX,
+        "AIOModelInfo",
+        aio_generate.MODEL_INFO_VAE_OUTPUT_INDEX,
+    ) is True
 
 
 def test_workflow_output_has_link_reads_full_canvas_links():
@@ -375,11 +406,19 @@ def test_main_node_passes_lora_config_to_adapter(monkeypatch):
 
         def generate(self, **kwargs):
             captured.update(kwargs)
-            return "image", {"samples": "latent"}, "positive", "negative", "vae"
+            return pipeline.GenerationResult(
+                image="image",
+                latent={"samples": "latent"},
+                positive="positive",
+                negative="negative",
+                vae="vae",
+                model=kwargs["loaded_model"],
+                clip=kwargs["loaded_clip"],
+            )
 
     monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
 
-    image, latent, run_info, positive, negative, loaded_vae, pid_latent, pid_sigma, output_width, output_height, *_debug_outputs = AIOImageGenerate().generate(
+    image, latent, run_info, model_info, pid_info, output_width, output_height, inpaint_info, _image_original = AIOImageGenerate().generate(
         model_type="z_image_turbo",
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
@@ -400,8 +439,13 @@ def test_main_node_passes_lora_config_to_adapter(monkeypatch):
 
     assert image == "image"
     assert latent == {"samples": "latent"}
-    assert positive == "positive"
-    assert negative == "negative"
+    assert model_info["positive"] == "positive"
+    assert model_info["negative"] == "negative"
+    assert model_info["vae"] == "vae"
+    assert model_info["model"] == "patched_model"
+    assert model_info["clip"] == "patched_clip"
+    assert pid_info == {"latent": None, "sigma": 0.0, "step": 0}
+    assert inpaint_info == {"source": None, "sample": None, "mask": None}
     assert captured["lora_config"]["loras"][0]["name"] == "style"
     assert captured["loaded_model"] == "patched_model"
     assert captured["loaded_clip"] == "patched_clip"
@@ -461,14 +505,11 @@ def test_main_node_passes_second_pass_config_and_strips_latent_sidecars(monkeypa
         image,
         latent,
         run_info,
-        _positive,
-        _negative,
-        _loaded_vae,
-        _pid_latent,
-        _pid_sigma,
+        _model_info,
+        _pid_info,
         output_width,
         output_height,
-        *_debug_outputs,
+        _inpaint_info,
         image_original,
     ) = AIOImageGenerate().generate(
         model_type="z_image_turbo",
@@ -595,7 +636,7 @@ def test_main_node_passes_inpaint_config_and_uses_source_dimensions(monkeypatch)
 
     monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
 
-    _, _, run_info, _, _, _, _, _, output_width, output_height, *_debug_outputs = AIOImageGenerate().generate(
+    _, _, run_info, _, _, output_width, output_height, _, _ = AIOImageGenerate().generate(
         model_type="ideogram4",
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
@@ -670,9 +711,13 @@ def test_main_node_returns_connected_inpaint_debug_previews(monkeypatch):
 
     prompt = {
         "1": {"class_type": "AIOImageGenerate", "inputs": {}},
-        "2": {"class_type": "PreviewImage", "inputs": {"images": ["1", aio_generate.INPAINT_SOURCE_OUTPUT_INDEX]}},
-        "3": {"class_type": "PreviewImage", "inputs": {"images": ["1", aio_generate.INPAINT_SAMPLE_OUTPUT_INDEX]}},
-        "4": {"class_type": "PreviewImage", "inputs": {"images": ["1", aio_generate.INPAINT_MASK_OUTPUT_INDEX]}},
+        "2": {
+            "class_type": "AIOInpaintInfo",
+            "inputs": {"inpaint_info": ["1", aio_generate.INPAINT_INFO_OUTPUT_INDEX]},
+        },
+        "3": {"class_type": "PreviewImage", "inputs": {"images": ["2", aio_generate.INPAINT_INFO_SOURCE_OUTPUT_INDEX]}},
+        "4": {"class_type": "PreviewImage", "inputs": {"images": ["2", aio_generate.INPAINT_INFO_SAMPLE_OUTPUT_INDEX]}},
+        "5": {"class_type": "PreviewImage", "inputs": {"images": ["2", aio_generate.INPAINT_INFO_MASK_OUTPUT_INDEX]}},
     }
 
     monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
@@ -681,16 +726,11 @@ def test_main_node_returns_connected_inpaint_debug_previews(monkeypatch):
         image,
         _latent,
         _run_info,
-        _positive,
-        _negative,
-        _loaded_vae,
-        _pid_latent,
-        _pid_sigma,
+        _model_info,
+        _pid_info,
         _output_width,
         _output_height,
-        inpaint_source,
-        inpaint_sample,
-        inpaint_mask,
+        inpaint_info,
         _image_original,
     ) = AIOImageGenerate().generate(
         model_type="ideogram4",
@@ -719,9 +759,88 @@ def test_main_node_returns_connected_inpaint_debug_previews(monkeypatch):
     assert requested[pipeline.INPAINT_PREVIEW_SOURCE] is True
     assert requested[pipeline.INPAINT_PREVIEW_SAMPLE] is True
     assert requested[pipeline.INPAINT_PREVIEW_MASK] is True
-    assert inpaint_source == "debug_source"
-    assert inpaint_sample == "debug_sample"
-    assert inpaint_mask == "debug_mask"
+    assert inpaint_info == {"source": "debug_source", "sample": "debug_sample", "mask": "debug_mask"}
+
+
+def test_main_node_requests_all_inpaint_previews_when_workflow_field_links_are_unknown(monkeypatch):
+    from nodes import aio_generate
+
+    captured = {}
+    inpaint_config = _inpaint_config(monkeypatch)
+
+    class FakeAdapter:
+        version = "test"
+        dimension_multiple = 16
+
+        def resolve_settings(self, **kwargs):
+            return {
+                "width": kwargs["width"],
+                "height": kwargs["height"],
+                "steps": 20,
+                "cfg": 7.0,
+                "sampler": "euler",
+                "scheduler": "ideogram4",
+            }
+
+        def validate_inputs(self, **kwargs):
+            return []
+
+        def generate(self, **kwargs):
+            captured.update(kwargs)
+            return "image", {"samples": "latent"}, "positive", "negative", None
+
+    extra_pnginfo = {
+        "workflow": {
+            "nodes": [
+                {
+                    "id": 1,
+                    "outputs": [
+                        {"name": "image", "links": None},
+                        {"name": "latent", "links": None},
+                        {"name": "run_info", "links": None},
+                        {"name": "model_info", "links": None},
+                        {"name": "pid_info", "links": None},
+                        {"name": "width", "links": None},
+                        {"name": "height", "links": None},
+                        {"name": "inpaint_info", "links": [20]},
+                        {"name": "image_original", "links": None},
+                    ],
+                },
+                {"id": 2, "type": "AIOInpaintInfo"},
+            ],
+            "links": [
+                [20, 1, aio_generate.INPAINT_INFO_OUTPUT_INDEX, 2, 0, "AIO_INPAINT_INFO"],
+            ],
+        },
+    }
+    monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
+
+    AIOImageGenerate().generate(
+        model_type="ideogram4",
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="",
+        seed=0,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+        inpaint=inpaint_config,
+        model_settings={
+            "family": "ideogram4",
+            "unconditional_model": "unconditional.safetensors",
+        },
+        unique_id="1",
+        prompt={"1": {"class_type": "AIOImageGenerate", "inputs": {}}},
+        extra_pnginfo=extra_pnginfo,
+    )
+
+    requested = captured["inpaint_previews"][pipeline.INPAINT_PREVIEW_REQUESTED]
+    assert requested[pipeline.INPAINT_PREVIEW_SOURCE] is True
+    assert requested[pipeline.INPAINT_PREVIEW_SAMPLE] is True
+    assert requested[pipeline.INPAINT_PREVIEW_MASK] is True
 
 
 def test_main_node_reports_actual_decoded_image_dimensions(monkeypatch):
@@ -749,7 +868,7 @@ def test_main_node_reports_actual_decoded_image_dimensions(monkeypatch):
 
     monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
 
-    _, _, run_info, _, _, _, _, _, output_width, output_height, *_debug_outputs = AIOImageGenerate().generate(
+    _, _, run_info, _, _, output_width, output_height, _, _ = AIOImageGenerate().generate(
         model_type="flux2_klein_9b",
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
@@ -1002,7 +1121,7 @@ def test_ideogram_prompt_builder_overrides_prompt_and_dimensions(monkeypatch):
 
     monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
 
-    _, _, run_info, _, _, _, _, _, output_width, output_height, *_debug_outputs = AIOImageGenerate().generate(
+    _, _, run_info, _, _, output_width, output_height, _, _ = AIOImageGenerate().generate(
         model_type="ideogram4",
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
@@ -1277,7 +1396,7 @@ def test_main_node_skips_image_decode_for_latent_only_prompt(monkeypatch):
     monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
     monkeypatch.setattr(aio_generate, "_class_is_output_node", lambda class_type: class_type == "SaveLatent")
 
-    image, latent, run_info, positive, negative, loaded_vae, pid_latent, pid_sigma, output_width, output_height, *_debug_outputs = AIOImageGenerate().generate(
+    image, latent, run_info, model_info, pid_info, output_width, output_height, inpaint_info, _image_original = AIOImageGenerate().generate(
         model_type="z_image_turbo",
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
@@ -1297,11 +1416,13 @@ def test_main_node_skips_image_decode_for_latent_only_prompt(monkeypatch):
 
     assert image is None
     assert latent == {"samples": "latent"}
-    assert positive == "positive"
-    assert negative == "negative"
+    assert model_info["positive"] == "positive"
+    assert model_info["negative"] == "negative"
     assert captured["decode_image"] is False
     assert captured["return_vae"] is False
-    assert loaded_vae is None
+    assert model_info["vae"] is None
+    assert pid_info == {"latent": None, "sigma": 0.0, "step": 0}
+    assert inpaint_info == {"source": None, "sample": None, "mask": None}
     assert '"width": 1024' in run_info
     assert (output_width, output_height) == (1024, 1024)
 
@@ -1333,7 +1454,7 @@ def test_main_node_does_not_capture_pid_latent_when_pid_outputs_are_not_connecte
 
     monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
 
-    image, latent, run_info, positive, negative, loaded_vae, pid_latent, pid_sigma, output_width, output_height, *_debug_outputs = AIOImageGenerate().generate(
+    image, latent, run_info, model_info, pid_info, output_width, output_height, inpaint_info, _image_original = AIOImageGenerate().generate(
         model_type="z_image_turbo",
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
@@ -1350,8 +1471,10 @@ def test_main_node_does_not_capture_pid_latent_when_pid_outputs_are_not_connecte
     )
 
     assert image == "image"
-    assert pid_latent is None
-    assert pid_sigma == 0.0
+    assert model_info["positive"] == "positive"
+    assert model_info["negative"] == "negative"
+    assert pid_info == {"latent": None, "sigma": 0.0, "step": 0}
+    assert inpaint_info == {"source": None, "sample": None, "mask": None}
     assert captured["decode_image"] is True
     assert captured["pid_capture_step"] is None
     assert "pid" not in json.loads(run_info)
@@ -1393,12 +1516,16 @@ def test_main_node_connected_pid_latent_output_captures_step(monkeypatch):
 
     prompt = {
         "1": {"class_type": "AIOImageGenerate", "inputs": {}},
-        "2": {"class_type": "PreviewImage", "inputs": {"images": ["1", 6]}},
+        "2": {
+            "class_type": "AIOPIDInfo",
+            "inputs": {"pid_info": ["1", aio_generate.PID_INFO_OUTPUT_INDEX]},
+        },
+        "3": {"class_type": "PreviewImage", "inputs": {"images": ["2", aio_generate.PID_INFO_LATENT_OUTPUT_INDEX]}},
     }
     monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
     monkeypatch.setattr(aio_generate, "_class_is_output_node", lambda class_type: class_type == "PreviewImage")
 
-    image, latent, run_info, positive, negative, loaded_vae, pid_latent, pid_sigma, output_width, output_height, *_debug_outputs = AIOImageGenerate().generate(
+    image, latent, run_info, model_info, pid_info, output_width, output_height, inpaint_info, _image_original = AIOImageGenerate().generate(
         model_type="z_image_turbo",
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
@@ -1418,8 +1545,12 @@ def test_main_node_connected_pid_latent_output_captures_step(monkeypatch):
     )
 
     assert image is None
-    assert pid_latent is captured_latent
-    assert pid_sigma == 0.342
+    assert pid_info["latent"] is captured_latent
+    assert pid_info["sigma"] == 0.342
+    assert pid_info["step"] == 6
+    assert model_info["positive"] == "positive"
+    assert model_info["negative"] == "negative"
+    assert inpaint_info == {"source": None, "sample": None, "mask": None}
     assert captured["decode_image"] is False
     assert captured["pid_capture_step"] == 6
     assert "pid" not in json.loads(run_info)
@@ -1461,12 +1592,16 @@ def test_main_node_connected_pid_sigma_output_auto_selects_capture_step(monkeypa
 
     prompt = {
         "1": {"class_type": "AIOImageGenerate", "inputs": {}},
-        "2": {"class_type": "PreviewImage", "inputs": {"images": ["1", 7]}},
+        "2": {
+            "class_type": "AIOPIDInfo",
+            "inputs": {"pid_info": ["1", aio_generate.PID_INFO_OUTPUT_INDEX]},
+        },
+        "3": {"class_type": "PreviewImage", "inputs": {"images": ["2", aio_generate.PID_INFO_SIGMA_OUTPUT_INDEX]}},
     }
     monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
     monkeypatch.setattr(aio_generate, "_class_is_output_node", lambda class_type: class_type == "PreviewImage")
 
-    image, latent, run_info, positive, negative, loaded_vae, pid_latent, pid_sigma, output_width, output_height, *_debug_outputs = AIOImageGenerate().generate(
+    image, latent, run_info, model_info, pid_info, output_width, output_height, inpaint_info, _image_original = AIOImageGenerate().generate(
         model_type="z_image_turbo",
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
@@ -1486,8 +1621,12 @@ def test_main_node_connected_pid_sigma_output_auto_selects_capture_step(monkeypa
     )
 
     assert image == "image"
-    assert pid_latent is captured_latent
-    assert pid_sigma == 0.123
+    assert pid_info["latent"] is captured_latent
+    assert pid_info["sigma"] == 0.123
+    assert pid_info["step"] == 46
+    assert model_info["positive"] == "positive"
+    assert model_info["negative"] == "negative"
+    assert inpaint_info == {"source": None, "sample": None, "mask": None}
     assert captured["decode_image"] is False
     assert captured["pid_capture_step"] == 46
     assert (output_width, output_height) == (1024, 1024)
@@ -1521,13 +1660,17 @@ def test_main_node_returns_vae_for_valid_latent_only_vae_prompt(monkeypatch):
     prompt = {
         "1": {"class_type": "AIOImageGenerate", "inputs": {}},
         "2": {"class_type": "SaveLatent", "inputs": {"samples": ["1", 1]}},
-        "3": {"class_type": "VAEConsumer", "inputs": {"vae": ["1", 5]}},
+        "3": {
+            "class_type": "AIOModelInfo",
+            "inputs": {"model_info": ["1", aio_generate.MODEL_INFO_OUTPUT_INDEX]},
+        },
+        "4": {"class_type": "VAEConsumer", "inputs": {"vae": ["3", aio_generate.MODEL_INFO_VAE_OUTPUT_INDEX]}},
     }
     output_nodes = {"SaveLatent", "VAEConsumer"}
     monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
     monkeypatch.setattr(aio_generate, "_class_is_output_node", lambda class_type: class_type in output_nodes)
 
-    image, latent, run_info, positive, negative, loaded_vae, pid_latent, pid_sigma, output_width, output_height, *_debug_outputs = AIOImageGenerate().generate(
+    image, latent, run_info, model_info, pid_info, output_width, output_height, inpaint_info, _image_original = AIOImageGenerate().generate(
         model_type="z_image_turbo",
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
@@ -1547,9 +1690,11 @@ def test_main_node_returns_vae_for_valid_latent_only_vae_prompt(monkeypatch):
 
     assert image is None
     assert latent == {"samples": "latent"}
-    assert positive == "positive"
-    assert negative == "negative"
-    assert loaded_vae == "vae"
+    assert model_info["positive"] == "positive"
+    assert model_info["negative"] == "negative"
+    assert model_info["vae"] == "vae"
+    assert pid_info == {"latent": None, "sigma": 0.0, "step": 0}
+    assert inpaint_info == {"source": None, "sample": None, "mask": None}
     assert captured["decode_image"] is False
     assert captured["return_vae"] is True
     assert '"width": 1024' in run_info
@@ -1585,13 +1730,17 @@ def test_main_node_returns_vae_when_image_and_latent_are_connected(monkeypatch):
         "1": {"class_type": "AIOImageGenerate", "inputs": {}},
         "2": {"class_type": "PreviewImage", "inputs": {"images": ["1", 0]}},
         "3": {"class_type": "SaveLatent", "inputs": {"samples": ["1", 1]}},
-        "4": {"class_type": "VAEConsumer", "inputs": {"vae": ["1", 5]}},
+        "4": {
+            "class_type": "AIOModelInfo",
+            "inputs": {"model_info": ["1", aio_generate.MODEL_INFO_OUTPUT_INDEX]},
+        },
+        "5": {"class_type": "VAEConsumer", "inputs": {"vae": ["4", aio_generate.MODEL_INFO_VAE_OUTPUT_INDEX]}},
     }
     output_nodes = {"PreviewImage", "SaveLatent", "VAEConsumer"}
     monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
     monkeypatch.setattr(aio_generate, "_class_is_output_node", lambda class_type: class_type in output_nodes)
 
-    image, latent, run_info, positive, negative, loaded_vae, pid_latent, pid_sigma, output_width, output_height, *_debug_outputs = AIOImageGenerate().generate(
+    image, latent, run_info, model_info, pid_info, output_width, output_height, inpaint_info, _image_original = AIOImageGenerate().generate(
         model_type="z_image_turbo",
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
@@ -1611,9 +1760,11 @@ def test_main_node_returns_vae_when_image_and_latent_are_connected(monkeypatch):
 
     assert image == "image"
     assert latent == {"samples": "latent"}
-    assert positive == "positive"
-    assert negative == "negative"
-    assert loaded_vae == "vae"
+    assert model_info["positive"] == "positive"
+    assert model_info["negative"] == "negative"
+    assert model_info["vae"] == "vae"
+    assert pid_info == {"latent": None, "sigma": 0.0, "step": 0}
+    assert inpaint_info == {"source": None, "sample": None, "mask": None}
     assert captured["decode_image"] is True
     assert captured["return_vae"] is True
     assert '"width": 1024' in run_info
@@ -1647,7 +1798,8 @@ def test_main_node_uses_workflow_links_for_image_and_vae_outputs(monkeypatch):
 
     prompt = {
         "83": {"class_type": "AIOImageGenerate", "inputs": {}},
-        "91": {"class_type": "VAEConsumer", "inputs": {"vae": ["83", 5]}},
+        "91": {"class_type": "AIOModelInfo", "inputs": {"model_info": ["83", aio_generate.MODEL_INFO_OUTPUT_INDEX]}},
+        "92": {"class_type": "VAEConsumer", "inputs": {"vae": ["91", aio_generate.MODEL_INFO_VAE_OUTPUT_INDEX]}},
     }
     extra_pnginfo = {
         "workflow": {
@@ -1658,17 +1810,32 @@ def test_main_node_uses_workflow_links_for_image_and_vae_outputs(monkeypatch):
                         {"name": "image", "links": [10]},
                         {"name": "latent", "links": [11]},
                         {"name": "run_info", "links": [12]},
+                        {"name": "model_info", "links": [13]},
+                        {"name": "pid_info", "links": None},
+                        {"name": "width", "links": None},
+                        {"name": "height", "links": None},
+                        {"name": "inpaint_info", "links": None},
+                        {"name": "image_original", "links": None},
+                    ],
+                },
+                {
+                    "id": 91,
+                    "type": "AIOModelInfo",
+                    "outputs": [
+                        {"name": "model", "links": None},
+                        {"name": "clip", "links": None},
                         {"name": "positive", "links": None},
                         {"name": "negative", "links": None},
-                        {"name": "vae", "links": [13]},
+                        {"name": "vae", "links": [14]},
                     ],
-                }
+                },
             ],
             "links": [
                 [10, 83, 0, 89, 0, "IMAGE"],
                 [11, 83, 1, 90, 0, "LATENT"],
-                [12, 83, 2, 92, 0, "STRING"],
-                [13, 83, 5, 91, 0, "VAE"],
+                [12, 83, 2, 93, 0, "STRING"],
+                [13, 83, aio_generate.MODEL_INFO_OUTPUT_INDEX, 91, 0, "AIO_MODEL_INFO"],
+                [14, 91, aio_generate.MODEL_INFO_VAE_OUTPUT_INDEX, 92, 0, "VAE"],
             ],
         }
     }
@@ -1676,7 +1843,7 @@ def test_main_node_uses_workflow_links_for_image_and_vae_outputs(monkeypatch):
     monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
     monkeypatch.setattr(aio_generate, "_class_is_output_node", lambda class_type: class_type in output_nodes)
 
-    image, latent, run_info, positive, negative, loaded_vae, pid_latent, pid_sigma, output_width, output_height, *_debug_outputs = AIOImageGenerate().generate(
+    image, latent, run_info, model_info, pid_info, output_width, output_height, inpaint_info, _image_original = AIOImageGenerate().generate(
         model_type="z_image_turbo",
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
@@ -1697,9 +1864,11 @@ def test_main_node_uses_workflow_links_for_image_and_vae_outputs(monkeypatch):
 
     assert image == "image"
     assert latent == {"samples": "latent"}
-    assert positive == "positive"
-    assert negative == "negative"
-    assert loaded_vae == "vae"
+    assert model_info["positive"] == "positive"
+    assert model_info["negative"] == "negative"
+    assert model_info["vae"] == "vae"
+    assert pid_info == {"latent": None, "sigma": 0.0, "step": 0}
+    assert inpaint_info == {"source": None, "sample": None, "mask": None}
     assert captured["decode_image"] is True
     assert captured["return_vae"] is True
     assert '"width": 1024' in run_info
@@ -1733,12 +1902,16 @@ def test_main_node_returns_vae_when_latent_is_not_connected(monkeypatch):
 
     prompt = {
         "1": {"class_type": "AIOImageGenerate", "inputs": {}},
-        "2": {"class_type": "VAEConsumer", "inputs": {"vae": ["1", 5]}},
+        "2": {
+            "class_type": "AIOModelInfo",
+            "inputs": {"model_info": ["1", aio_generate.MODEL_INFO_OUTPUT_INDEX]},
+        },
+        "3": {"class_type": "VAEConsumer", "inputs": {"vae": ["2", aio_generate.MODEL_INFO_VAE_OUTPUT_INDEX]}},
     }
     monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
     monkeypatch.setattr(aio_generate, "_class_is_output_node", lambda class_type: class_type == "VAEConsumer")
 
-    image, latent, run_info, positive, negative, loaded_vae, pid_latent, pid_sigma, output_width, output_height, *_debug_outputs = AIOImageGenerate().generate(
+    image, latent, run_info, model_info, pid_info, output_width, output_height, inpaint_info, _image_original = AIOImageGenerate().generate(
         model_type="z_image_turbo",
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
@@ -1758,9 +1931,11 @@ def test_main_node_returns_vae_when_latent_is_not_connected(monkeypatch):
 
     assert image is None
     assert latent == {"samples": "latent"}
-    assert positive == "positive"
-    assert negative == "negative"
-    assert loaded_vae == "vae"
+    assert model_info["positive"] == "positive"
+    assert model_info["negative"] == "negative"
+    assert model_info["vae"] == "vae"
+    assert pid_info == {"latent": None, "sigma": 0.0, "step": 0}
+    assert inpaint_info == {"source": None, "sample": None, "mask": None}
     assert captured["decode_image"] is False
     assert captured["return_vae"] is True
     assert '"width": 1024' in run_info
@@ -1847,7 +2022,7 @@ def test_main_node_resolves_aspect_ratio_output_size(monkeypatch):
 
     monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
 
-    image, latent, run_info, positive, negative, loaded_vae, pid_latent, pid_sigma, output_width, output_height, *_debug_outputs = AIOImageGenerate().generate(
+    image, latent, run_info, model_info, _pid_info, output_width, output_height, _inpaint_info, _image_original = AIOImageGenerate().generate(
         model_type="flux2_klein_9b",
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
@@ -1871,8 +2046,8 @@ def test_main_node_resolves_aspect_ratio_output_size(monkeypatch):
 
     assert image == "image"
     assert latent == {"samples": "latent"}
-    assert positive == "positive"
-    assert negative == "negative"
+    assert model_info["positive"] == "positive"
+    assert model_info["negative"] == "negative"
     assert captured["validated"]["width"] == 1024
     assert captured["validated"]["height"] == 576
     assert captured["generated"]["width"] == 1024
@@ -1910,7 +2085,7 @@ def test_main_node_can_use_image_1_size(monkeypatch):
 
     monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
 
-    image, latent, run_info, positive, negative, loaded_vae, pid_latent, pid_sigma, output_width, output_height, *_debug_outputs = AIOImageGenerate().generate(
+    image, latent, run_info, model_info, _pid_info, output_width, output_height, _inpaint_info, _image_original = AIOImageGenerate().generate(
         model_type="flux2_klein_9b",
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
@@ -1933,8 +2108,8 @@ def test_main_node_can_use_image_1_size(monkeypatch):
 
     assert image == "image"
     assert latent == {"samples": "latent"}
-    assert positive == "positive"
-    assert negative == "negative"
+    assert model_info["positive"] == "positive"
+    assert model_info["negative"] == "negative"
     assert captured["width"] == 512
     assert captured["height"] == 768
     assert '"size_mode": "use image 1 size"' in run_info
@@ -1972,7 +2147,7 @@ def test_main_node_uses_text_to_image_when_image_1_size_has_no_image(monkeypatch
 
     monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
 
-    image, latent, run_info, positive, negative, loaded_vae, pid_latent, pid_sigma, output_width, output_height, *_debug_outputs = AIOImageGenerate().generate(
+    image, latent, run_info, model_info, _pid_info, output_width, output_height, _inpaint_info, _image_original = AIOImageGenerate().generate(
         model_type=model_type,
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
@@ -1995,8 +2170,8 @@ def test_main_node_uses_text_to_image_when_image_1_size_has_no_image(monkeypatch
     parsed = json.loads(run_info)
     assert image == "image"
     assert latent == {"samples": "latent"}
-    assert positive == "positive"
-    assert negative == "negative"
+    assert model_info["positive"] == "positive"
+    assert model_info["negative"] == "negative"
     assert captured["validated"]["reference_inputs"].count == 0
     assert captured["generated"]["reference_inputs"].count == 0
     assert captured["generated"]["width"] == 1024

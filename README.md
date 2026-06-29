@@ -163,6 +163,16 @@ When the pass is enabled, `image_original` exposes the first-pass image before u
 
 When both `model` and `clip` are connected, the main node treats them as already post-LoRA and skips internal model/CLIP loading and LoRA application. This supports external model modifications after AIO LoRAs while keeping the one-node generation path available for simple workflows. If your patch node only modifies `MODEL`, route the loader's `CLIP` output directly into the main node's `clip` input.
 
+## Utility Info Outputs
+
+`AIO Image Generate` keeps its main image, latent, run info, width, height, and `image_original` outputs directly on the node. Internal values are grouped into compact info outputs:
+
+- `model_info`: connect to `AIO Model Info` to access `model`, `clip`, `positive`, `negative`, and `vae`.
+- `pid_info`: connect to `AIO PID Info` to access captured PID `latent`, `sigma`, and `step`.
+- `inpaint_info`: connect to `AIO Inpaint Info` to access the prepared inpaint source image, decoded pre-stitch/pre-blend sample, and working mask.
+
+These grouped sockets replace the old direct model/conditioning/VAE, PID, and inpaint debug outputs. Existing workflows connected to those old sockets need to reconnect through the matching info node.
+
 ## Known Limitations
 
 - GGUF depends on an external compatible backend such as ComfyUI-GGUF.
@@ -170,7 +180,7 @@ When both `model` and `clip` are connected, the main node treats them as already
 - FLUX.2 Klein supports up to four reference images through `image 1` to `image 4`.
 - FLUX.2 Klein settings expose reference image scaling controls, defaulting to 1.0 megapixel, `area`, and 1 resolution step. For Flux inpaint on 16 GB GPUs, keeping connected references at or below 1.0 megapixel is recommended.
 - FLUX.2 Klein supports inpaint through the dedicated `AIO Inpaint` config node. With `ComfyUI-Inpaint-CropAndStitch` installed, the Flux path uses the shared crop/stitch controls, crops around the mask, uses ComfyUI `InpaintModelConditioning`, samples the working crop, and stitches the decoded result back to the original image size. New `AIO Inpaint` nodes default to crop/stitch-style values: mask grow 8% of the active mask bounding box, mask feather 24px, `steps=0` to reuse the main resolved step count, and a 1024x1024 working crop target. Set a positive `steps` value to run the inpaint pass with fewer or more sampler steps than the main generation. The advanced `source_latent_mode` control can be set to `full image` to bypass crop/stitch and encode the whole source frame as the input latent; the full-frame path still obeys `max_full_frame_megapixels` and `max_full_frame_side` before VAE/sampling. The generation path keeps the crop/stitch node's default GPU mode for parity with the original workflow. The node's `final_mask` output shows the stitcher blend mask projected back to source image size, or the source-size grown and feathered mask on the fallback/full-image path. Crop/stitch mask preview preparation uses CPU mode to avoid occupying Flux sampler VRAM for large source images.
-- `AIO Image Generate` exposes optional inpaint debug outputs for the prepared working image, decoded pre-stitch/pre-blend sample, and working mask so crop/stitch behavior can be inspected before final compositing.
+- `AIO Image Generate` exposes optional inpaint debug values through `AIO Inpaint Info` for the prepared working image, decoded pre-stitch/pre-blend sample, and working mask so crop/stitch behavior can be inspected before final compositing.
 - Without the optional crop/stitch node pack, Flux falls back to full-frame masked sampling and final blend. The fallback path downsizes large full-frame inputs using `max_full_frame_megapixels` and `max_full_frame_side` from `AIO Inpaint` before VAE/sampling, so the fallback output may be smaller than the original source.
 - FLUX.2 Klein latent-only inpaint output returns the sampled working latent; decoded image output is the path that restores the original canvas size.
 - The legacy `mask` input is still only accepted alongside `image 1` and is not the inpaint contract.

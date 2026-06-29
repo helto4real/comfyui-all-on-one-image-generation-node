@@ -15,4 +15,5 @@
 - Added runtime GGUF loader-node integration for diffusion and text encoder loading through compatible GGUF custom nodes.
 - Added AIO LoRA Configuration node with dynamic ordered LoRA rows and runtime application through ComfyUI's LoRA loader.
 - Added optional upscaled second sampler pass with configurable steps, `image_original` output, and `run_info.second_pass` metadata.
+- Grouped internal `AIO Image Generate` outputs into `model_info`, `pid_info`, and `inpaint_info`, with new `AIO Model Info`, `AIO PID Info`, and `AIO Inpaint Info` utility nodes for unpacking the old direct values.
 - Added tests that do not require real model files.

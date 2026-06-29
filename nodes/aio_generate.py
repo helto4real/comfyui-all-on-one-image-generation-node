@@ -485,38 +485,167 @@ def output_is_connected(
     )
 
 
+def _workflow_node_class(extra_pnginfo: Any, node_id: str) -> str | None:
+    if not isinstance(extra_pnginfo, dict):
+        return None
+    workflow = extra_pnginfo.get("workflow")
+    if not isinstance(workflow, dict):
+        return None
+    for node in workflow.get("nodes", []) or []:
+        if not isinstance(node, dict) or str(node.get("id")) != node_id:
+            continue
+        class_type = node.get("class_type", node.get("type"))
+        return class_type if isinstance(class_type, str) else None
+    return None
+
+
+def _prompt_info_consumers(
+    prompt: Any,
+    unique_id: str | None,
+    socket_index: int,
+    class_type: str,
+) -> set[str]:
+    if not isinstance(prompt, dict) or unique_id is None:
+        return set()
+    target_id = str(unique_id)
+    consumers: set[str] = set()
+    for raw_node_id, node_data in prompt.items():
+        node_id = str(raw_node_id)
+        if not isinstance(node_data, dict) or node_data.get("class_type") != class_type:
+            continue
+        inputs = node_data.get("inputs", {})
+        if not isinstance(inputs, dict):
+            continue
+        if any(
+            _is_link(value) and str(value[0]) == target_id and int(value[1]) == socket_index
+            for value in inputs.values()
+        ):
+            consumers.add(node_id)
+    return consumers
+
+
+def _workflow_info_consumers(
+    extra_pnginfo: Any,
+    unique_id: str | None,
+    socket_index: int,
+    class_type: str,
+) -> set[str]:
+    if unique_id is None or not isinstance(extra_pnginfo, dict):
+        return set()
+    workflow = extra_pnginfo.get("workflow")
+    if not isinstance(workflow, dict):
+        return set()
+    target_id = str(unique_id)
+    consumers: set[str] = set()
+    for link in workflow.get("links", []) or []:
+        if (
+            isinstance(link, (list, tuple))
+            and len(link) >= 4
+            and str(link[1]) == target_id
+            and link[2] == socket_index
+        ):
+            consumer_id = str(link[3])
+            if _workflow_node_class(extra_pnginfo, consumer_id) == class_type:
+                consumers.add(consumer_id)
+    return consumers
+
+
+def _workflow_node_has_output_metadata(
+    extra_pnginfo: Any,
+    node_id: str,
+    max_output_index: int,
+) -> bool:
+    if not isinstance(extra_pnginfo, dict):
+        return False
+    workflow = extra_pnginfo.get("workflow")
+    if not isinstance(workflow, dict):
+        return False
+    for node in workflow.get("nodes", []) or []:
+        if not isinstance(node, dict) or str(node.get("id")) != node_id:
+            continue
+        outputs = node.get("outputs")
+        return isinstance(outputs, list) and len(outputs) > max_output_index
+    return False
+
+
+def info_output_reachability_unknown(
+    extra_pnginfo: Any,
+    unique_id: str | None,
+    bundle_socket_index: int,
+    class_type: str,
+    max_output_index: int,
+) -> bool:
+    for node_id in _workflow_info_consumers(extra_pnginfo, unique_id, bundle_socket_index, class_type):
+        if not _workflow_node_has_output_metadata(extra_pnginfo, node_id, max_output_index):
+            return True
+    return False
+
+
+def info_output_is_reachable(
+    prompt: Any,
+    extra_pnginfo: Any,
+    unique_id: str | None,
+    bundle_socket_index: int,
+    class_type: str,
+    output_index: int,
+) -> bool:
+    for node_id in _prompt_info_consumers(prompt, unique_id, bundle_socket_index, class_type):
+        if output_is_connected(prompt, extra_pnginfo, node_id, output_index):
+            return True
+    for node_id in _workflow_info_consumers(extra_pnginfo, unique_id, bundle_socket_index, class_type):
+        if workflow_output_has_link(extra_pnginfo, node_id, output_index):
+            return True
+    return False
+
+
+def info_node_is_linked(
+    prompt: Any,
+    extra_pnginfo: Any,
+    unique_id: str | None,
+    bundle_socket_index: int,
+    class_type: str,
+) -> bool:
+    return bool(
+        _prompt_info_consumers(prompt, unique_id, bundle_socket_index, class_type)
+        or _workflow_info_consumers(extra_pnginfo, unique_id, bundle_socket_index, class_type)
+    )
+
+
+def _coerce_generation_result(result: Any) -> pipeline.GenerationResult:
+    if isinstance(result, pipeline.GenerationResult):
+        return result
+    image, latent, positive, negative, loaded_vae = result
+    return pipeline.GenerationResult(
+        image=image,
+        latent=latent,
+        positive=positive,
+        negative=negative,
+        vae=loaded_vae,
+    )
+
+
 class AIOImageGenerate:
     CATEGORY = "AIO/Image"
     RETURN_TYPES = (
         "IMAGE",
         "LATENT",
         "STRING",
-        "CONDITIONING",
-        "CONDITIONING",
-        "VAE",
-        "LATENT",
-        "FLOAT",
+        "AIO_MODEL_INFO",
+        "AIO_PID_INFO",
         "INT",
         "INT",
-        "IMAGE",
-        "IMAGE",
-        "MASK",
+        "AIO_INPAINT_INFO",
         "IMAGE",
     )
     RETURN_NAMES = (
         "image",
         "latent",
         "run_info",
-        "positive",
-        "negative",
-        "vae",
-        "pid_latent",
-        "pid_sigma",
+        "model_info",
+        "pid_info",
         "width",
         "height",
-        "inpaint_source",
-        "inpaint_sample",
-        "inpaint_mask",
+        "inpaint_info",
         "image_original",
     )
     FUNCTION = "generate"
@@ -799,12 +928,89 @@ class AIOImageGenerate:
         )
 
         image_connected = output_is_connected(prompt, extra_pnginfo, unique_id, 0, default=True)
-        vae_connected = output_is_connected(prompt, extra_pnginfo, unique_id, 5)
-        pid_latent_connected = output_is_connected(prompt, extra_pnginfo, unique_id, PID_LATENT_OUTPUT_INDEX)
-        pid_sigma_connected = output_is_connected(prompt, extra_pnginfo, unique_id, PID_SIGMA_OUTPUT_INDEX)
-        inpaint_source_connected = output_is_connected(prompt, extra_pnginfo, unique_id, INPAINT_SOURCE_OUTPUT_INDEX)
-        inpaint_sample_connected = output_is_connected(prompt, extra_pnginfo, unique_id, INPAINT_SAMPLE_OUTPUT_INDEX)
-        inpaint_mask_connected = output_is_connected(prompt, extra_pnginfo, unique_id, INPAINT_MASK_OUTPUT_INDEX)
+        vae_connected = info_output_is_reachable(
+            prompt,
+            extra_pnginfo,
+            unique_id,
+            MODEL_INFO_OUTPUT_INDEX,
+            "AIOModelInfo",
+            MODEL_INFO_VAE_OUTPUT_INDEX,
+        )
+        pid_latent_connected = info_output_is_reachable(
+            prompt,
+            extra_pnginfo,
+            unique_id,
+            PID_INFO_OUTPUT_INDEX,
+            "AIOPIDInfo",
+            PID_INFO_LATENT_OUTPUT_INDEX,
+        )
+        pid_sigma_connected = info_output_is_reachable(
+            prompt,
+            extra_pnginfo,
+            unique_id,
+            PID_INFO_OUTPUT_INDEX,
+            "AIOPIDInfo",
+            PID_INFO_SIGMA_OUTPUT_INDEX,
+        )
+        pid_step_connected = info_output_is_reachable(
+            prompt,
+            extra_pnginfo,
+            unique_id,
+            PID_INFO_OUTPUT_INDEX,
+            "AIOPIDInfo",
+            PID_INFO_STEP_OUTPUT_INDEX,
+        )
+        inpaint_source_connected = info_output_is_reachable(
+            prompt,
+            extra_pnginfo,
+            unique_id,
+            INPAINT_INFO_OUTPUT_INDEX,
+            "AIOInpaintInfo",
+            INPAINT_INFO_SOURCE_OUTPUT_INDEX,
+        )
+        inpaint_sample_connected = info_output_is_reachable(
+            prompt,
+            extra_pnginfo,
+            unique_id,
+            INPAINT_INFO_OUTPUT_INDEX,
+            "AIOInpaintInfo",
+            INPAINT_INFO_SAMPLE_OUTPUT_INDEX,
+        )
+        inpaint_mask_connected = info_output_is_reachable(
+            prompt,
+            extra_pnginfo,
+            unique_id,
+            INPAINT_INFO_OUTPUT_INDEX,
+            "AIOInpaintInfo",
+            INPAINT_INFO_MASK_OUTPUT_INDEX,
+        )
+        inpaint_info_linked = info_node_is_linked(
+            prompt,
+            extra_pnginfo,
+            unique_id,
+            INPAINT_INFO_OUTPUT_INDEX,
+            "AIOInpaintInfo",
+        )
+        inpaint_info_fallback = (
+            not any((inpaint_source_connected, inpaint_sample_connected, inpaint_mask_connected))
+            and (
+                (
+                    not inpaint_info_linked
+                    and workflow_output_has_link(extra_pnginfo, unique_id, INPAINT_INFO_OUTPUT_INDEX)
+                )
+                or info_output_reachability_unknown(
+                    extra_pnginfo,
+                    unique_id,
+                    INPAINT_INFO_OUTPUT_INDEX,
+                    "AIOInpaintInfo",
+                    INPAINT_INFO_MASK_OUTPUT_INDEX,
+                )
+            )
+        )
+        if inpaint_info_fallback:
+            inpaint_source_connected = True
+            inpaint_sample_connected = True
+            inpaint_mask_connected = True
         image_original_connected = output_is_connected(prompt, extra_pnginfo, unique_id, IMAGE_ORIGINAL_OUTPUT_INDEX)
         second_pass_config = pipeline.normalize_second_pass_config(
             enabled=second_pass_enabled,
@@ -815,7 +1021,7 @@ class AIOImageGenerate:
             decode_image=image_connected,
             return_image_original=image_original_connected or bool(second_pass_enabled),
         )
-        pid_capture_connected = pid_latent_connected or pid_sigma_connected
+        pid_capture_connected = pid_latent_connected or pid_sigma_connected or pid_step_connected
         decode_image = image_connected or image_original_connected or bool(second_pass_config["enabled"])
         reference_inputs = normalize_reference_inputs(
             reference_values,
@@ -1023,12 +1229,17 @@ class AIOImageGenerate:
             "references": _debug_reference_inputs(reference_inputs),
             "outputs_requested": {
                 "image": image_connected,
-                "vae": vae_connected,
+                "model_info": output_is_connected(prompt, extra_pnginfo, unique_id, MODEL_INFO_OUTPUT_INDEX),
+                "model_info_vae": vae_connected,
+                "pid_info": output_is_connected(prompt, extra_pnginfo, unique_id, PID_INFO_OUTPUT_INDEX),
                 "pid_latent": pid_latent_connected,
                 "pid_sigma": pid_sigma_connected,
+                "pid_step": pid_step_connected,
+                "inpaint_info": output_is_connected(prompt, extra_pnginfo, unique_id, INPAINT_INFO_OUTPUT_INDEX),
                 "inpaint_source": inpaint_source_connected,
                 "inpaint_sample": inpaint_sample_connected,
                 "inpaint_mask": inpaint_mask_connected,
+                "inpaint_fallback_all_fields": inpaint_info_fallback,
                 "image_original": image_original_connected,
             },
             "second_pass": pipeline.second_pass_status(
@@ -1046,31 +1257,38 @@ class AIOImageGenerate:
             },
             "warnings": list(warnings),
         }
-        image, latent, positive, negative, loaded_vae = adapter.generate(
-            diffusion_model=diffusion_model,
-            text_encoder=text_encoder,
-            vae=vae,
-            positive_prompt=effective_positive_prompt,
-            negative_prompt=resolved_negative_prompt,
-            width=effective_width,
-            height=effective_height,
-            seed=seed,
-            batch_count=resolved_batch_count,
-            settings=settings,
-            sampler=effective_sampler,
-            scheduler=effective_scheduler,
-            lora_config=normalized_lora_config,
-            loaded_model=model,
-            loaded_clip=clip,
-            reference_inputs=reference_inputs,
-            inpaint_config=normalized_inpaint_config,
-            inpaint_previews=inpaint_previews,
-            decode_image=decode_image,
-            return_vae=vae_connected,
-            second_pass_config=second_pass_config,
-            pid_capture_step=resolved_pid_capture_step,
-            progress=progress,
+        generation = _coerce_generation_result(
+            adapter.generate(
+                diffusion_model=diffusion_model,
+                text_encoder=text_encoder,
+                vae=vae,
+                positive_prompt=effective_positive_prompt,
+                negative_prompt=resolved_negative_prompt,
+                width=effective_width,
+                height=effective_height,
+                seed=seed,
+                batch_count=resolved_batch_count,
+                settings=settings,
+                sampler=effective_sampler,
+                scheduler=effective_scheduler,
+                lora_config=normalized_lora_config,
+                loaded_model=model,
+                loaded_clip=clip,
+                reference_inputs=reference_inputs,
+                inpaint_config=normalized_inpaint_config,
+                inpaint_previews=inpaint_previews,
+                decode_image=decode_image,
+                return_vae=vae_connected,
+                second_pass_config=second_pass_config,
+                pid_capture_step=resolved_pid_capture_step,
+                progress=progress,
+            )
         )
+        image = generation.image
+        latent = generation.latent
+        positive = generation.positive
+        negative = generation.negative
+        loaded_vae = generation.vae
 
         latent, second_pass_info, image_original = _extract_pipeline_sidecars(latent)
         if second_pass_info is None:
@@ -1083,6 +1301,7 @@ class AIOImageGenerate:
         pid_capture = latent.get(pipeline.PID_CAPTURE_KEY) if isinstance(latent, dict) else None
         pid_latent = pid_capture["latent"] if pid_capture_connected and pid_capture else None
         pid_sigma = float(pid_capture["sigma"]) if pid_capture_connected and pid_capture else 0.0
+        pid_step = int(pid_capture.get("step", 0)) if pid_capture_connected and pid_capture else 0
         progress.done()
         output_width = effective_width
         output_height = effective_height
@@ -1136,20 +1355,32 @@ class AIOImageGenerate:
             debug=debug_info,
             second_pass=second_pass_info,
         )
+        model_info = {
+            "model": generation.model,
+            "clip": generation.clip,
+            "positive": positive,
+            "negative": negative,
+            "vae": loaded_vae,
+        }
+        pid_info = {
+            "latent": pid_latent,
+            "sigma": pid_sigma,
+            "step": pid_step,
+        }
+        inpaint_info = {
+            "source": inpaint_previews[pipeline.INPAINT_PREVIEW_SOURCE],
+            "sample": inpaint_previews[pipeline.INPAINT_PREVIEW_SAMPLE],
+            "mask": inpaint_previews[pipeline.INPAINT_PREVIEW_MASK],
+        }
         return (
             image,
             latent,
             to_json(run_info),
-            positive,
-            negative,
-            loaded_vae,
-            pid_latent,
-            pid_sigma,
+            model_info,
+            pid_info,
             output_width,
             output_height,
-            inpaint_previews[pipeline.INPAINT_PREVIEW_SOURCE],
-            inpaint_previews[pipeline.INPAINT_PREVIEW_SAMPLE],
-            inpaint_previews[pipeline.INPAINT_PREVIEW_MASK],
+            inpaint_info,
             image_original,
         )
 
@@ -1158,9 +1389,21 @@ def _return_index(name: str) -> int:
     return AIOImageGenerate.RETURN_NAMES.index(name)
 
 
-PID_LATENT_OUTPUT_INDEX = _return_index("pid_latent")
-PID_SIGMA_OUTPUT_INDEX = _return_index("pid_sigma")
-INPAINT_SOURCE_OUTPUT_INDEX = _return_index("inpaint_source")
-INPAINT_SAMPLE_OUTPUT_INDEX = _return_index("inpaint_sample")
-INPAINT_MASK_OUTPUT_INDEX = _return_index("inpaint_mask")
+MODEL_INFO_OUTPUT_INDEX = _return_index("model_info")
+PID_INFO_OUTPUT_INDEX = _return_index("pid_info")
+INPAINT_INFO_OUTPUT_INDEX = _return_index("inpaint_info")
 IMAGE_ORIGINAL_OUTPUT_INDEX = _return_index("image_original")
+
+MODEL_INFO_MODEL_OUTPUT_INDEX = 0
+MODEL_INFO_CLIP_OUTPUT_INDEX = 1
+MODEL_INFO_POSITIVE_OUTPUT_INDEX = 2
+MODEL_INFO_NEGATIVE_OUTPUT_INDEX = 3
+MODEL_INFO_VAE_OUTPUT_INDEX = 4
+
+PID_INFO_LATENT_OUTPUT_INDEX = 0
+PID_INFO_SIGMA_OUTPUT_INDEX = 1
+PID_INFO_STEP_OUTPUT_INDEX = 2
+
+INPAINT_INFO_SOURCE_OUTPUT_INDEX = 0
+INPAINT_INFO_SAMPLE_OUTPUT_INDEX = 1
+INPAINT_INFO_MASK_OUTPUT_INDEX = 2

@@ -716,7 +716,7 @@ def test_z_image_negative_prompt_warning_is_in_run_info(monkeypatch):
 
     monkeypatch.setattr(z_image_turbo.pipeline, "generate_z_image_turbo_t2i", fake_generate)
 
-    image, latent, run_info, positive, negative, loaded_vae, pid_latent, pid_sigma, output_width, output_height, *_debug_outputs = AIOImageGenerate().generate(
+    image, latent, run_info, model_info, _pid_info, output_width, output_height, _inpaint_info, _image_original = AIOImageGenerate().generate(
         model_type="z_image_turbo",
         diffusion_model="model.safetensors",
         text_encoder="text.safetensors",
@@ -739,8 +739,8 @@ def test_z_image_negative_prompt_warning_is_in_run_info(monkeypatch):
     parsed = json.loads(run_info)
     assert image == "image"
     assert latent == {"samples": "latent"}
-    assert positive == "positive"
-    assert negative == "negative"
+    assert model_info["positive"] == "positive"
+    assert model_info["negative"] == "negative"
     assert parsed["width"] == 576
     assert parsed["height"] == 1024
     assert (output_width, output_height) == (576, 1024)

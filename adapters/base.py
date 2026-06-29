@@ -93,4 +93,4 @@ class BaseImageAdapter(ABC):
         pid_capture_step: int | None = None,
         progress: Any = None,
     ):
-        """Generate and return (image, latent, positive, negative, vae)."""
+        """Generate and return a pipeline.GenerationResult."""
