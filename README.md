@@ -169,7 +169,7 @@ When both `model` and `clip` are connected, the main node treats them as already
 
 `AIO Image Generate` keeps its main image, latent, run info, width, height, and `image_original` outputs directly on the node. Internal values are grouped into compact info outputs:
 
-- `model_info`: connect to `AIO Model Info` to access `model`, `clip`, `positive`, `negative`, and `vae`.
+- `model_info`: connect to `AIO Model Info` to access `model`, `clip`, `positive`, `negative`, and `vae`. Heavy fields such as `model` and `clip` are only populated when their matching `AIO Model Info` outputs are connected, or when the graph cannot prove which field a direct bundle consumer needs.
 - `pid_info`: connect to `AIO PID Info` to access captured PID `latent`, `sigma`, and `step`.
 - `inpaint_info`: connect to `AIO Inpaint Info` to access the prepared inpaint source image, decoded pre-stitch/pre-blend sample, and working mask.
 

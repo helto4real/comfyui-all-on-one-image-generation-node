@@ -507,6 +507,219 @@ def test_main_node_passes_lora_config_to_adapter(monkeypatch):
     assert (output_width, output_height) == (1024, 1024)
 
 
+def test_main_node_drops_unrequested_model_info_model_and_clip(monkeypatch):
+    from nodes import aio_generate
+
+    class FakeAdapter:
+        version = "test"
+
+        def resolve_settings(self, **kwargs):
+            return {
+                "width": kwargs["width"],
+                "height": kwargs["height"],
+                "steps": 8,
+                "cfg": 1.0,
+                "sampler": "auto",
+                "scheduler": "auto",
+            }
+
+        def validate_inputs(self, **kwargs):
+            return []
+
+        def generate(self, **kwargs):
+            return pipeline.GenerationResult(
+                image="image",
+                latent={"samples": "latent"},
+                positive="positive",
+                negative="negative",
+                vae="vae",
+                model="generated_model",
+                clip="generated_clip",
+            )
+
+    prompt = {
+        "1": {"class_type": "AIOImageGenerate", "inputs": {}},
+        "2": {"class_type": "PreviewImage", "inputs": {"images": ["1", 0]}},
+    }
+    monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
+    monkeypatch.setattr(
+        aio_generate,
+        "_class_is_output_node",
+        lambda class_type: class_type == "PreviewImage",
+    )
+
+    result = AIOImageGenerate().generate(
+        model_type="z_image_turbo",
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="",
+        width=1024,
+        height=1024,
+        seed=0,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+        unique_id="1",
+        prompt=prompt,
+    )
+
+    model_info = result[3]
+    assert model_info["model"] is None
+    assert model_info["clip"] is None
+    assert model_info["positive"] == "positive"
+    assert model_info["negative"] == "negative"
+
+
+@pytest.mark.parametrize(
+    ("output_index", "returned_key", "dropped_key"),
+    [
+        (0, "model", "clip"),
+        (1, "clip", "model"),
+    ],
+)
+def test_main_node_keeps_requested_model_info_model_or_clip(
+    monkeypatch,
+    output_index,
+    returned_key,
+    dropped_key,
+):
+    from nodes import aio_generate
+
+    class FakeAdapter:
+        version = "test"
+
+        def resolve_settings(self, **kwargs):
+            return {
+                "width": kwargs["width"],
+                "height": kwargs["height"],
+                "steps": 8,
+                "cfg": 1.0,
+                "sampler": "auto",
+                "scheduler": "auto",
+            }
+
+        def validate_inputs(self, **kwargs):
+            return []
+
+        def generate(self, **kwargs):
+            return pipeline.GenerationResult(
+                image="image",
+                latent={"samples": "latent"},
+                positive="positive",
+                negative="negative",
+                vae="vae",
+                model="generated_model",
+                clip="generated_clip",
+            )
+
+    prompt = {
+        "1": {"class_type": "AIOImageGenerate", "inputs": {}},
+        "2": {
+            "class_type": "AIOModelInfo",
+            "inputs": {"model_info": ["1", aio_generate.MODEL_INFO_OUTPUT_INDEX]},
+        },
+        "3": {"class_type": "BundleConsumer", "inputs": {"value": ["2", output_index]}},
+    }
+    monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
+    monkeypatch.setattr(
+        aio_generate,
+        "_class_is_output_node",
+        lambda class_type: class_type == "BundleConsumer",
+    )
+
+    result = AIOImageGenerate().generate(
+        model_type="z_image_turbo",
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="",
+        width=1024,
+        height=1024,
+        seed=0,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+        unique_id="1",
+        prompt=prompt,
+    )
+
+    model_info = result[3]
+    assert model_info[returned_key] == f"generated_{returned_key}"
+    assert model_info[dropped_key] is None
+
+
+def test_main_node_keeps_model_info_for_unknown_direct_bundle_consumer(monkeypatch):
+    from nodes import aio_generate
+
+    class FakeAdapter:
+        version = "test"
+
+        def resolve_settings(self, **kwargs):
+            return {
+                "width": kwargs["width"],
+                "height": kwargs["height"],
+                "steps": 8,
+                "cfg": 1.0,
+                "sampler": "auto",
+                "scheduler": "auto",
+            }
+
+        def validate_inputs(self, **kwargs):
+            return []
+
+        def generate(self, **kwargs):
+            return pipeline.GenerationResult(
+                image="image",
+                latent={"samples": "latent"},
+                positive="positive",
+                negative="negative",
+                vae="vae",
+                model="generated_model",
+                clip="generated_clip",
+            )
+
+    prompt = {
+        "1": {"class_type": "AIOImageGenerate", "inputs": {}},
+        "2": {
+            "class_type": "CustomBundleConsumer",
+            "inputs": {"value": ["1", aio_generate.MODEL_INFO_OUTPUT_INDEX]},
+        },
+    }
+    monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
+    monkeypatch.setattr(
+        aio_generate,
+        "_class_is_output_node",
+        lambda class_type: class_type == "CustomBundleConsumer",
+    )
+
+    result = AIOImageGenerate().generate(
+        model_type="z_image_turbo",
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        negative_prompt="",
+        width=1024,
+        height=1024,
+        seed=0,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+        unique_id="1",
+        prompt=prompt,
+    )
+
+    model_info = result[3]
+    assert model_info["model"] == "generated_model"
+    assert model_info["clip"] == "generated_clip"
+
+
 def test_main_node_can_disable_zero_negative_conditioning(monkeypatch):
     from nodes import aio_generate
 

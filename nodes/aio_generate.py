@@ -575,6 +575,84 @@ def _workflow_info_consumers(
     return consumers
 
 
+def _prompt_output_consumers(
+    prompt: Any,
+    unique_id: str | None,
+    socket_index: int,
+) -> set[str]:
+    if not isinstance(prompt, dict) or unique_id is None:
+        return set()
+    target_id = str(unique_id)
+    consumers: set[str] = set()
+    for raw_node_id, node_data in prompt.items():
+        node_id = str(raw_node_id)
+        if not isinstance(node_data, dict):
+            continue
+        inputs = node_data.get("inputs", {})
+        if not isinstance(inputs, dict):
+            continue
+        if any(
+            _is_link(value) and str(value[0]) == target_id and int(value[1]) == socket_index
+            for value in inputs.values()
+        ):
+            consumers.add(node_id)
+    return consumers
+
+
+def _workflow_output_consumers(
+    extra_pnginfo: Any,
+    unique_id: str | None,
+    socket_index: int,
+) -> set[str]:
+    if unique_id is None or not isinstance(extra_pnginfo, dict):
+        return set()
+    workflow = extra_pnginfo.get("workflow")
+    if not isinstance(workflow, dict):
+        return set()
+    target_id = str(unique_id)
+    consumers: set[str] = set()
+    for link in workflow.get("links", []) or []:
+        if (
+            isinstance(link, (list, tuple))
+            and len(link) >= 4
+            and str(link[1]) == target_id
+            and link[2] == socket_index
+        ):
+            consumers.add(str(link[3]))
+    return consumers
+
+
+def _prompt_node_by_id(prompt: Any, node_id: str) -> dict[str, Any] | None:
+    if not isinstance(prompt, dict):
+        return None
+    node = prompt.get(node_id)
+    if not isinstance(node, dict):
+        node = prompt.get(int(node_id)) if node_id.isdigit() else None
+    return node if isinstance(node, dict) else None
+
+
+def output_has_unknown_consumers(
+    prompt: Any,
+    extra_pnginfo: Any,
+    unique_id: str | None,
+    socket_index: int,
+    known_class_type: str,
+) -> bool:
+    consumers_found = False
+    for node_id in _prompt_output_consumers(prompt, unique_id, socket_index):
+        consumers_found = True
+        node = _prompt_node_by_id(prompt, node_id)
+        if not isinstance(node, dict) or node.get("class_type") != known_class_type:
+            return True
+
+    for node_id in _workflow_output_consumers(extra_pnginfo, unique_id, socket_index):
+        consumers_found = True
+        if _workflow_node_class(extra_pnginfo, node_id) != known_class_type:
+            return True
+
+    return output_is_connected(prompt, extra_pnginfo, unique_id, socket_index) and not consumers_found
+
+
 def _workflow_node_has_output_metadata(
     extra_pnginfo: Any,
     node_id: str,
@@ -964,6 +1042,56 @@ class AIOImageGenerate:
         )
 
         image_connected = output_is_connected(prompt, extra_pnginfo, unique_id, 0, default=True)
+        model_info_connected = output_is_connected(prompt, extra_pnginfo, unique_id, MODEL_INFO_OUTPUT_INDEX)
+        model_info_reachability_unknown = (
+            unique_id is None
+            or (not isinstance(prompt, dict) and not isinstance(extra_pnginfo, dict))
+            or output_has_unknown_consumers(
+                prompt,
+                extra_pnginfo,
+                unique_id,
+                MODEL_INFO_OUTPUT_INDEX,
+                "AIOModelInfo",
+            )
+        )
+        model_connected = info_output_is_reachable(
+            prompt,
+            extra_pnginfo,
+            unique_id,
+            MODEL_INFO_OUTPUT_INDEX,
+            "AIOModelInfo",
+            MODEL_INFO_MODEL_OUTPUT_INDEX,
+        )
+        clip_connected = info_output_is_reachable(
+            prompt,
+            extra_pnginfo,
+            unique_id,
+            MODEL_INFO_OUTPUT_INDEX,
+            "AIOModelInfo",
+            MODEL_INFO_CLIP_OUTPUT_INDEX,
+        )
+        model_return_requested = (
+            model_connected
+            or model_info_reachability_unknown
+            or info_output_reachability_unknown(
+                extra_pnginfo,
+                unique_id,
+                MODEL_INFO_OUTPUT_INDEX,
+                "AIOModelInfo",
+                MODEL_INFO_MODEL_OUTPUT_INDEX,
+            )
+        )
+        clip_return_requested = (
+            clip_connected
+            or model_info_reachability_unknown
+            or info_output_reachability_unknown(
+                extra_pnginfo,
+                unique_id,
+                MODEL_INFO_OUTPUT_INDEX,
+                "AIOModelInfo",
+                MODEL_INFO_CLIP_OUTPUT_INDEX,
+            )
+        )
         vae_connected = info_output_is_reachable(
             prompt,
             extra_pnginfo,
@@ -1267,7 +1395,9 @@ class AIOImageGenerate:
             "references": _debug_reference_inputs(reference_inputs),
             "outputs_requested": {
                 "image": image_connected,
-                "model_info": output_is_connected(prompt, extra_pnginfo, unique_id, MODEL_INFO_OUTPUT_INDEX),
+                "model_info": model_info_connected,
+                "model_info_model": model_return_requested,
+                "model_info_clip": clip_return_requested,
                 "model_info_vae": vae_connected,
                 "pid_info": output_is_connected(prompt, extra_pnginfo, unique_id, PID_INFO_OUTPUT_INDEX),
                 "pid_latent": pid_latent_connected,
@@ -1394,8 +1524,8 @@ class AIOImageGenerate:
             second_pass=second_pass_info,
         )
         model_info = {
-            "model": generation.model,
-            "clip": generation.clip,
+            "model": generation.model if model_return_requested else None,
+            "clip": generation.clip if clip_return_requested else None,
             "positive": positive,
             "negative": negative,
             "vae": loaded_vae,
