@@ -71,7 +71,7 @@ The dropdown may prefix values with their category when multiple folders are sea
 3. Select diffusion model, text encoder, and VAE files.
 4. Enter a positive prompt.
 5. Optionally attach the matching model-specific settings node.
-6. For Ideogram 4, optionally connect `Ideogram 4 Prompt Builder` to `Ideogram 4 Settings` to use structured JSON prompting.
+6. For Ideogram 4 or Krea 2, optionally connect `Ideogram 4 Prompt Builder` to the matching settings node to use structured JSON prompting.
 7. Optionally attach `AIO LoRA Configuration` to apply one or more LoRAs.
 8. Optionally attach `AIO Inpaint` to edit only a masked source-image area on supported model families.
 9. Optionally use `AIO Load Pipeline Models` and external `MODEL`/`CLIP` patch nodes after the LoRA phase.
@@ -88,11 +88,11 @@ The node is not an output node, so it is safe for API-mode workflows.
 
 `Ideogram 4 Settings` returns an `AIO_MODEL_SETTINGS` dict with the unconditional model toggle and model path, sampling preset, dual CFG, final CFG override window, AuraFlow sampling shift, precision policy, attention backend, Torch compile, and performance-apply timing. The official presets use Ideogram 4 sigmas; `Workflow Compatible` uses the saved workflow's simple scheduler path. Disable `run_unconditional_model` for turbo LoRA workflows that should skip the separate unconditional diffusion model and run the guider with the conditional model only.
 
-`Krea 2 Settings` returns an `AIO_MODEL_SETTINGS` dict with Krea2T enhancer controls, precision policy, attention backend, Torch compile, performance-apply timing, and CUDA fp16 accumulation callbacks. The enhancer is enabled by default with strength `1.0`; strength `0.0` disables the model patch.
+`Krea 2 Settings` returns an `AIO_MODEL_SETTINGS` dict with Krea2T enhancer controls, precision policy, attention backend, Torch compile, performance-apply timing, CUDA fp16 accumulation callbacks, and an optional prompt-builder socket. The enhancer is enabled by default with strength `1.0`; strength `0.0` disables the model patch. Connect the first `Ideogram 4 Prompt Builder` output to use its structured prompt and resolved dimensions for normal Krea 2 generation.
 
-`Ideogram 4 Prompt Builder` returns an `AIO_IDEOGRAM4_PROMPT` payload plus convenience `prompt`, `preview`, `bboxes`, `width`, and `height` outputs. Connect its first output to `Ideogram 4 Settings`. When connected, the generated JSON prompt replaces the main node's `positive_prompt`, and the builder's resolved dimensions replace the main node's size controls for Ideogram 4 only. The builder uses the same `max side`, `aspect ratio`, and `multiple value` calculation as `AIO Image Generate`; it does not expose raw width/height inputs.
+`Ideogram 4 Prompt Builder` returns an `AIO_IDEOGRAM4_PROMPT` payload plus convenience `prompt`, `preview`, `bboxes`, `width`, and `height` outputs. Connect its first output to `Ideogram 4 Settings` or `Krea 2 Settings`. When connected, the generated JSON prompt replaces the main node's `positive_prompt`, and the builder's resolved dimensions replace the main node's size controls for normal Ideogram 4 and Krea 2 generation. The builder uses the same `max side`, `aspect ratio`, and `multiple value` calculation as `AIO Image Generate`; it does not expose raw width/height inputs. For Krea/Qwen-style image models, enable `xy` bbox order when the model expects `[xmin,ymin,xmax,ymax]`; the `prompt` string output remains available for nodes that only accept text. The optional `px` mode emits bbox coordinates in resolved pixels instead of the default 0-1000 grid.
 
-The prompt builder's JSON output is KJ-compatible: compact output uses the same key order, bbox normalization, palette casing, and compact separators as `Ideogram4PromptBuilderKJ`.
+The prompt builder's default JSON output is KJ/Ideogram-compatible: compact output uses the same key order, bbox normalization, palette casing, bbox order, and compact separators as `Ideogram4PromptBuilderKJ`.
 
 ## Privacy Mode
 

@@ -20,6 +20,9 @@ except ImportError:  # pragma: no cover - direct test imports
     )
 
 
+KREA_PROMPT_BUILDER_SOURCE = "krea2_prompt_builder"
+
+
 class AIOKrea2Settings:
     CATEGORY = "AIO/Image"
     RETURN_TYPES = ("AIO_MODEL_SETTINGS",)
@@ -82,7 +85,15 @@ class AIOKrea2Settings:
                         "tooltip": "Optional positive prompt to use only for Krea 2 inpaint runs.",
                     },
                 ),
-            }
+            },
+            "optional": {
+                "prompt_builder": (
+                    "AIO_IDEOGRAM4_PROMPT",
+                    {
+                        "tooltip": "Optional structured prompt and dimensions from the AIO Ideogram 4 Prompt Builder.",
+                    },
+                ),
+            },
         }
 
     def build_settings(
@@ -96,8 +107,8 @@ class AIOKrea2Settings:
         performance_apply_timing: str = "after_loras",
         fp16_accumulation_enabled: bool = True,
         inpaint_positive_prompt: str = "",
+        prompt_builder=None,
     ):
-        prompt = privacy.decrypt_text_if_encrypted(inpaint_positive_prompt).strip()
         settings = {
             "family": "krea2",
             "enhancer_enabled": bool(enhancer_enabled),
@@ -109,7 +120,25 @@ class AIOKrea2Settings:
             "performance_apply_timing": performance_apply_timing,
             "fp16_accumulation_enabled": bool(fp16_accumulation_enabled),
         }
-        if prompt:
+
+        builder_prompt_applied = False
+        if isinstance(prompt_builder, dict):
+            prompt_is_private = bool(prompt_builder.get("privacy_mode"))
+            builder_prompt = privacy.decrypt_text_if_encrypted(prompt_builder.get("prompt", "")).strip()
+            if builder_prompt:
+                settings["positive_prompt_override"] = (
+                    privacy.encrypt_state({"value": builder_prompt}) if prompt_is_private else builder_prompt
+                )
+                settings["positive_prompt_source"] = KREA_PROMPT_BUILDER_SOURCE
+                if prompt_is_private:
+                    settings["prompt_builder_privacy_mode"] = True
+                for key in ("width", "height", "max_side", "aspect_ratio", "multiple_value"):
+                    if key in prompt_builder:
+                        settings[f"prompt_builder_{key}"] = prompt_builder[key]
+                builder_prompt_applied = True
+
+        prompt = privacy.decrypt_text_if_encrypted(inpaint_positive_prompt).strip()
+        if prompt and not builder_prompt_applied:
             settings["positive_prompt_override"] = prompt
             settings["positive_prompt_source"] = "krea2_inpaint_settings"
         return (

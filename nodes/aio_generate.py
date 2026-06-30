@@ -1231,7 +1231,7 @@ class AIOImageGenerate:
                 default_height=profile.default_height,
                 multiple_value=reference_values.get("multiple value"),
             )
-        if model_type == "ideogram4" and model_settings and normalized_inpaint_config is None:
+        if model_type in {"ideogram4", "krea2"} and model_settings and normalized_inpaint_config is None:
             builder_width = model_settings.get("prompt_builder_width")
             builder_height = model_settings.get("prompt_builder_height")
             if builder_width is not None and builder_height is not None:

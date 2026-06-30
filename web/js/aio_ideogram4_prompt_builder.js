@@ -44,6 +44,8 @@ const STATE_WIDGET_NAMES = [
   "medium",
   "import_mode",
   "output_format",
+  "coord_mode",
+  "bbox_order",
   "style_palette_data",
   "elements_data",
   "bg_brightness",
@@ -107,9 +109,13 @@ function parseWorkflowStatePayload(value) {
       elements: value.boxes,
       style_palette: Array.isArray(value.palette) ? value.palette : [],
       output_format: value.outputFormat,
+      coord_mode: value.coordMode,
+      bbox_order: value.bboxOrder,
       widgets: {
         import_mode: value.importMode,
         output_format: value.outputFormat,
+        coord_mode: value.coordMode,
+        bbox_order: value.bboxOrder,
       },
     };
   }
@@ -181,6 +187,22 @@ function normBBox(box) {
   return [ymin, xmin, ymax, xmax];
 }
 
+function captionBBox(box, { coordMode = "normalized", bboxOrder = "yx", width = 1000, height = 1000 } = {}) {
+  const absolute = coordMode === "absolute";
+  const xy = bboxOrder === "xy";
+  const sx = absolute ? Math.max(1, Number(width) || 1) : 1000;
+  const sy = absolute ? Math.max(1, Number(height) || 1) : 1000;
+  const clampX = (value) => Math.max(0, Math.min(sx, Math.round(value * sx)));
+  const clampY = (value) => Math.max(0, Math.min(sy, Math.round(value * sy)));
+  let ymin = clampY(box.y || 0);
+  let xmin = clampX(box.x || 0);
+  let ymax = clampY((box.y || 0) + (box.h || 0));
+  let xmax = clampX((box.x || 0) + (box.w || 0));
+  if (ymin > ymax) [ymin, ymax] = [ymax, ymin];
+  if (xmin > xmax) [xmin, xmax] = [xmax, xmin];
+  return xy ? [xmin, ymin, xmax, ymax] : [ymin, xmin, ymax, xmax];
+}
+
 function pyJson(value, level = 0) {
   const pad = "    ".repeat(level + 1);
   const end = "    ".repeat(level);
@@ -200,9 +222,13 @@ function pyJson(value, level = 0) {
   return JSON.stringify(value);
 }
 
-function captionToBoxes(caption) {
+function captionToBoxes(caption, { coordMode = "normalized", bboxOrder = "yx", width = 1000, height = 1000 } = {}) {
   const cd = caption?.compositional_deconstruction || {};
   const boxes = [];
+  const absolute = coordMode === "absolute";
+  const xy = bboxOrder === "xy";
+  const sx = absolute ? Math.max(1, Number(width) || 1) : 1000;
+  const sy = absolute ? Math.max(1, Number(height) || 1) : 1000;
   for (const element of cd.elements || []) {
     if (!element || typeof element !== "object") continue;
     const box = {
@@ -213,11 +239,12 @@ function captionToBoxes(caption) {
     };
     const bbox = element.bbox;
     if (Array.isArray(bbox) && bbox.length === 4) {
-      const [ymin, xmin, ymax, xmax] = bbox;
-      box.x = xmin / 1000;
-      box.y = ymin / 1000;
-      box.w = (xmax - xmin) / 1000;
-      box.h = (ymax - ymin) / 1000;
+      const [a, b, c, d] = bbox;
+      const [xmin, ymin, xmax, ymax] = xy ? [a, b, c, d] : [b, a, d, c];
+      box.x = xmin / sx;
+      box.y = ymin / sy;
+      box.w = (xmax - xmin) / sx;
+      box.h = (ymax - ymin) / sy;
     } else {
       box.x = 0.03;
       box.y = 0.03;
@@ -233,6 +260,9 @@ function captionToBoxes(caption) {
 function buildCaption(node, boxes, stylePalette) {
   const value = (name, fallback = "") => widgetByName(node, name)?.value ?? fallback;
   const kind = String(value("style", "none"));
+  const coordMode = value("coord_mode", "normalized") === "absolute" ? "absolute" : "normalized";
+  const bboxOrder = value("bbox_order", "yx") === "xy" ? "xy" : "yx";
+  const [width, height] = resolveDims(node);
   const caption = {};
   const highLevel = String(value("high_level_description", ""));
   if (highLevel.trim()) caption.high_level_description = highLevel;
@@ -259,7 +289,7 @@ function buildCaption(node, boxes, stylePalette) {
     if (!box || typeof box !== "object") continue;
     const type = box.type === "text" ? "text" : "obj";
     const element = { type };
-    if (!box.nobbox) element.bbox = normBBox(box);
+    if (!box.nobbox) element.bbox = captionBBox(box, { coordMode, bboxOrder, width, height });
     if (type === "text") element.text = box.text || "";
     element.desc = box.desc || "";
     const colors = palette(box.palette).slice(0, 5);
@@ -376,6 +406,15 @@ function installStyles() {
     .aio-ideo-wrap.is-private:not(.is-privacy-revealed) textarea::placeholder {
       color: transparent !important;
     }
+    .aio-ideo-private-field {
+      color: transparent !important;
+      -webkit-text-fill-color: transparent !important;
+      text-shadow: none !important;
+      caret-color: transparent !important;
+    }
+    .aio-ideo-private-field::placeholder {
+      color: transparent !important;
+    }
     /* Privacy status banner (warm, communicates concealed state). */
     .aio-ideo-privacy-status{position:absolute;left:9px;right:9px;bottom:9px;z-index:4;padding:7px 10px;border:1px solid #7a4f32;border-radius:var(--helto-radius);background:#2b1d18;color:#ffd8c2;box-shadow:var(--helto-shadow-pop)}
 
@@ -441,8 +480,18 @@ function createEditor(node) {
   const stylePaletteWidget = widgetByName(node, "style_palette_data");
   const brightnessWidget = widgetByName(node, "bg_brightness");
   const outputFormatWidget = widgetByName(node, "output_format");
+  const coordModeWidget = widgetByName(node, "coord_mode");
+  const bboxOrderWidget = widgetByName(node, "bbox_order");
   const privacyWidget = widgetByName(node, PRIVACY_WIDGET_NAME);
-  for (const widget of [elementsWidget, stylePaletteWidget, brightnessWidget, outputFormatWidget]) {
+  let privacyReveal = false;
+  const privacyRevealSources = {
+    editor: false,
+    field: false,
+  };
+  const nativePrivacyHoveredElements = new Set();
+  const nativePrivacyFocusedElements = new Set();
+  const nativePrivacyElements = new Set();
+  for (const widget of [elementsWidget, stylePaletteWidget, brightnessWidget, outputFormatWidget, coordModeWidget, bboxOrderWidget]) {
     if (!widget) continue;
     widget.hidden = true;
     widget.serialize = true;
@@ -458,6 +507,122 @@ function createEditor(node) {
   function setStatus(message = "") {
     privacyStatus.textContent = message;
     privacyStatus.style.display = message ? "" : "none";
+  }
+
+  function nativeSensitiveWidgetsMasked() {
+    return privacyEnabled() && !privacyReveal;
+  }
+
+  function refreshPrivacyRevealState() {
+    privacyRevealSources.field = nativePrivacyHoveredElements.size > 0 || nativePrivacyFocusedElements.size > 0;
+    privacyReveal = Object.values(privacyRevealSources).some(Boolean);
+    return privacyReveal;
+  }
+
+  function setPrivacyRevealSource(source, revealed) {
+    privacyRevealSources[source] = Boolean(revealed);
+    refreshPrivacyRevealState();
+    updatePrivacyClasses();
+    draw();
+  }
+
+  function setNativeFieldReveal(source, element, revealed) {
+    const elements = source === "focus" ? nativePrivacyFocusedElements : nativePrivacyHoveredElements;
+    if (revealed) elements.add(element);
+    else elements.delete(element);
+    setPrivacyRevealSource("field", nativePrivacyHoveredElements.size > 0 || nativePrivacyFocusedElements.size > 0);
+  }
+
+  function sensitiveWidgetDomElements(widget) {
+    const elements = [];
+    for (const candidate of [widget?.inputEl, widget?.element, widget?.inputElement, widget?.textarea, widget?.textElement]) {
+      if (candidate instanceof HTMLElement) elements.push(candidate);
+    }
+    for (const candidate of [...elements]) {
+      elements.push(...(candidate.querySelectorAll?.("textarea,input,[contenteditable='true']") || []));
+    }
+    return [...new Set(elements)].filter((element) => element instanceof HTMLElement);
+  }
+
+  function patchSensitiveWidgetDomElement(element) {
+    if (!element || element._aioIdeoPrivacyRevealNode === node) return;
+    element._aioIdeoPrivacyRevealCleanup?.();
+
+    const onPointerEnter = () => setNativeFieldReveal("hover", element, true);
+    const onPointerLeave = () => setNativeFieldReveal("hover", element, false);
+    const onFocusIn = () => setNativeFieldReveal("focus", element, true);
+    const onFocusOut = () => setNativeFieldReveal("focus", element, false);
+    const onInput = () => {
+      updateCount();
+      app.graph?.setDirtyCanvas?.(true, true);
+    };
+
+    element.addEventListener("pointerenter", onPointerEnter);
+    element.addEventListener("pointerleave", onPointerLeave);
+    element.addEventListener("focusin", onFocusIn);
+    element.addEventListener("focusout", onFocusOut);
+    element.addEventListener("input", onInput);
+    element.addEventListener("change", onInput);
+    element.addEventListener("blur", onInput);
+    nativePrivacyElements.add(element);
+    element._aioIdeoPrivacyRevealNode = node;
+    element._aioIdeoPrivacyRevealCleanup = () => {
+      element.removeEventListener("pointerenter", onPointerEnter);
+      element.removeEventListener("pointerleave", onPointerLeave);
+      element.removeEventListener("focusin", onFocusIn);
+      element.removeEventListener("focusout", onFocusOut);
+      element.removeEventListener("input", onInput);
+      element.removeEventListener("change", onInput);
+      element.removeEventListener("blur", onInput);
+      element.classList.remove("aio-ideo-private-field");
+      element.removeAttribute("data-aio-ideo-private");
+      nativePrivacyHoveredElements.delete(element);
+      nativePrivacyFocusedElements.delete(element);
+      nativePrivacyElements.delete(element);
+      delete element._aioIdeoPrivacyRevealNode;
+      delete element._aioIdeoPrivacyRevealCleanup;
+    };
+  }
+
+  function pruneDisconnectedNativePrivacyElements(currentElements = null) {
+    const keep = currentElements || new Set();
+    for (const element of [...nativePrivacyHoveredElements]) {
+      if (!element.isConnected || (currentElements && !keep.has(element))) nativePrivacyHoveredElements.delete(element);
+    }
+    for (const element of [...nativePrivacyFocusedElements]) {
+      if (!element.isConnected || (currentElements && !keep.has(element))) nativePrivacyFocusedElements.delete(element);
+    }
+  }
+
+  function updateSensitiveWidgetDomPrivacy() {
+    const currentElements = new Set();
+    for (const name of SENSITIVE_WIDGET_NAMES) {
+      const widget = widgetByName(node, name);
+      for (const element of sensitiveWidgetDomElements(widget)) {
+        currentElements.add(element);
+        patchSensitiveWidgetDomElement(element);
+        if (element === document.activeElement || element.contains(document.activeElement)) {
+          nativePrivacyFocusedElements.add(element);
+        }
+      }
+    }
+    pruneDisconnectedNativePrivacyElements(currentElements);
+    refreshPrivacyRevealState();
+    const masked = nativeSensitiveWidgetsMasked();
+    for (const element of currentElements) {
+      element.classList.toggle("aio-ideo-private-field", masked);
+      element.setAttribute("data-aio-ideo-private", masked ? "true" : "false");
+    }
+  }
+
+  function cleanupSensitiveWidgetDomPrivacy() {
+    for (const element of [...nativePrivacyElements]) {
+      element._aioIdeoPrivacyRevealCleanup?.();
+    }
+    nativePrivacyHoveredElements.clear();
+    nativePrivacyFocusedElements.clear();
+    nativePrivacyElements.clear();
+    refreshPrivacyRevealState();
   }
 
   function directWidgetValue(widget) {
@@ -480,11 +645,31 @@ function createEditor(node) {
     return compact.checked ? "compact" : "pretty";
   }
 
+  function serializedCoordModeValue() {
+    return absolute.checked ? "absolute" : "normalized";
+  }
+
+  function serializedBboxOrderValue() {
+    return xyOrder.checked ? "xy" : "yx";
+  }
+
+  function setExecutionWidgetValue(widget, value) {
+    if (!widget || widget.value === value) return;
+    widget.value = value;
+  }
+
   function syncExecutionWidgets() {
     if (privacyRestorePending || privacyRestoreFailed) return;
-    if (elementsWidget) elementsWidget.value = serializedElementsValue();
-    if (stylePaletteWidget) stylePaletteWidget.value = serializedStylePaletteValue();
-    if (outputFormatWidget) outputFormatWidget.value = serializedOutputFormatValue();
+    syncingExecutionWidgets = true;
+    try {
+      setExecutionWidgetValue(elementsWidget, serializedElementsValue());
+      setExecutionWidgetValue(stylePaletteWidget, serializedStylePaletteValue());
+      setExecutionWidgetValue(outputFormatWidget, serializedOutputFormatValue());
+      setExecutionWidgetValue(coordModeWidget, serializedCoordModeValue());
+      setExecutionWidgetValue(bboxOrderWidget, serializedBboxOrderValue());
+    } finally {
+      syncingExecutionWidgets = false;
+    }
   }
 
   function serializePrivateValue(widget, value) {
@@ -532,6 +717,8 @@ function createEditor(node) {
       style_palette: cloneJson(stylePalette, []),
       bg_brightness: brightnessWidget?.value ?? 25,
       output_format: outputFormatWidget?.value ?? "compact",
+      coord_mode: coordModeWidget?.value === "absolute" ? "absolute" : "normalized",
+      bbox_order: bboxOrderWidget?.value === "xy" ? "xy" : "yx",
       active,
     };
   }
@@ -554,6 +741,8 @@ function createEditor(node) {
     }
     if (state.bg_brightness != null && brightnessWidget) brightnessWidget.value = state.bg_brightness;
     if (state.output_format != null && outputFormatWidget) outputFormatWidget.value = state.output_format;
+    if (state.coord_mode != null && coordModeWidget) coordModeWidget.value = state.coord_mode === "absolute" ? "absolute" : "normalized";
+    if (state.bbox_order != null && bboxOrderWidget) bboxOrderWidget.value = state.bbox_order === "xy" ? "xy" : "yx";
     active = Math.max(-1, Math.min(boxes.length - 1, Number(state.active ?? active)));
   }
 
@@ -616,6 +805,16 @@ function createEditor(node) {
       return serializedOutputFormatValue();
     };
   }
+  if (coordModeWidget) {
+    coordModeWidget.serializeValue = function () {
+      return serializedCoordModeValue();
+    };
+  }
+  if (bboxOrderWidget) {
+    bboxOrderWidget.serializeValue = function () {
+      return serializedBboxOrderValue();
+    };
+  }
 
   let boxes = parseJsonList(elementsWidget?.value);
   let stylePalette = parseJsonList(stylePaletteWidget?.value);
@@ -632,26 +831,24 @@ function createEditor(node) {
   let dragMode = null;
   let dragStart = null;
   let dragBoxStart = null;
-  let privacyReveal = false;
   let privacyRestorePending = false;
   let privacyRestoreFailed = false;
   let domWidget = null;
   let currentEditorWidth = MIN_WIDTH;
   let currentEditorHeight = EDITOR_HEIGHT;
+  let syncingExecutionWidgets = false;
+  let serializeActive = false;
+  let workflowSerializationActive = false;
 
   const wrap = document.createElement("div");
   wrap.className = "aio-ideo-wrap";
   wrap.addEventListener("pointerdown", stopEvent);
   wrap.addEventListener("wheel", stopEvent);
   wrap.addEventListener("pointerenter", () => {
-    privacyReveal = true;
-    updatePrivacyClasses();
-    draw();
+    setPrivacyRevealSource("editor", true);
   });
   wrap.addEventListener("pointerleave", () => {
-    privacyReveal = false;
-    updatePrivacyClasses();
-    draw();
+    setPrivacyRevealSource("editor", false);
   });
   const privacyStatus = document.createElement("div");
   privacyStatus.className = "aio-ideo-privacy-status";
@@ -674,9 +871,27 @@ function createEditor(node) {
   compact.type = "checkbox";
   compact.checked = outputFormatWidget?.value !== "pretty";
   compactLabel.append(compact, document.createTextNode("compact"));
+  const absoluteLabel = document.createElement("label");
+  absoluteLabel.style.display = "flex";
+  absoluteLabel.style.gap = "3px";
+  absoluteLabel.style.alignItems = "center";
+  absoluteLabel.title = "Emit bbox coordinates in resolved pixels instead of the 0-1000 grid";
+  const absolute = document.createElement("input");
+  absolute.type = "checkbox";
+  absolute.checked = coordModeWidget?.value === "absolute";
+  absoluteLabel.append(absolute, document.createTextNode("px"));
+  const xyLabel = document.createElement("label");
+  xyLabel.style.display = "flex";
+  xyLabel.style.gap = "3px";
+  xyLabel.style.alignItems = "center";
+  xyLabel.title = "Emit bbox as [xmin,ymin,xmax,ymax] for Qwen/Krea-style prompts";
+  const xyOrder = document.createElement("input");
+  xyOrder.type = "checkbox";
+  xyOrder.checked = bboxOrderWidget?.value === "xy";
+  xyLabel.append(xyOrder, document.createTextNode("xy"));
   const count = document.createElement("span");
   count.className = "aio-ideo-count";
-  toolbar.append(libraryBtn, saveLibraryBtn, addObjBtn, addTextBtn, copyBtn, pasteBtn, clearBtn, compactLabel, count);
+  toolbar.append(libraryBtn, saveLibraryBtn, addObjBtn, addTextBtn, copyBtn, pasteBtn, clearBtn, compactLabel, absoluteLabel, xyLabel, count);
 
   const main = document.createElement("div");
   main.className = "aio-ideo-main";
@@ -726,7 +941,7 @@ function createEditor(node) {
     input.max = "1000";
     input.step = "1";
     input.placeholder = name;
-    input.title = `BBox ${name} on a 0-1000 output grid`;
+    input.title = `BBox ${name} on the 0-1000 editor grid`;
     return input;
   });
   bboxRow.append(...bboxInputs);
@@ -740,12 +955,13 @@ function createEditor(node) {
   removeBtn.textContent = "Delete";
   const help = document.createElement("div");
   help.className = "aio-ideo-help";
-  help.textContent = "Drag on the canvas to create regions. BBox fields use the same 0-1000 grid emitted in the JSON.";
+  help.textContent = "Drag on the canvas to create regions. BBox fields use x/y/w/h on a 0-1000 editor grid; toolbar toggles control JSON scale and order.";
   side.append(list, stylePaletteRow, addStyleColor, typeRow, textRow, descRow, bboxRow, paletteRow, addColor, removeBtn, help);
   main.append(canvasBox, side);
   wrap.append(toolbar, main, privacyStatus);
 
   function updatePrivacyClasses() {
+    updateSensitiveWidgetDomPrivacy();
     const privateMode = privacyEnabled();
     wrap.classList.toggle("is-private", privateMode);
     wrap.classList.toggle("is-privacy-revealed", !privateMode || privacyReveal);
@@ -824,12 +1040,18 @@ function createEditor(node) {
   };
 
   function serialize() {
-    syncExecutionWidgets();
-    if (!privacyRestorePending && !privacyRestoreFailed) {
-      writeStateProperty();
+    if (serializeActive || workflowSerializationActive) return;
+    serializeActive = true;
+    try {
+      syncExecutionWidgets();
+      if (!privacyRestorePending && !privacyRestoreFailed) {
+        writeStateProperty();
+      }
+      updatePrivacyClasses();
+      app.graph?.setDirtyCanvas?.(true, true);
+    } finally {
+      serializeActive = false;
     }
-    updatePrivacyClasses();
-    app.graph?.setDirtyCanvas?.(true, true);
   }
 
   function workflowWidgetValue(widget) {
@@ -851,21 +1073,33 @@ function createEditor(node) {
 
   function serializeForWorkflow(output) {
     if (!output) return;
-    syncExecutionWidgets();
-    const payload = workflowStatePayload();
-    if (payload) {
-      node.properties ||= {};
-      node.properties[STATE_PROPERTY] = payload;
-      if (output.properties && typeof output.properties === "object") {
-        output.properties[STATE_PROPERTY] = payload;
+    if (workflowSerializationActive) return;
+    workflowSerializationActive = true;
+    try {
+      syncExecutionWidgets();
+      const payload = workflowStatePayload();
+      if (payload) {
+        node.properties ||= {};
+        node.properties[STATE_PROPERTY] = payload;
+        if (output.properties && typeof output.properties === "object") {
+          output.properties[STATE_PROPERTY] = payload;
+        }
+        output[WORKFLOW_STATE_KEY] = payload;
       }
-      output[WORKFLOW_STATE_KEY] = payload;
+      scrubWorkflowWidgets(output);
+    } finally {
+      workflowSerializationActive = false;
     }
-    scrubWorkflowWidgets(output);
+  }
+
+  function syncControlWidgetsFromState() {
+    compact.checked = outputFormatWidget?.value !== "pretty";
+    absolute.checked = coordModeWidget?.value === "absolute";
+    xyOrder.checked = bboxOrderWidget?.value === "xy";
   }
 
   function repaintRestoredState() {
-    compact.checked = outputFormatWidget?.value !== "pretty";
+    syncControlWidgetsFromState();
     renderList();
     renderForm();
     draw();
@@ -878,6 +1112,7 @@ function createEditor(node) {
     if (boxes.length && active < 0) active = 0;
     privacyRestorePending = false;
     privacyRestoreFailed = false;
+    syncControlWidgetsFromState();
     if (markDirty) refresh();
     else repaintRestoredState();
   }
@@ -1839,7 +2074,13 @@ function createEditor(node) {
     if (!text) return;
     try {
       const caption = JSON.parse(text);
-      boxes = captionToBoxes(caption);
+      const [width, height] = resolveDims(node);
+      boxes = captionToBoxes(caption, {
+        coordMode: coordModeWidget?.value === "absolute" ? "absolute" : "normalized",
+        bboxOrder: bboxOrderWidget?.value === "xy" ? "xy" : "yx",
+        width,
+        height,
+      });
       active = boxes.length ? 0 : -1;
       const cd = caption.compositional_deconstruction || {};
       widgetByName(node, "background").value = cd.background || "";
@@ -1851,6 +2092,16 @@ function createEditor(node) {
   });
   compact.addEventListener("change", () => {
     if (outputFormatWidget) outputFormatWidget.value = compact.checked ? "compact" : "pretty";
+    serialize();
+    updateCount();
+  });
+  absolute.addEventListener("change", () => {
+    if (coordModeWidget) coordModeWidget.value = absolute.checked ? "absolute" : "normalized";
+    serialize();
+    updateCount();
+  });
+  xyOrder.addEventListener("change", () => {
+    if (bboxOrderWidget) bboxOrderWidget.value = xyOrder.checked ? "xy" : "yx";
     serialize();
     updateCount();
   });
@@ -1915,6 +2166,7 @@ function createEditor(node) {
     if (!widget || widget._aioIdeoPatched) continue;
     const original = widget.callback;
     widget.callback = function () {
+      if (syncingExecutionWidgets) return undefined;
       const result = original?.apply(this, arguments);
       fitCanvas();
       serialize();
@@ -1929,6 +2181,7 @@ function createEditor(node) {
   const originalRemoved = node.onRemoved;
   node.onRemoved = function () {
     observer.disconnect();
+    cleanupSensitiveWidgetDomPrivacy();
     return originalRemoved?.apply(this, arguments);
   };
 

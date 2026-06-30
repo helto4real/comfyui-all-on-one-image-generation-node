@@ -44,6 +44,78 @@ def test_compact_json_matches_kj_key_order_and_formatting():
     )
 
 
+def test_xy_bbox_order_uses_x_first_grid_coordinates():
+    caption, _, _, _ = builder.build_caption(
+        background="Room",
+        style="none",
+        bbox_order="xy",
+        elements_data=json.dumps(
+            [
+                {
+                    "x": 0.1,
+                    "y": 0.2,
+                    "w": 0.3,
+                    "h": 0.4,
+                    "type": "obj",
+                    "desc": "person",
+                }
+            ]
+        ),
+    )
+
+    assert caption["compositional_deconstruction"]["elements"][0]["bbox"] == [100, 200, 400, 600]
+
+
+def test_absolute_bbox_mode_scales_by_resolved_dimensions():
+    caption, _, _, _ = builder.build_caption(
+        background="Room",
+        style="none",
+        coord_mode="absolute",
+        bbox_order="xy",
+        width=2000,
+        height=1000,
+        elements_data=json.dumps(
+            [
+                {
+                    "x": 0.1,
+                    "y": 0.2,
+                    "w": 0.3,
+                    "h": 0.4,
+                    "type": "obj",
+                    "desc": "person",
+                }
+            ]
+        ),
+    )
+
+    assert caption["compositional_deconstruction"]["elements"][0]["bbox"] == [200, 200, 800, 600]
+
+
+def test_invalid_bbox_coordinate_options_fall_back_to_ideogram_defaults():
+    caption, _, _, _ = builder.build_caption(
+        background="Room",
+        style="none",
+        coord_mode="pixels",
+        bbox_order="bad",
+        width=2000,
+        height=1000,
+        elements_data=json.dumps(
+            [
+                {
+                    "x": 0.1,
+                    "y": 0.2,
+                    "w": 0.3,
+                    "h": 0.4,
+                    "type": "obj",
+                    "desc": "person",
+                }
+            ]
+        ),
+    )
+
+    assert caption["compositional_deconstruction"]["elements"][0]["bbox"] == [200, 100, 600, 400]
+
+
 @pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
 def test_private_prompt_builder_encrypts_prompt_outputs(monkeypatch, tmp_path):
     monkeypatch.setattr(privacy, "config_dir", lambda: tmp_path)
@@ -159,6 +231,27 @@ def test_import_json_can_drive_output_and_boxes():
     assert boxes == [{"type": "obj", "text": "", "desc": "item", "palette": [], "x": 0.2, "y": 0.1, "w": 0.3, "h": 0.2}]
 
 
+def test_import_json_parses_xy_bbox_order_for_editor_boxes():
+    source = {
+        "compositional_deconstruction": {
+            "background": "Imported",
+            "elements": [{"type": "obj", "bbox": [100, 200, 400, 600], "desc": "item"}],
+        }
+    }
+
+    caption, boxes, _, used_import = builder.build_caption(
+        background="Ignored",
+        style="none",
+        import_json=json.dumps(source),
+        import_mode="always",
+        bbox_order="xy",
+    )
+
+    assert used_import is True
+    assert caption == source
+    assert boxes == [{"type": "obj", "text": "", "desc": "item", "palette": [], "x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4}]
+
+
 def test_builder_node_serialized_elements_emit_all_json_elements(monkeypatch):
     monkeypatch.setattr(
         AIOIdeogram4PromptBuilder,
@@ -253,6 +346,48 @@ def test_prompt_builder_node_exposes_privacy_mode():
     inputs = AIOIdeogram4PromptBuilder.INPUT_TYPES()
 
     assert inputs["required"]["privacy_mode"][1]["default"] is False
+
+
+def test_prompt_builder_node_exposes_coordinate_options():
+    inputs = AIOIdeogram4PromptBuilder.INPUT_TYPES()
+
+    assert inputs["required"]["coord_mode"][0] == ["normalized", "absolute"]
+    assert inputs["required"]["coord_mode"][1]["default"] == "normalized"
+    assert inputs["required"]["bbox_order"][0] == ["yx", "xy"]
+    assert inputs["required"]["bbox_order"][1]["default"] == "yx"
+
+
+def test_prompt_builder_node_applies_xy_coordinate_options(monkeypatch):
+    monkeypatch.setattr(
+        AIOIdeogram4PromptBuilder,
+        "_render_preview",
+        staticmethod(lambda boxes, width, height, image, brightness: "preview"),
+    )
+    elements = json.dumps(
+        [
+            {
+                "x": 0.1,
+                "y": 0.2,
+                "w": 0.3,
+                "h": 0.4,
+                "type": "obj",
+                "desc": "person",
+            }
+        ]
+    )
+
+    payload, prompt, *_ = AIOIdeogram4PromptBuilder().build_prompt(
+        background="Room",
+        style="none",
+        coord_mode="normalized",
+        bbox_order="xy",
+        elements_data=elements,
+        **{"max side": 1000, "aspect ratio": "1:1", "multiple value": "none"},
+    )["result"]
+
+    assert json.loads(prompt)["compositional_deconstruction"]["elements"][0]["bbox"] == [100, 200, 400, 600]
+    assert payload["coord_mode"] == "normalized"
+    assert payload["bbox_order"] == "xy"
 
 
 def test_prompt_builder_decrypts_private_fields_without_changing_output(monkeypatch, tmp_path):

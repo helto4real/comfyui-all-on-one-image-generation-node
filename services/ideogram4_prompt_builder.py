@@ -12,6 +12,12 @@ from pathlib import Path
 from typing import Any
 
 FONT_PATH = Path(__file__).resolve().parents[1] / "fonts" / "FreeMono.ttf"
+COORD_MODE_NORMALIZED = "normalized"
+COORD_MODE_ABSOLUTE = "absolute"
+COORD_MODES = (COORD_MODE_NORMALIZED, COORD_MODE_ABSOLUTE)
+BBOX_ORDER_YX = "yx"
+BBOX_ORDER_XY = "xy"
+BBOX_ORDERS = (BBOX_ORDER_YX, BBOX_ORDER_XY)
 
 
 def hex_rgb(value: str) -> tuple[int, int, int]:
@@ -141,19 +147,42 @@ def render_preview(
     return torch.from_numpy(arr).unsqueeze(0)
 
 
-def norm_bbox(box: dict[str, Any]) -> list[int]:
-    def clamp(value: float) -> int:
-        return max(0, min(1000, round(value * 1000)))
+def sanitize_coord_mode(value: Any) -> str:
+    return COORD_MODE_ABSOLUTE if value == COORD_MODE_ABSOLUTE else COORD_MODE_NORMALIZED
+
+
+def sanitize_bbox_order(value: Any) -> str:
+    return BBOX_ORDER_XY if value == BBOX_ORDER_XY else BBOX_ORDER_YX
+
+
+def bbox_scales(coord_mode: Any, width: int, height: int) -> tuple[int, int]:
+    if sanitize_coord_mode(coord_mode) == COORD_MODE_ABSOLUTE:
+        return max(1, int(width or 1)), max(1, int(height or 1))
+    return 1000, 1000
+
+
+def norm_bbox(box: dict[str, Any], sx: int = 1000, sy: int = 1000, order: str = BBOX_ORDER_YX) -> list[int]:
+    sx = max(1, int(sx or 1))
+    sy = max(1, int(sy or 1))
+    order = sanitize_bbox_order(order)
+
+    def clamp_x(value: float) -> int:
+        return max(0, min(sx, round(value * sx)))
+
+    def clamp_y(value: float) -> int:
+        return max(0, min(sy, round(value * sy)))
 
     x = box.get("x", 0.0)
     y = box.get("y", 0.0)
     w = box.get("w", 0.0)
     h = box.get("h", 0.0)
-    ymin, xmin, ymax, xmax = clamp(y), clamp(x), clamp(y + h), clamp(x + w)
+    ymin, xmin, ymax, xmax = clamp_y(y), clamp_x(x), clamp_y(y + h), clamp_x(x + w)
     if ymin > ymax:
         ymin, ymax = ymax, ymin
     if xmin > xmax:
         xmin, xmax = xmax, xmin
+    if order == BBOX_ORDER_XY:
+        return [xmin, ymin, xmax, ymax]
     return [ymin, xmin, ymax, xmax]
 
 
@@ -200,9 +229,18 @@ def parse_json_list(value: str | None) -> list[Any]:
     return []
 
 
-def caption_to_boxes(caption: dict[str, Any]) -> list[dict[str, Any]]:
+def caption_to_boxes(
+    caption: dict[str, Any],
+    *,
+    coord_mode: str = COORD_MODE_NORMALIZED,
+    bbox_order: str = BBOX_ORDER_YX,
+    width: int = 1024,
+    height: int = 1024,
+) -> list[dict[str, Any]]:
     cd = caption.get("compositional_deconstruction") or {}
     boxes: list[dict[str, Any]] = []
+    sx, sy = bbox_scales(coord_mode, width, height)
+    bbox_order = sanitize_bbox_order(bbox_order)
     for element in (cd.get("elements") or []):
         if not isinstance(element, dict):
             continue
@@ -214,12 +252,15 @@ def caption_to_boxes(caption: dict[str, Any]) -> list[dict[str, Any]]:
         }
         bbox = element.get("bbox")
         if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
-            ymin, xmin, ymax, xmax = bbox
+            if bbox_order == BBOX_ORDER_XY:
+                xmin, ymin, xmax, ymax = bbox
+            else:
+                ymin, xmin, ymax, xmax = bbox
             box.update(
-                x=xmin / 1000.0,
-                y=ymin / 1000.0,
-                w=(xmax - xmin) / 1000.0,
-                h=(ymax - ymin) / 1000.0,
+                x=xmin / sx,
+                y=ymin / sy,
+                w=(xmax - xmin) / sx,
+                h=(ymax - ymin) / sy,
             )
         else:
             box.update(x=0.03, y=0.03, w=0.22, h=0.14, nobbox=True)
@@ -241,12 +282,17 @@ def build_caption(
     elements_data: str = "",
     import_json: str = "",
     import_mode: str = "when empty",
+    coord_mode: str = COORD_MODE_NORMALIZED,
+    bbox_order: str = BBOX_ORDER_YX,
     bboxes: Any = None,
     width: int = 1024,
     height: int = 1024,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], bool, bool]:
     if import_mode not in ("when empty", "always"):
         import_mode = "when empty"
+    coord_mode = sanitize_coord_mode(coord_mode)
+    bbox_order = sanitize_bbox_order(bbox_order)
+    bbox_sx, bbox_sy = bbox_scales(coord_mode, width, height)
 
     boxes = parse_json_list(elements_data)
     boxes_seeded = False
@@ -294,7 +340,18 @@ def build_caption(
 
     used_import = imported is not None and (import_mode == "always" or not boxes)
     if used_import:
-        return imported, caption_to_boxes(imported), boxes_seeded, True
+        return (
+            imported,
+            caption_to_boxes(
+                imported,
+                coord_mode=coord_mode,
+                bbox_order=bbox_order,
+                width=width,
+                height=height,
+            ),
+            boxes_seeded,
+            True,
+        )
 
     caption: dict[str, Any] = {}
     if high_level_description.strip():
@@ -320,7 +377,7 @@ def build_caption(
         element_type = "text" if box.get("type") == "text" else "obj"
         element: dict[str, Any] = {"type": element_type}
         if not box.get("nobbox"):
-            element["bbox"] = norm_bbox(box)
+            element["bbox"] = norm_bbox(box, bbox_sx, bbox_sy, bbox_order)
         if element_type == "text":
             element["text"] = box.get("text", "")
         element["desc"] = box.get("desc", "")

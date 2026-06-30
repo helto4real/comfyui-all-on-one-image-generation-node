@@ -34,6 +34,8 @@ except ImportError:  # pragma: no cover - direct test imports
 STYLE_OPTIONS = ("none", "photo", "art_style")
 IMPORT_MODES = ("when empty", "always")
 OUTPUT_FORMATS = ("compact", "pretty")
+COORD_MODES = ("normalized", "absolute")
+BBOX_ORDERS = ("yx", "xy")
 
 
 class AIOIdeogram4PromptBuilder:
@@ -155,6 +157,20 @@ class AIOIdeogram4PromptBuilder:
                         "tooltip": "Background image brightness for the preview/editor.",
                     },
                 ),
+                "coord_mode": (
+                    list(COORD_MODES),
+                    {
+                        "default": "normalized",
+                        "tooltip": "BBox coordinate scale for JSON output: normalized 0-1000 grid or absolute pixels.",
+                    },
+                ),
+                "bbox_order": (
+                    list(BBOX_ORDERS),
+                    {
+                        "default": "yx",
+                        "tooltip": "BBox axis order for JSON output: yx is Ideogram [ymin,xmin,ymax,xmax], xy is Qwen-style [xmin,ymin,xmax,ymax].",
+                    },
+                ),
             },
             "optional": {
                 "image": (
@@ -191,6 +207,8 @@ class AIOIdeogram4PromptBuilder:
         medium: str = "",
         import_mode: str = "when empty",
         output_format: str = "compact",
+        coord_mode: str = "normalized",
+        bbox_order: str = "yx",
         style_palette_data: str = "",
         elements_data: str = "",
         bg_brightness: int = 25,
@@ -235,6 +253,8 @@ class AIOIdeogram4PromptBuilder:
             elements_data=elements_data,
             import_json=import_json,
             import_mode=import_mode,
+            coord_mode=coord_mode,
+            bbox_order=bbox_order,
             bboxes=bboxes,
             width=width,
             height=height,
@@ -253,6 +273,8 @@ class AIOIdeogram4PromptBuilder:
             "aspect_ratio": dimensions.aspect_ratio,
             "multiple_value": dimensions.multiple_value,
             "output_format": output_format,
+            "coord_mode": prompt_builder.sanitize_coord_mode(coord_mode),
+            "bbox_order": prompt_builder.sanitize_bbox_order(bbox_order),
             "privacy_mode": bool(privacy_mode),
         }
         ui = {"dims": [width, height]}

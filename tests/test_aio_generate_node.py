@@ -1556,6 +1556,91 @@ def test_ideogram_prompt_builder_overrides_prompt_and_dimensions(monkeypatch):
     assert parsed["settings"]["positive_prompt_source"] == "ideogram4_prompt_builder"
 
 
+def test_krea2_prompt_builder_overrides_prompt_and_dimensions(monkeypatch):
+    from nodes import aio_generate
+    from nodes.krea2_settings import AIOKrea2Settings
+
+    captured = {}
+
+    class FakeAdapter:
+        version = "test"
+        dimension_multiple = 16
+
+        def resolve_settings(self, **kwargs):
+            captured["resolved"] = kwargs
+            resolved = dict(kwargs["model_settings"])
+            resolved.update(
+                {
+                    "width": kwargs["width"],
+                    "height": kwargs["height"],
+                    "steps": 8,
+                    "cfg": 1.0,
+                    "sampler": "auto",
+                    "scheduler": "auto",
+                }
+            )
+            return resolved
+
+        def validate_inputs(self, **kwargs):
+            captured["validated"] = kwargs
+            return []
+
+        def generate(self, **kwargs):
+            captured["generated"] = kwargs
+            return "image", {"samples": "latent"}, "positive", "negative", "vae"
+
+    monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
+
+    model_settings = AIOKrea2Settings().build_settings(
+        True,
+        1.0,
+        "auto",
+        prompt_builder={
+            "family": "ideogram4",
+            "prompt": '{"compositional_deconstruction":{"background":"Beach","elements":[]}}',
+            "width": 1344,
+            "height": 2048,
+            "max_side": 2048,
+            "aspect_ratio": "21:32",
+            "multiple_value": "16",
+        },
+    )[0]
+
+    _, _, run_info, _, _, output_width, output_height, _, _ = AIOImageGenerate().generate(
+        model_type="krea2",
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="main prompt",
+        negative_prompt="",
+        seed=0,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+        model_settings=model_settings,
+        **{
+            "size mode": "use aspect ratio",
+            "max side": 512,
+            "aspect ratio": "1:1",
+            "multiple value": "16",
+        },
+    )
+
+    assert captured["resolved"]["width"] == 1344
+    assert captured["resolved"]["height"] == 2048
+    assert captured["validated"]["positive_prompt"] == '{"compositional_deconstruction":{"background":"Beach","elements":[]}}'
+    assert captured["generated"]["positive_prompt"] == '{"compositional_deconstruction":{"background":"Beach","elements":[]}}'
+    assert captured["generated"]["width"] == 1344
+    assert captured["generated"]["height"] == 2048
+    assert (output_width, output_height) == (1344, 2048)
+    parsed = json.loads(run_info)
+    assert parsed["width"] == 1344
+    assert parsed["height"] == 2048
+    assert parsed["settings"]["positive_prompt_source"] == "krea2_prompt_builder"
+    assert parsed["debug"]["prompts"]["positive_prompt_override_applied"] is True
+
+
 def test_krea2_inpaint_settings_prompt_overrides_main_prompt(monkeypatch):
     from nodes import aio_generate
 

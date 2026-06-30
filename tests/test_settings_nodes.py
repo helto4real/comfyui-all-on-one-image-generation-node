@@ -78,6 +78,8 @@ def test_krea2_settings_returns_workflow_defaults():
     assert settings["fp16_accumulation_enabled"] is True
     assert "positive_prompt_override" not in settings
     assert "positive_prompt_source" not in settings
+    inputs = AIOKrea2Settings.INPUT_TYPES()
+    assert inputs["optional"]["prompt_builder"][0] == "AIO_IDEOGRAM4_PROMPT"
 
 
 def test_krea2_settings_accepts_inpaint_positive_prompt():
@@ -106,6 +108,90 @@ def test_krea2_settings_decrypts_private_inpaint_positive_prompt(monkeypatch, tm
 
     assert settings["positive_prompt_override"] == "private inpaint prompt"
     assert settings["positive_prompt_source"] == "krea2_inpaint_settings"
+
+
+def test_krea2_settings_accepts_prompt_builder_payload():
+    settings = AIOKrea2Settings().build_settings(
+        True,
+        1.0,
+        "auto",
+        prompt_builder={
+            "family": "ideogram4",
+            "prompt": '{"compositional_deconstruction":{"background":"Beach","elements":[]}}',
+            "width": 1344,
+            "height": 2048,
+            "max_side": 2048,
+            "aspect_ratio": "21:32",
+            "multiple_value": "16",
+        },
+    )[0]
+
+    assert settings["positive_prompt_source"] == "krea2_prompt_builder"
+    assert settings["positive_prompt_override"] == '{"compositional_deconstruction":{"background":"Beach","elements":[]}}'
+    assert settings["prompt_builder_width"] == 1344
+    assert settings["prompt_builder_height"] == 2048
+    assert settings["prompt_builder_max_side"] == 2048
+    assert settings["prompt_builder_aspect_ratio"] == "21:32"
+    assert settings["prompt_builder_multiple_value"] == "16"
+
+
+@pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
+def test_krea2_settings_encrypts_private_prompt_builder_override(monkeypatch, tmp_path):
+    monkeypatch.setattr(privacy, "config_dir", lambda: tmp_path)
+    prompt = '{"compositional_deconstruction":{"background":"Private beach","elements":[]}}'
+
+    settings = AIOKrea2Settings().build_settings(
+        True,
+        1.0,
+        "auto",
+        prompt_builder={
+            "family": "ideogram4",
+            "prompt": prompt,
+            "privacy_mode": True,
+        },
+    )[0]
+
+    dumped = str(settings["positive_prompt_override"])
+    assert "Private beach" not in dumped
+    assert privacy.is_encrypted_payload(settings["positive_prompt_override"])
+    assert privacy.decrypt_text_if_encrypted(settings["positive_prompt_override"]) == prompt
+    assert settings["prompt_builder_privacy_mode"] is True
+
+
+def test_krea2_prompt_builder_wins_over_inpaint_positive_prompt():
+    settings = AIOKrea2Settings().build_settings(
+        True,
+        1.0,
+        "auto",
+        inpaint_positive_prompt="krea inpaint prompt",
+        prompt_builder={
+            "family": "ideogram4",
+            "prompt": "builder prompt",
+        },
+    )[0]
+
+    assert settings["positive_prompt_override"] == "builder prompt"
+    assert settings["positive_prompt_source"] == "krea2_prompt_builder"
+
+
+def test_krea2_empty_prompt_builder_keeps_inpaint_positive_prompt():
+    settings = AIOKrea2Settings().build_settings(
+        True,
+        1.0,
+        "auto",
+        inpaint_positive_prompt="krea inpaint prompt",
+        prompt_builder={
+            "family": "ideogram4",
+            "prompt": "   ",
+            "width": 1344,
+            "height": 2048,
+        },
+    )[0]
+
+    assert settings["positive_prompt_override"] == "krea inpaint prompt"
+    assert settings["positive_prompt_source"] == "krea2_inpaint_settings"
+    assert "prompt_builder_width" not in settings
+    assert "prompt_builder_height" not in settings
 
 
 def test_ideogram4_settings_returns_default_family_dict():
