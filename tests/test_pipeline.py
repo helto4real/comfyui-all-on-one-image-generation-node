@@ -118,6 +118,28 @@ def test_missing_gguf_node_mapping_uses_backend_message(monkeypatch):
     assert str(exc_info.value) == gguf_backend.explain_missing()
 
 
+def test_concat_conditioning_uses_comfy_conditioning_concat_node(monkeypatch):
+    calls = {}
+
+    class FakeConditioningConcat:
+        def concat(self, conditioning_to, conditioning_from):
+            calls["conditioning_to"] = conditioning_to
+            calls["conditioning_from"] = conditioning_from
+            return ("concat_positive",)
+
+    fake_nodes = SimpleNamespace(ConditioningConcat=FakeConditioningConcat)
+    monkeypatch.setitem(sys.modules, "nodes", fake_nodes)
+
+    assert pipeline.concat_conditioning(
+        conditioning_to="enhanced_positive",
+        conditioning_from="original_positive",
+    ) == "concat_positive"
+    assert calls == {
+        "conditioning_to": "enhanced_positive",
+        "conditioning_from": "original_positive",
+    }
+
+
 def test_pipeline_applies_loras_before_prompt_encoding(monkeypatch):
     events = []
 
@@ -602,6 +624,23 @@ def test_krea2_pipeline_applies_enhancer_model_after_loras_and_performance(monke
         events.append("apply_enhancer")
         return f"{model}+enhancer"
 
+    def fake_conditioning_enhancer(conditioning, *, enabled, strength):
+        captured["conditioning_enhancer"] = {
+            "conditioning": conditioning,
+            "enabled": enabled,
+            "strength": strength,
+        }
+        events.append("enhance_conditioning")
+        return "enhanced_positive"
+
+    def fake_concat_conditioning(*, conditioning_to, conditioning_from):
+        captured["concat"] = {
+            "conditioning_to": conditioning_to,
+            "conditioning_from": conditioning_from,
+        }
+        events.append("concat_conditioning")
+        return "concat_positive"
+
     def fake_sample(**kwargs):
         captured["sample"] = kwargs
         events.append("sample")
@@ -614,6 +653,8 @@ def test_krea2_pipeline_applies_enhancer_model_after_loras_and_performance(monke
     monkeypatch.setattr(pipeline, "encode_krea2_prompt", fake_encode)
     monkeypatch.setattr(pipeline, "zero_out_conditioning", fake_zero)
     monkeypatch.setattr(pipeline.krea2_enhancer, "apply_krea2_enhancer", fake_enhancer)
+    monkeypatch.setattr(pipeline.krea2_enhancer, "enhance_krea2_conditioning", fake_conditioning_enhancer)
+    monkeypatch.setattr(pipeline, "concat_conditioning", fake_concat_conditioning)
     monkeypatch.setattr(pipeline, "make_empty_krea2_latent", lambda **kwargs: events.append("latent") or {"samples": "empty"})
     monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", fake_sample)
     monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: events.append("load_vae") or "vae")
@@ -643,7 +684,7 @@ def test_krea2_pipeline_applies_enhancer_model_after_loras_and_performance(monke
 
     assert image == "image"
     assert latent == {"samples": "sampled"}
-    assert positive == "positive"
+    assert positive == "concat_positive"
     assert negative == "zeroed_negative"
     assert loaded_vae == "vae"
     assert events == [
@@ -653,6 +694,8 @@ def test_krea2_pipeline_applies_enhancer_model_after_loras_and_performance(monke
         "performance:model+lora",
         "apply_enhancer",
         "encode:clip+lora",
+        "enhance_conditioning",
+        "concat_conditioning",
         "zero_negative",
         "latent",
         "sample",
@@ -668,14 +711,23 @@ def test_krea2_pipeline_applies_enhancer_model_after_loras_and_performance(monke
         "clip_type": "krea2",
     }
     assert captured["performance_settings"]["fp16_accumulation_enabled"] is True
-    assert captured["zero"] == "positive"
     assert captured["enhancer"] == {
         "model": "model+lora+perf",
         "enabled": True,
         "strength": 0.75,
     }
+    assert captured["conditioning_enhancer"] == {
+        "conditioning": "positive",
+        "enabled": True,
+        "strength": 0.75,
+    }
+    assert captured["concat"] == {
+        "conditioning_to": "enhanced_positive",
+        "conditioning_from": "positive",
+    }
     assert captured["sample"]["model"] == "model+lora+perf+enhancer"
-    assert captured["sample"]["positive"] == "positive"
+    assert captured["zero"] == "concat_positive"
+    assert captured["sample"]["positive"] == "concat_positive"
     assert captured["sample"]["negative"] == "zeroed_negative"
     assert captured["sample"]["sampler"] == "er_sde"
     assert captured["sample"]["scheduler"] == "simple"
@@ -687,6 +739,16 @@ def test_krea2_pipeline_can_disable_enhancer_and_decode(monkeypatch):
     monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model", "clip", []))
     monkeypatch.setattr(pipeline, "encode_krea2_prompt", lambda **kwargs: "positive")
     monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "zeroed_negative")
+    monkeypatch.setattr(
+        pipeline.krea2_enhancer,
+        "enhance_krea2_conditioning",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("conditioning enhancer should be disabled")),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "concat_conditioning",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("conditioning concat should be disabled")),
+    )
     monkeypatch.setattr(pipeline, "make_empty_krea2_latent", lambda **kwargs: {"samples": "empty"})
     monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", lambda **kwargs: {"samples": "sampled"})
     monkeypatch.setattr(
@@ -723,6 +785,56 @@ def test_krea2_pipeline_can_disable_enhancer_and_decode(monkeypatch):
     assert loaded_vae is None
 
 
+def test_krea2_pipeline_skips_conditioning_concat_when_enhancer_strength_zero(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(pipeline, "load_diffusion_model", lambda **kwargs: "model")
+    monkeypatch.setattr(pipeline, "load_text_encoder", lambda **kwargs: "clip")
+    monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model", "clip", []))
+    monkeypatch.setattr(pipeline, "encode_krea2_prompt", lambda **kwargs: "positive")
+    monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "zeroed_negative")
+    monkeypatch.setattr(
+        pipeline.krea2_enhancer,
+        "enhance_krea2_conditioning",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("conditioning enhancer should be inactive")),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "concat_conditioning",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("conditioning concat should be inactive")),
+    )
+    monkeypatch.setattr(pipeline, "make_empty_krea2_latent", lambda **kwargs: {"samples": "empty"})
+
+    def fake_sample(**kwargs):
+        captured["sample"] = kwargs
+        return {"samples": "sampled"}
+
+    monkeypatch.setattr(pipeline, "sample_with_comfy_ksampler", fake_sample)
+
+    image, latent, positive, negative, loaded_vae = pipeline.generate_krea2_t2i(
+        diffusion_model="model.safetensors",
+        text_encoder="text.safetensors",
+        vae="vae.safetensors",
+        positive_prompt="prompt",
+        width=1344,
+        height=2048,
+        seed=0,
+        steps=8,
+        cfg=1.0,
+        sampler="er_sde",
+        scheduler="simple",
+        settings={"enhancer_enabled": True, "enhancer_strength": 0.0},
+        decode_image=False,
+    )
+
+    assert image is None
+    assert latent == {"samples": "sampled"}
+    assert positive == "positive"
+    assert negative == "zeroed_negative"
+    assert loaded_vae is None
+    assert captured["sample"]["positive"] == "positive"
+
+
 def test_krea2_pipeline_encodes_negative_prompt_when_zero_negative_disabled(monkeypatch):
     captured = {}
 
@@ -740,6 +852,16 @@ def test_krea2_pipeline_encodes_negative_prompt_when_zero_negative_disabled(monk
         lambda conditioning: (_ for _ in ()).throw(AssertionError("zero_out_conditioning should not be called")),
     )
     monkeypatch.setattr(pipeline.krea2_enhancer, "apply_krea2_enhancer", lambda model, **kwargs: model)
+    monkeypatch.setattr(
+        pipeline.krea2_enhancer,
+        "enhance_krea2_conditioning",
+        lambda conditioning, **kwargs: f"enhanced:{conditioning}",
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "concat_conditioning",
+        lambda **kwargs: f"concat:{kwargs['conditioning_to']}+{kwargs['conditioning_from']}",
+    )
     monkeypatch.setattr(pipeline, "make_empty_krea2_latent", lambda **kwargs: {"samples": "empty"})
 
     def fake_sample(**kwargs):
@@ -762,7 +884,8 @@ def test_krea2_pipeline_encodes_negative_prompt_when_zero_negative_disabled(monk
         sampler="er_sde",
         scheduler="simple",
         settings={
-            "enhancer_enabled": False,
+            "enhancer_enabled": True,
+            "enhancer_strength": 0.5,
             "use_zero_negative_conditioning": False,
         },
         decode_image=False,
@@ -770,8 +893,9 @@ def test_krea2_pipeline_encodes_negative_prompt_when_zero_negative_disabled(monk
 
     assert image is None
     assert latent == {"samples": "sampled"}
-    assert positive == "conditioning:prompt"
+    assert positive == "concat:enhanced:conditioning:prompt+conditioning:prompt"
     assert negative == "conditioning:avoid blur"
+    assert captured["sample"]["positive"] == "concat:enhanced:conditioning:prompt+conditioning:prompt"
     assert captured["sample"]["negative"] == "conditioning:avoid blur"
     assert loaded_vae is None
 
@@ -3221,6 +3345,8 @@ def test_krea2_pipeline_second_pass_reuses_enhanced_model(monkeypatch):
     monkeypatch.setattr(pipeline, "apply_lora_config", lambda **kwargs: ("model+lora", "clip+lora", []))
     monkeypatch.setattr(pipeline, "load_vae", lambda **kwargs: "vae")
     monkeypatch.setattr(pipeline, "encode_krea2_prompt", lambda **kwargs: "positive")
+    monkeypatch.setattr(pipeline.krea2_enhancer, "enhance_krea2_conditioning", lambda *args, **kwargs: "enhanced_positive")
+    monkeypatch.setattr(pipeline, "concat_conditioning", lambda **kwargs: "concat_positive")
     monkeypatch.setattr(pipeline, "zero_out_conditioning", lambda conditioning: "negative")
     monkeypatch.setattr(pipeline.krea2_enhancer, "apply_krea2_enhancer", lambda *args, **kwargs: "enhanced_model")
     monkeypatch.setattr(pipeline, "make_empty_krea2_latent", lambda **kwargs: {"samples": "empty"})
@@ -3255,10 +3381,11 @@ def test_krea2_pipeline_second_pass_reuses_enhanced_model(monkeypatch):
     )
 
     assert image == "second_pass_image"
-    assert positive == "positive"
+    assert positive == "concat_positive"
     assert sample_calls[0]["model"] == "enhanced_model"
+    assert sample_calls[0]["positive"] == "concat_positive"
     assert sample_calls[1]["model"] == "enhanced_model"
-    assert sample_calls[1]["positive"] == "positive"
+    assert sample_calls[1]["positive"] == "concat_positive"
     assert sample_calls[1]["negative"] == "negative"
     assert sample_calls[1]["denoise"] == 0.15
     assert sample_calls[1]["steps"] == 6

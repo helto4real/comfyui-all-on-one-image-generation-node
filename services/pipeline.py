@@ -487,6 +487,15 @@ def zero_out_conditioning(conditioning: Any):
     return nodes.ConditioningZeroOut().zero_out(conditioning)[0]
 
 
+def concat_conditioning(*, conditioning_to: Any, conditioning_from: Any):
+    import nodes  # type: ignore
+
+    return nodes.ConditioningConcat().concat(
+        conditioning_to=conditioning_to,
+        conditioning_from=conditioning_from,
+    )[0]
+
+
 def use_zero_negative_conditioning(settings: dict[str, Any]) -> bool:
     return bool(settings.get("use_zero_negative_conditioning", True))
 
@@ -1531,15 +1540,28 @@ def generate_krea2_t2i(
             inpaint_config=inpaint_config,
             progress=progress,
         )
-    if settings.get("enhancer_enabled", True):
+    enhancer_enabled = bool(settings.get("enhancer_enabled", True))
+    enhancer_strength = settings.get("enhancer_strength", 1.0)
+    if enhancer_enabled:
         _phase(progress, "applying Krea2T enhancer")
     model = krea2_enhancer.apply_krea2_enhancer(
         model,
-        enabled=bool(settings.get("enhancer_enabled", True)),
-        strength=settings.get("enhancer_strength", 1.0),
+        enabled=enhancer_enabled,
+        strength=enhancer_strength,
     )
     _phase(progress, "encoding prompts")
-    positive = encode_krea2_prompt(clip=clip, prompt=positive_prompt)
+    original_positive = encode_krea2_prompt(clip=clip, prompt=positive_prompt)
+    positive = original_positive
+    if krea2_enhancer.is_enhancer_active(enabled=enhancer_enabled, strength=enhancer_strength):
+        enhanced_positive = krea2_enhancer.enhance_krea2_conditioning(
+            original_positive,
+            enabled=enhancer_enabled,
+            strength=enhancer_strength,
+        )
+        positive = concat_conditioning(
+            conditioning_to=enhanced_positive,
+            conditioning_from=original_positive,
+        )
     if use_zero_negative_conditioning(settings):
         negative = zero_out_conditioning(positive)
     else:

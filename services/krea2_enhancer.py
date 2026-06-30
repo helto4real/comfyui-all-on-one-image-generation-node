@@ -88,6 +88,59 @@ def _chunk_gains(device: Any, dtype: Any, strength: float) -> Any:
     return gains.to(dtype=dtype)
 
 
+def normalize_strength(strength: Any) -> float:
+    return _bounded_float(strength, 1.0, 0.0, 1.0)
+
+
+def is_enhancer_active(*, enabled: bool = True, strength: Any = 1.0) -> bool:
+    return bool(enabled) and normalize_strength(strength) > 0.0
+
+
+def _enhance_conditioning_tensor(tensor: Any, *, strength: float) -> Any:
+    expected_dim = KREA2_CHUNK_COUNT * KREA2_CHUNK_DIM
+    if len(getattr(tensor, "shape", ())) == 0 or int(tensor.shape[-1]) != expected_dim:
+        return tensor.clone()
+
+    shape = tuple(tensor.shape)
+    chunks = tensor.reshape(*shape[:-1], KREA2_CHUNK_COUNT, KREA2_CHUNK_DIM)
+    gains = _chunk_gains(tensor.device, tensor.dtype, strength)
+    gain_shape = (1,) * (chunks.dim() - 2) + (KREA2_CHUNK_COUNT, 1)
+    global_multiplier = 1.0 + float(strength) * (ENHANCER_GLOBAL_MULTIPLIER - 1.0)
+    return (chunks * gains.view(gain_shape) * global_multiplier).reshape(shape)
+
+
+def enhance_krea2_conditioning(
+    conditioning: Any,
+    *,
+    enabled: bool = True,
+    strength: Any = 1.0,
+) -> Any:
+    strength = normalize_strength(strength)
+    if not bool(enabled) or strength <= 0.0:
+        return conditioning
+
+    import torch  # type: ignore
+
+    if not isinstance(conditioning, list):
+        return conditioning
+
+    out = []
+    for item in conditioning:
+        if (
+            isinstance(item, (list, tuple))
+            and len(item) == 2
+            and torch.is_tensor(item[0])
+            and isinstance(item[1], dict)
+        ):
+            out.append([
+                _enhance_conditioning_tensor(item[0], strength=strength),
+                dict(item[1]),
+            ])
+        else:
+            out.append(item)
+    return out
+
+
 def _run_refiners(txtfusion: Any, y_text: Any, mask: Any = None, transformer_options: dict[str, Any] | None = None) -> Any:
     out = y_text
     for block in txtfusion.refiner_blocks:
@@ -265,8 +318,8 @@ def apply_krea2_enhancer(
     enabled: bool = True,
     strength: Any = 1.0,
 ) -> Any:
-    strength = _bounded_float(strength, 1.0, 0.0, 1.0)
-    if not bool(enabled) or strength <= 0.0:
+    strength = normalize_strength(strength)
+    if not is_enhancer_active(enabled=enabled, strength=strength):
         return model
 
     import comfy.patcher_extension  # type: ignore
