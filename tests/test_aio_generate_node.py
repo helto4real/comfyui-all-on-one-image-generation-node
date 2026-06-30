@@ -225,6 +225,79 @@ def test_aio_seed_frontend_randomizes_live_seed_before_queue():
     assert "AIOSeedProbe" not in source
 
 
+def test_aio_frontend_reuses_private_prompt_envelope_for_unchanged_plaintext():
+    source = (ROOT / "web/js/aio_image_generate.js").read_text(encoding="utf-8")
+
+    assert 'const PRIVACY_ENVELOPE_MEMO_KEY = "__aioPrivacyEnvelopeMemo";' in source
+    assert "function rememberPrivacyEnvelope(widget, plaintext, envelope)" in source
+    assert "function rememberedPrivacyEnvelope(widget, plaintext)" in source
+
+    decrypt_start = source.index("async function decryptPromptWidget")
+    decrypt_end = source.index("function setPromptWidgetText", decrypt_start)
+    decrypt_block = source[decrypt_start:decrypt_end]
+    assert "const envelope = privacyEnvelopeString(widget.value);" in decrypt_block
+    assert "const plaintext = await decryptValue(widget.value);" in decrypt_block
+    assert "rememberPrivacyEnvelope(widget, plaintext, envelope);" in decrypt_block
+
+    serialize_start = source.index("function encryptedOrEncryptPromptValue")
+    serialize_end = source.index("function sanitizeGenerateWorkflowSerialization", serialize_start)
+    serialize_block = source[serialize_start:serialize_end]
+    assert "const currentEnvelope = privacyEnvelopeString(value);" in serialize_block
+    assert "return currentEnvelope;" in serialize_block
+    assert "const rememberedEnvelope = rememberedPrivacyEnvelope(widget, value);" in serialize_block
+    assert "return rememberedEnvelope;" in serialize_block
+    assert 'const encrypted = encryptValueSync(value ?? "");' in serialize_block
+    assert 'rememberPrivacyEnvelope(widget, value ?? "", encrypted);' in serialize_block
+    assert serialize_block.index("rememberedPrivacyEnvelope(widget, value)") < serialize_block.index("encryptValueSync")
+
+    krea_start = source.index("function sanitizeKreaSettingsWorkflowSerialization")
+    krea_end = source.index("function promptWidgetDomElements", krea_start)
+    krea_block = source[krea_start:krea_end]
+    assert "encryptedOrEncryptPromptValue(node, widget)" in krea_block
+
+
+def test_aio_frontend_stabilizes_private_prompt_output_after_graph_to_prompt():
+    source = (ROOT / "web/js/aio_image_generate.js").read_text(encoding="utf-8")
+
+    assert 'const AIO_PRIVACY_GRAPH_TO_PROMPT_WRAPPER_KEY = "__aioGeneratePrivacyGraphToPromptWrapper";' in source
+    assert "function stableWorkflowPromptEnvelope(prompt, node, widget)" in source
+    assert "function stabilizeAioPrivatePromptOutput(prompt, graph)" in source
+    assert "function installAioPrivacyGraphToPromptPatch" in source
+    assert "app.graphToPrompt = wrappedGraphToPrompt" in source
+    assert "scheduleAioPrivacyGraphToPromptPatch(\"setup\")" in source
+
+    workflow_start = source.index("function stableWorkflowPromptEnvelope")
+    workflow_end = source.index("function stabilizeAioPrivatePromptNodeOutput", workflow_start)
+    workflow_block = source[workflow_start:workflow_end]
+    assert "const workflowNode = promptWorkflowNodeById(prompt, node?.id);" in workflow_block
+    assert "const values = workflowNode?.widgets_values;" in workflow_block
+    assert "return privacyEnvelopeString(values[index]);" in workflow_block
+
+    output_start = source.index("function stabilizeAioPrivatePromptNodeOutput")
+    output_end = source.index("function stabilizeAioPrivatePromptOutput", output_start)
+    output_block = source[output_start:output_end]
+    assert "isAioGenerateNode(node)" in output_block
+    assert "isAioKrea2SettingsNode(node)" in output_block
+    assert "privacyPromptWidgetNames(node)" in output_block
+    assert "Array.isArray(inputs[name])" in output_block
+    assert "inputs[name] = envelope;" in output_block
+    assert "rememberPrivacyEnvelope(widget, currentValue ?? \"\", envelope);" in output_block
+
+    wrapper_start = source.index("function installAioPrivacyGraphToPromptPatch")
+    wrapper_end = source.index("function scheduleAioPrivacyGraphToPromptPatch", wrapper_start)
+    wrapper_block = source[wrapper_start:wrapper_end]
+    assert "const originalGraphToPrompt = app.graphToPrompt;" in wrapper_block
+    assert "const prompt = await originalGraphToPrompt.apply(this, args);" in wrapper_block
+    assert "return stabilizeAioPrivatePromptOutput(prompt, args[0] || this?.graph || app.graph);" in wrapper_block
+    assert wrapper_block.index("await originalGraphToPrompt.apply") < wrapper_block.index("stabilizeAioPrivatePromptOutput")
+
+    names_start = source.index("function privacyPromptWidgetNames")
+    names_end = source.index("function graphNodeList", names_start)
+    names_block = source[names_start:names_end]
+    assert "KREA_INPAINT_PROMPT_WIDGET_NAME" in names_block
+    assert "PROMPT_WIDGET_NAMES" in names_block
+
+
 def test_aio_frontend_clears_standard_progress_text_after_execution():
     source = (ROOT / "web/js/aio_image_generate.js").read_text(encoding="utf-8")
 

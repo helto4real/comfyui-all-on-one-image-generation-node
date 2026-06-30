@@ -21,6 +21,9 @@ const SEED_CONTROL_MODES = ["fixed", "increment", "decrement", "randomize"];
 const AIO_SEED_QUEUE_WRAPPER_KEY = "__aioGenerateSeedQueuePromptWrapper";
 const AIO_SEED_QUEUE_INSTALL_KEY = "__aioGenerateSeedQueuePromptInstallScheduled";
 const AIO_SEED_QUEUE_INSTALL_ATTEMPT_LIMIT = 80;
+const AIO_PRIVACY_GRAPH_TO_PROMPT_WRAPPER_KEY = "__aioGeneratePrivacyGraphToPromptWrapper";
+const AIO_PRIVACY_GRAPH_TO_PROMPT_INSTALL_KEY = "__aioGeneratePrivacyGraphToPromptInstallScheduled";
+const AIO_PRIVACY_GRAPH_TO_PROMPT_INSTALL_ATTEMPT_LIMIT = 80;
 const AIO_PROGRESS_TEXT_CLEANUP_KEY = "__aioGenerateProgressTextCleanupInstalled";
 const AIO_RUNTIME_PHASE_BRIDGE_KEY = "__aioGenerateRuntimePhaseBridgeInstalled";
 const AIO_RUNTIME_PHASE_STYLE_ID = "aio-generate-runtime-phase-style";
@@ -38,6 +41,7 @@ const KREA_INPAINT_PROMPT_WIDGET_NAME = "inpaint_positive_prompt";
 const BATCH_COUNT_WIDGET_NAME = "batch_count";
 const PRIVACY_STYLE_ID = "aio-generate-privacy-style";
 const MASKED_PROMPT_VALUE = "Private prompt - hover to reveal";
+const PRIVACY_ENVELOPE_MEMO_KEY = "__aioPrivacyEnvelopeMemo";
 
 const DEFAULT_ROW = {
   on: true,
@@ -671,6 +675,132 @@ function scheduleAioSeedQueuePatch(source = "top-level") {
   attempt();
 }
 
+function graphNodesForPromptStabilization(graph) {
+  const seen = new Set();
+  const nodes = [];
+  const addNode = (node) => {
+    if (!node || seen.has(node)) {
+      return;
+    }
+    seen.add(node);
+    nodes.push(node);
+  };
+  for (const node of graph?._nodes || app.graph?._nodes || []) {
+    addNode(node);
+  }
+  const subgraphs = graph?.subgraphs;
+  if (subgraphs && typeof subgraphs.values === "function") {
+    for (const subgraph of subgraphs.values()) {
+      for (const node of subgraph?.nodes || subgraph?._nodes || []) {
+        addNode(node);
+      }
+    }
+  }
+  return nodes;
+}
+
+function promptWorkflowNodeById(prompt, id) {
+  if (id == null) {
+    return null;
+  }
+  return (prompt?.workflow?.nodes || []).find((node) => String(node?.id) === String(id)) || null;
+}
+
+function promptOutputForNode(prompt, node) {
+  if (node?.id == null) {
+    return null;
+  }
+  return prompt?.output?.[String(node.id)] || null;
+}
+
+function stableWorkflowPromptEnvelope(prompt, node, widget) {
+  const index = serializedWidgetIndex(node, widget);
+  if (!widget || index == null || index < 0) {
+    return null;
+  }
+  const workflowNode = promptWorkflowNodeById(prompt, node?.id);
+  const values = workflowNode?.widgets_values;
+  if (!Array.isArray(values) || index >= values.length) {
+    return null;
+  }
+  return privacyEnvelopeString(values[index]);
+}
+
+function stabilizeAioPrivatePromptNodeOutput(prompt, node) {
+  if ((!isAioGenerateNode(node) && !isAioKrea2SettingsNode(node)) || !privacyEnabled(node)) {
+    return;
+  }
+  const outputNode = promptOutputForNode(prompt, node);
+  const inputs = outputNode?.inputs;
+  if (!inputs) {
+    return;
+  }
+  for (const name of privacyPromptWidgetNames(node)) {
+    if (!Object.prototype.hasOwnProperty.call(inputs, name) || Array.isArray(inputs[name])) {
+      continue;
+    }
+    const widget = widgetByName(node, name);
+    const envelope = stableWorkflowPromptEnvelope(prompt, node, widget);
+    if (!envelope) {
+      continue;
+    }
+    inputs[name] = envelope;
+    const currentValue = syncPromptWidgetFromDom(node, widget);
+    if (!isEncryptedPrivacyPayload(currentValue)) {
+      rememberPrivacyEnvelope(widget, currentValue ?? "", envelope);
+    }
+  }
+}
+
+function stabilizeAioPrivatePromptOutput(prompt, graph) {
+  if (!prompt?.workflow || !prompt?.output) {
+    return prompt;
+  }
+  for (const node of graphNodesForPromptStabilization(graph)) {
+    stabilizeAioPrivatePromptNodeOutput(prompt, node);
+  }
+  return prompt;
+}
+
+function installAioPrivacyGraphToPromptPatch(source = "install") {
+  if (typeof app.graphToPrompt !== "function") {
+    return false;
+  }
+  if (app.graphToPrompt[AIO_PRIVACY_GRAPH_TO_PROMPT_WRAPPER_KEY]) {
+    return true;
+  }
+
+  const originalGraphToPrompt = app.graphToPrompt;
+  const wrappedGraphToPrompt = async function (...args) {
+    const prompt = await originalGraphToPrompt.apply(this, args);
+    return stabilizeAioPrivatePromptOutput(prompt, args[0] || this?.graph || app.graph);
+  };
+  Object.defineProperty(wrappedGraphToPrompt, AIO_PRIVACY_GRAPH_TO_PROMPT_WRAPPER_KEY, {
+    value: true,
+    configurable: true,
+  });
+  app.graphToPrompt = wrappedGraphToPrompt;
+  return true;
+}
+
+function scheduleAioPrivacyGraphToPromptPatch(source = "top-level") {
+  if (globalThis[AIO_PRIVACY_GRAPH_TO_PROMPT_INSTALL_KEY]) {
+    installAioPrivacyGraphToPromptPatch(`${source}:resync`);
+    return;
+  }
+  globalThis[AIO_PRIVACY_GRAPH_TO_PROMPT_INSTALL_KEY] = true;
+
+  let attempts = 0;
+  function attempt() {
+    attempts += 1;
+    installAioPrivacyGraphToPromptPatch(`${source}:${attempts}`);
+    if (attempts < AIO_PRIVACY_GRAPH_TO_PROMPT_INSTALL_ATTEMPT_LIMIT) {
+      setTimeout(attempt, 250);
+    }
+  }
+  attempt();
+}
+
 function widgetSerializesToWorkflow(widget) {
   return Boolean(widget) && widget.serialize !== false && widget.options?.serialize !== false;
 }
@@ -994,16 +1124,49 @@ function syncPromptWidgetsFromDom(node) {
   }
 }
 
+function privacyEnvelopeString(value) {
+  if (!isEncryptedPrivacyPayload(value)) {
+    return null;
+  }
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+function rememberPrivacyEnvelope(widget, plaintext, envelope) {
+  const envelopeString = privacyEnvelopeString(envelope);
+  if (!widget || !envelopeString) {
+    return;
+  }
+  widget[PRIVACY_ENVELOPE_MEMO_KEY] = {
+    plaintext: plaintext == null ? "" : String(plaintext),
+    envelope: envelopeString,
+  };
+}
+
+function rememberedPrivacyEnvelope(widget, plaintext) {
+  const memo = widget?.[PRIVACY_ENVELOPE_MEMO_KEY];
+  if (!memo || memo.plaintext !== (plaintext == null ? "" : String(plaintext))) {
+    return null;
+  }
+  return privacyEnvelopeString(memo.envelope);
+}
+
 function encryptedOrEncryptPromptValue(node, widget) {
   const value = syncPromptWidgetFromDom(node, widget);
   if (!privacyEnabled(node)) {
     return value;
   }
-  if (isEncryptedPrivacyPayload(value)) {
-    return value;
+  const currentEnvelope = privacyEnvelopeString(value);
+  if (currentEnvelope) {
+    return currentEnvelope;
+  }
+  const rememberedEnvelope = rememberedPrivacyEnvelope(widget, value);
+  if (rememberedEnvelope) {
+    return rememberedEnvelope;
   }
   try {
-    return encryptValueSync(value ?? "");
+    const encrypted = encryptValueSync(value ?? "");
+    rememberPrivacyEnvelope(widget, value ?? "", encrypted);
+    return encrypted;
   } catch (error) {
     setPrivacyStatus(node, `Privacy encryption failed: ${error.message}`);
     throw error;
@@ -1186,7 +1349,10 @@ async function decryptPromptWidget(node, widget) {
   widget._aioPrivacyDecrypting = true;
   setPrivacyStatus(node, "Decrypting private prompts...");
   try {
-    setPromptWidgetText(widget, await decryptValue(widget.value));
+    const envelope = privacyEnvelopeString(widget.value);
+    const plaintext = await decryptValue(widget.value);
+    setPromptWidgetText(widget, plaintext);
+    rememberPrivacyEnvelope(widget, plaintext, envelope);
     setPrivacyStatus(node, "");
   } catch (error) {
     setPrivacyStatus(node, `Private prompt locked: ${error.message}`);
@@ -3025,11 +3191,13 @@ function patchKrea2SettingsNodeType(nodeType) {
 }
 
 scheduleAioSeedQueuePatch();
+scheduleAioPrivacyGraphToPromptPatch();
 
 app.registerExtension({
   name: "aio.image.generate",
   setup() {
     scheduleAioSeedQueuePatch("setup");
+    scheduleAioPrivacyGraphToPromptPatch("setup");
     installAioGenerateProgressTextCleanup();
     installAioGenerateRuntimePhaseBridge();
     requestAnimationFrame(() => {
