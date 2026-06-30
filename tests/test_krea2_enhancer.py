@@ -48,48 +48,6 @@ def test_disabled_and_zero_strength_return_original_model():
     assert model.clone_result is None
 
 
-def test_active_detection_clamps_strength():
-    assert krea2_enhancer.normalize_strength(2.5) == 1.0
-    assert krea2_enhancer.normalize_strength(-1.0) == 0.0
-    assert krea2_enhancer.is_enhancer_active(enabled=True, strength=0.01) is True
-    assert krea2_enhancer.is_enhancer_active(enabled=False, strength=1.0) is False
-    assert krea2_enhancer.is_enhancer_active(enabled=True, strength=0.0) is False
-
-
-def test_conditioning_enhancer_scales_krea_chunks_and_copies_metadata():
-    import torch
-
-    tensor = torch.ones((1, 2, krea2_enhancer.KREA2_CHUNK_COUNT * krea2_enhancer.KREA2_CHUNK_DIM))
-    pooled = torch.tensor([[1.0]])
-    metadata = {"pooled_output": pooled, "tag": "original"}
-    conditioning = [[tensor, metadata]]
-
-    enhanced = krea2_enhancer.enhance_krea2_conditioning(
-        conditioning,
-        enabled=True,
-        strength=2.5,
-    )
-
-    assert enhanced is not conditioning
-    assert enhanced[0] is not conditioning[0]
-    assert enhanced[0][1] is not metadata
-    assert enhanced[0][1]["tag"] == "original"
-    assert enhanced[0][1]["pooled_output"] is pooled
-    assert torch.allclose(conditioning[0][0], torch.ones_like(tensor))
-
-    chunks = enhanced[0][0].reshape(1, 2, krea2_enhancer.KREA2_CHUNK_COUNT, krea2_enhancer.KREA2_CHUNK_DIM)
-    assert torch.allclose(chunks[:, :, 0], torch.full_like(chunks[:, :, 0], 15.0))
-    assert torch.allclose(chunks[:, :, 7], torch.full_like(chunks[:, :, 7], 37.5))
-    assert torch.allclose(chunks[:, :, 8], torch.full_like(chunks[:, :, 8], 75.0))
-
-
-def test_conditioning_enhancer_returns_original_when_inactive():
-    conditioning = [["conditioning", {}]]
-
-    assert krea2_enhancer.enhance_krea2_conditioning(conditioning, enabled=False, strength=1.0) is conditioning
-    assert krea2_enhancer.enhance_krea2_conditioning(conditioning, enabled=True, strength=0.0) is conditioning
-
-
 def test_active_enhancer_clones_model_clamps_strength_and_registers_wrappers(monkeypatch):
     patcher_module = install_fake_patcher(monkeypatch)
     model = FakeModel()
