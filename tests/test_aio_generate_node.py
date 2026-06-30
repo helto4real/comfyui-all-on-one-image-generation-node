@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -145,6 +146,40 @@ def test_main_node_exposes_core_inputs():
         "image_original",
     )
     assert IMAGE_ORIGINAL_OUTPUT_INDEX == 8
+
+
+def test_main_node_is_changed_uses_native_cache_for_public_inputs(monkeypatch):
+    from nodes import aio_generate
+
+    monkeypatch.setattr(aio_generate, "_external_cache_providers_registered", lambda: True)
+
+    assert AIOImageGenerate.IS_CHANGED(privacy_mode=False) is False
+    assert AIOImageGenerate.IS_CHANGED(model_settings={"privacy_mode": False}) is False
+
+
+def test_main_node_is_changed_allows_private_ram_cache_without_external_provider(monkeypatch):
+    from nodes import aio_generate
+
+    monkeypatch.setattr(aio_generate, "_external_cache_providers_registered", lambda: False)
+
+    assert AIOImageGenerate.IS_CHANGED(privacy_mode=True) is False
+
+
+def test_main_node_is_changed_disables_private_cache_with_external_provider(monkeypatch):
+    from nodes import aio_generate
+
+    monkeypatch.setattr(aio_generate, "_external_cache_providers_registered", lambda: True)
+
+    assert math.isnan(AIOImageGenerate.IS_CHANGED(privacy_mode=True))
+
+
+def test_main_node_is_changed_disables_direct_private_model_settings_with_external_provider(monkeypatch):
+    from nodes import aio_generate
+
+    monkeypatch.setattr(aio_generate, "_external_cache_providers_registered", lambda: True)
+
+    assert math.isnan(AIOImageGenerate.IS_CHANGED(model_settings={"privacy_mode": True}))
+    assert math.isnan(AIOImageGenerate.IS_CHANGED(model_settings={"prompt_builder_privacy_mode": True}))
 
 
 def test_info_nodes_expose_bundle_extractors():

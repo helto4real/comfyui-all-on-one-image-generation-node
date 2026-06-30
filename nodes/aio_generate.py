@@ -99,6 +99,30 @@ MASKED_PROMPT_VALUE = "Private prompt - hover to reveal"
 KREA_INPAINT_PROMPT_SOURCE = "krea2_inpaint_settings"
 
 
+def _external_cache_providers_registered() -> bool:
+    try:
+        from comfy_execution.cache_provider import _has_cache_providers  # type: ignore
+    except Exception:
+        return False
+    try:
+        return bool(_has_cache_providers())
+    except Exception:
+        return False
+
+
+def _truthy_privacy_flag(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _settings_request_privacy(settings: Any) -> bool:
+    return isinstance(settings, dict) and (
+        _truthy_privacy_flag(settings.get("privacy_mode"))
+        or _truthy_privacy_flag(settings.get("prompt_builder_privacy_mode"))
+    )
+
+
 def _filename_list(category: str) -> list[str]:
     try:
         import folder_paths  # type: ignore
@@ -652,9 +676,12 @@ class AIOImageGenerate:
     FUNCTION = "generate"
 
     @classmethod
-    def IS_CHANGED(cls, **kwargs):
+    def IS_CHANGED(cls, privacy_mode: bool = False, model_settings: Any = None, **kwargs):
         del kwargs
-        return float("NaN")
+        private_outputs = _truthy_privacy_flag(privacy_mode) or _settings_request_privacy(model_settings)
+        if private_outputs and _external_cache_providers_registered():
+            return float("NaN")
+        return False
 
     @classmethod
     def INPUT_TYPES(cls):
