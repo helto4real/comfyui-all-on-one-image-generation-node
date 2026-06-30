@@ -18,6 +18,7 @@ COORD_MODES = (COORD_MODE_NORMALIZED, COORD_MODE_ABSOLUTE)
 BBOX_ORDER_YX = "yx"
 BBOX_ORDER_XY = "xy"
 BBOX_ORDERS = (BBOX_ORDER_YX, BBOX_ORDER_XY)
+DEFAULT_EDITOR_COLOR = "#8CA8FF"
 
 
 def hex_rgb(value: str) -> tuple[int, int, int]:
@@ -192,6 +193,13 @@ def palette(colors: Any) -> list[str]:
     return [c.upper() for c in colors if c]
 
 
+def element_palette(colors: Any) -> list[str]:
+    values = palette(colors)
+    if values == [DEFAULT_EDITOR_COLOR]:
+        return []
+    return values
+
+
 def dumps_pretty(value: Any, level: int = 0) -> str:
     pad = "    " * (level + 1)
     end = "    " * level
@@ -227,6 +235,34 @@ def parse_json_list(value: str | None) -> list[Any]:
         except json.JSONDecodeError:
             pass
     return []
+
+
+def parse_elements_payload(value: str | None) -> tuple[list[Any], dict[str, Any]]:
+    if value:
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return [], {}
+        if isinstance(parsed, list):
+            return parsed, {}
+        if isinstance(parsed, dict):
+            elements = parsed.get("elements")
+            if not isinstance(elements, list):
+                elements = parsed.get("boxes")
+            widgets = parsed.get("widgets")
+            return (
+                elements if isinstance(elements, list) else [],
+                widgets if isinstance(widgets, dict) else {},
+            )
+    return [], {}
+
+
+def fallback_text(value: Any, fallback_values: dict[str, Any], name: str) -> str:
+    text = "" if value is None else str(value)
+    if text.strip():
+        return text
+    fallback = fallback_values.get(name)
+    return "" if fallback is None else str(fallback)
 
 
 def caption_to_boxes(
@@ -294,7 +330,14 @@ def build_caption(
     bbox_order = sanitize_bbox_order(bbox_order)
     bbox_sx, bbox_sy = bbox_scales(coord_mode, width, height)
 
-    boxes = parse_json_list(elements_data)
+    boxes, widget_fallbacks = parse_elements_payload(elements_data)
+    high_level_description = fallback_text(high_level_description, widget_fallbacks, "high_level_description")
+    background = fallback_text(background, widget_fallbacks, "background")
+    aesthetics = fallback_text(aesthetics, widget_fallbacks, "aesthetics")
+    lighting = fallback_text(lighting, widget_fallbacks, "lighting")
+    medium = fallback_text(medium, widget_fallbacks, "medium")
+    photo = fallback_text(photo, widget_fallbacks, "photo")
+    art_style = fallback_text(art_style, widget_fallbacks, "art_style")
     boxes_seeded = False
     if not boxes and bboxes:
         if isinstance(bboxes, dict):
@@ -381,7 +424,7 @@ def build_caption(
         if element_type == "text":
             element["text"] = box.get("text", "")
         element["desc"] = box.get("desc", "")
-        box_palette = palette(box.get("palette", []))
+        box_palette = element_palette(box.get("palette", []))
         if box_palette:
             element["color_palette"] = box_palette[:5]
         elements.append(element)

@@ -10,6 +10,7 @@ const EDITOR_NODE_MARGIN = 10;
 const MIN_NODE_WIDTH = MIN_WIDTH + EDITOR_NODE_MARGIN * 2;
 const EDITOR_INITIAL_NODE_HEIGHT = 760 + EDITOR_NODE_MARGIN * 2;
 const DEFAULT_COLOR = "#8ca8ff";
+const DEFAULT_COLOR_UPPER = DEFAULT_COLOR.toUpperCase();
 // Selection highlight on the canvas = Helto gold accent (selection/active).
 const ACTIVE_COLOR = HELTO.accent;
 const LIBRARY_ROUTE = "/aio_image_generate/ideogram4_prompt_library";
@@ -87,6 +88,23 @@ function parseJsonList(value) {
   } catch {
     return [];
   }
+}
+
+function parseElementsPayload(value) {
+  if (!value) return { elements: [], widgets: {} };
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) return { elements: parsed, widgets: {} };
+    if (parsed && typeof parsed === "object") {
+      return {
+        elements: Array.isArray(parsed.elements) ? parsed.elements : Array.isArray(parsed.boxes) ? parsed.boxes : [],
+        widgets: parsed.widgets && typeof parsed.widgets === "object" && !Array.isArray(parsed.widgets) ? parsed.widgets : {},
+      };
+    }
+  } catch {
+    return { elements: [], widgets: {} };
+  }
+  return { elements: [], widgets: {} };
 }
 
 function parseStatePayload(value) {
@@ -167,13 +185,38 @@ function textButton(label, iconName = "") {
 function normalizedColor(value) {
   const text = String(value || "").trim();
   if (/^#[0-9a-fA-F]{6}$/.test(text)) return text.toUpperCase();
-  return DEFAULT_COLOR.toUpperCase();
+  return DEFAULT_COLOR_UPPER;
 }
 
 function palette(colors) {
   if (!colors) return [];
   const values = Array.isArray(colors) ? colors : Object.values(colors);
   return values.filter(Boolean).map((color) => String(color).toUpperCase());
+}
+
+function promptPalette(colors) {
+  const values = palette(colors);
+  return values.length === 1 && values[0] === DEFAULT_COLOR_UPPER ? [] : values;
+}
+
+function widgetDomTextValue(widget) {
+  const elements = [];
+  for (const candidate of [widget?.inputEl, widget?.element, widget?.inputElement, widget?.textarea, widget?.textElement]) {
+    if (candidate instanceof HTMLElement) elements.push(candidate);
+  }
+  for (const candidate of [...elements]) {
+    elements.push(...(candidate.querySelectorAll?.("textarea,input,[contenteditable='true']") || []));
+  }
+  for (const element of [...new Set(elements)]) {
+    const tagName = String(element.tagName || "").toLowerCase();
+    if (tagName === "textarea") return element.value;
+    if (tagName === "input") {
+      const type = String(element.type || "text").toLowerCase();
+      if (["", "text", "search", "url", "email", "password", "number"].includes(type)) return element.value;
+    }
+    if (element.isContentEditable) return element.textContent || "";
+  }
+  return null;
 }
 
 function normBBox(box) {
@@ -258,7 +301,11 @@ function captionToBoxes(caption, { coordMode = "normalized", bboxOrder = "yx", w
 }
 
 function buildCaption(node, boxes, stylePalette) {
-  const value = (name, fallback = "") => widgetByName(node, name)?.value ?? fallback;
+  const value = (name, fallback = "") => {
+    const widget = widgetByName(node, name);
+    const domValue = widgetDomTextValue(widget);
+    return domValue ?? widget?.value ?? fallback;
+  };
   const kind = String(value("style", "none"));
   const coordMode = value("coord_mode", "normalized") === "absolute" ? "absolute" : "normalized";
   const bboxOrder = value("bbox_order", "yx") === "xy" ? "xy" : "yx";
@@ -292,7 +339,7 @@ function buildCaption(node, boxes, stylePalette) {
     if (!box.nobbox) element.bbox = captionBBox(box, { coordMode, bboxOrder, width, height });
     if (type === "text") element.text = box.text || "";
     element.desc = box.desc || "";
-    const colors = palette(box.palette).slice(0, 5);
+    const colors = promptPalette(box.palette).slice(0, 5);
     if (colors.length) element.color_palette = colors;
     elements.push(element);
   }
@@ -544,7 +591,7 @@ function createEditor(node) {
     return [...new Set(elements)].filter((element) => element instanceof HTMLElement);
   }
 
-  function patchSensitiveWidgetDomElement(element) {
+  function patchSensitiveWidgetDomElement(element, widget) {
     if (!element || element._aioIdeoPrivacyRevealNode === node) return;
     element._aioIdeoPrivacyRevealCleanup?.();
 
@@ -553,6 +600,13 @@ function createEditor(node) {
     const onFocusIn = () => setNativeFieldReveal("focus", element, true);
     const onFocusOut = () => setNativeFieldReveal("focus", element, false);
     const onInput = () => {
+      syncingExecutionWidgets = true;
+      try {
+        syncLiveWidgetTextValue(widget);
+        setExecutionWidgetValue(elementsWidget, serializedElementsValue());
+      } finally {
+        syncingExecutionWidgets = false;
+      }
       updateCount();
       app.graph?.setDirtyCanvas?.(true, true);
     };
@@ -600,7 +654,7 @@ function createEditor(node) {
       const widget = widgetByName(node, name);
       for (const element of sensitiveWidgetDomElements(widget)) {
         currentElements.add(element);
-        patchSensitiveWidgetDomElement(element);
+        patchSensitiveWidgetDomElement(element, widget);
         if (element === document.activeElement || element.contains(document.activeElement)) {
           nativePrivacyFocusedElements.add(element);
         }
@@ -633,8 +687,31 @@ function createEditor(node) {
     return "";
   }
 
+  function liveWidgetValue(widget) {
+    const domValue = widgetDomTextValue(widget);
+    if (domValue != null) return domValue;
+    return directWidgetValue(widget);
+  }
+
+  function captionWidgetValues() {
+    const values = {};
+    for (const name of SENSITIVE_WIDGET_NAMES) {
+      if (["elements_data", "style_palette_data", "import_json"].includes(name)) continue;
+      values[name] = liveWidgetValue(widgetByName(node, name));
+    }
+    return values;
+  }
+
   function serializedElementsValue() {
-    return boxes.length ? JSON.stringify(boxes) : "";
+    const widgets = captionWidgetValues();
+    const hasWidgetText = Object.values(widgets).some((value) => String(value || "").trim());
+    if (!boxes.length && !hasWidgetText) return "";
+    if (!hasWidgetText) return JSON.stringify(boxes);
+    return JSON.stringify({
+      version: 1,
+      elements: boxes,
+      widgets,
+    });
   }
 
   function serializedStylePaletteValue() {
@@ -658,10 +735,24 @@ function createEditor(node) {
     widget.value = value;
   }
 
+  function syncLiveWidgetTextValue(widget) {
+    const domValue = widgetDomTextValue(widget);
+    if (domValue == null || isEncryptedPrivacyPayload(widget?.value)) return;
+    setExecutionWidgetValue(widget, domValue);
+  }
+
+  function syncLiveWidgetTextValues() {
+    for (const name of SENSITIVE_WIDGET_NAMES) {
+      if (name === "elements_data" || name === "style_palette_data") continue;
+      syncLiveWidgetTextValue(widgetByName(node, name));
+    }
+  }
+
   function syncExecutionWidgets() {
     if (privacyRestorePending || privacyRestoreFailed) return;
     syncingExecutionWidgets = true;
     try {
+      syncLiveWidgetTextValues();
       setExecutionWidgetValue(elementsWidget, serializedElementsValue());
       setExecutionWidgetValue(stylePaletteWidget, serializedStylePaletteValue());
       setExecutionWidgetValue(outputFormatWidget, serializedOutputFormatValue());
@@ -704,7 +795,7 @@ function createEditor(node) {
     for (const name of STATE_WIDGET_NAMES) {
       const widget = widgetByName(node, name);
       if (!widget) continue;
-      values[name] = SENSITIVE_WIDGET_NAMES.includes(name) ? directWidgetValue(widget) : widget.value;
+      values[name] = SENSITIVE_WIDGET_NAMES.includes(name) ? liveWidgetValue(widget) : widget.value;
     }
     return values;
   }
@@ -732,7 +823,7 @@ function createEditor(node) {
     if (Array.isArray(state.elements)) {
       boxes = cloneJson(state.elements, []);
     } else if (typeof state.widgets?.elements_data === "string") {
-      boxes = parseJsonList(state.widgets.elements_data);
+      boxes = parseElementsPayload(state.widgets.elements_data).elements;
     }
     if (Array.isArray(state.style_palette)) {
       stylePalette = cloneJson(state.style_palette, []);
@@ -782,7 +873,7 @@ function createEditor(node) {
     widget.options ||= {};
     widget.options.serialize = true;
     widget.serializeValue = function () {
-      return serializePrivateValue(this, directWidgetValue(this));
+      return serializePrivateValue(this, liveWidgetValue(this));
     };
     widget._aioIdeoPrivacyPatched = true;
   }
@@ -816,7 +907,7 @@ function createEditor(node) {
     };
   }
 
-  let boxes = parseJsonList(elementsWidget?.value);
+  let boxes = parseElementsPayload(elementsWidget?.value).elements;
   let stylePalette = parseJsonList(stylePaletteWidget?.value);
   let active = boxes.length ? 0 : -1;
   const savedState = parseWorkflowStatePayload(
@@ -1058,7 +1149,7 @@ function createEditor(node) {
     if (!widget) return "";
     if (widget === elementsWidget) return serializePrivateValue(widget, serializedElementsValue());
     if (widget === stylePaletteWidget) return serializePrivateValue(widget, serializedStylePaletteValue());
-    return serializePrivateValue(widget, directWidgetValue(widget));
+    return serializePrivateValue(widget, liveWidgetValue(widget));
   }
 
   function scrubWorkflowWidgets(output) {
@@ -1159,7 +1250,7 @@ function createEditor(node) {
     }
     if (!restored) return false;
 
-    boxes = parseJsonList(elementsWidget?.value);
+    boxes = parseElementsPayload(elementsWidget?.value).elements;
     stylePalette = parseJsonList(stylePaletteWidget?.value);
     if (boxes.length && active < 0) active = 0;
     privacyRestorePending = false;
@@ -1184,7 +1275,7 @@ function createEditor(node) {
       let restoredBoxes = null;
       let restoredPalette = null;
       for (const value of info.widgets_values) {
-        const boxesCandidate = parseJsonList(value);
+        const boxesCandidate = parseElementsPayload(value).elements;
         if (!restoredBoxes && boxesCandidate.some((box) => box && typeof box === "object" && typeof box.x === "number")) {
           restoredBoxes = boxesCandidate;
           continue;
@@ -1942,7 +2033,7 @@ function createEditor(node) {
       type,
       text: "",
       desc: "",
-      palette: [DEFAULT_COLOR.toUpperCase()],
+      palette: [],
     });
     active = boxes.length - 1;
     refresh();
@@ -1971,7 +2062,7 @@ function createEditor(node) {
       type: "obj",
       text: "",
       desc: "",
-      palette: [DEFAULT_COLOR.toUpperCase()],
+      palette: [],
     });
     active = boxes.length - 1;
     dragBoxStart = { ...boxes[active] };
@@ -2120,11 +2211,11 @@ function createEditor(node) {
   addColor.addEventListener("click", () => {
     if (!boxes[active]) return;
     boxes[active].palette ||= [];
-    boxes[active].palette.push(DEFAULT_COLOR.toUpperCase());
+    boxes[active].palette.push("#FFFFFF");
     refresh();
   });
   addStyleColor.addEventListener("click", () => {
-    stylePalette.push(DEFAULT_COLOR.toUpperCase());
+    stylePalette.push("#FFFFFF");
     refresh();
   });
   bboxInputs.forEach((input, index) => {

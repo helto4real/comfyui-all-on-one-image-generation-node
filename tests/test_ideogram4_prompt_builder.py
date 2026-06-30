@@ -1,10 +1,13 @@
 import json
+from pathlib import Path
 
 import pytest
 
 from nodes.ideogram4_prompt_builder import AIOIdeogram4PromptBuilder
 from services import privacy
 from services import ideogram4_prompt_builder as builder
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_compact_json_matches_kj_key_order_and_formatting():
@@ -64,6 +67,61 @@ def test_xy_bbox_order_uses_x_first_grid_coordinates():
     )
 
     assert caption["compositional_deconstruction"]["elements"][0]["bbox"] == [100, 200, 400, 600]
+
+
+def test_default_editor_color_is_display_only_for_elements():
+    caption, _, _, _ = builder.build_caption(
+        background="Room",
+        style="none",
+        elements_data=json.dumps(
+            [
+                {
+                    "x": 0.1,
+                    "y": 0.2,
+                    "w": 0.3,
+                    "h": 0.4,
+                    "type": "obj",
+                    "desc": "person",
+                    "palette": ["#8ca8ff"],
+                }
+            ]
+        ),
+    )
+
+    assert caption["compositional_deconstruction"]["elements"][0] == {
+        "type": "obj",
+        "bbox": [200, 100, 600, 400],
+        "desc": "person",
+    }
+
+
+def test_editor_payload_supplies_high_level_description_when_widget_value_lags():
+    caption, _, _, _ = builder.build_caption(
+        background="",
+        style="photo",
+        high_level_description="",
+        elements_data=json.dumps(
+            {
+                "version": 1,
+                "widgets": {
+                    "high_level_description": "A beach shot of a man and a woman",
+                },
+                "elements": [
+                    {
+                        "x": 0.067,
+                        "y": 0.192,
+                        "w": 0.307,
+                        "h": 0.674,
+                        "type": "obj",
+                        "desc": "A man",
+                    }
+                ],
+            }
+        ),
+    )
+
+    assert caption["high_level_description"] == "A beach shot of a man and a woman"
+    assert caption["compositional_deconstruction"]["elements"][0]["bbox"] == [192, 67, 866, 374]
 
 
 def test_absolute_bbox_mode_scales_by_resolved_dimensions():
@@ -388,6 +446,23 @@ def test_prompt_builder_node_applies_xy_coordinate_options(monkeypatch):
     assert json.loads(prompt)["compositional_deconstruction"]["elements"][0]["bbox"] == [100, 200, 400, 600]
     assert payload["coord_mode"] == "normalized"
     assert payload["bbox_order"] == "xy"
+
+
+def test_prompt_builder_frontend_syncs_native_text_and_display_only_palette():
+    source = (ROOT / "web/js/aio_ideogram4_prompt_builder.js").read_text(encoding="utf-8")
+
+    assert "function parseElementsPayload(value)" in source
+    assert "function captionWidgetValues()" in source
+    assert "function widgetDomTextValue(widget)" in source
+    assert "function syncLiveWidgetTextValue(widget)" in source
+    assert "syncLiveWidgetTextValues();" in source
+    assert "syncLiveWidgetTextValue(widget);" in source
+    assert "setExecutionWidgetValue(elementsWidget, serializedElementsValue());" in source
+    assert "return serializePrivateValue(this, liveWidgetValue(this));" in source
+    assert "function promptPalette(colors)" in source
+    assert "values.length === 1 && values[0] === DEFAULT_COLOR_UPPER ? [] : values" in source
+    assert "palette: []," in source
+    assert 'boxes[active].palette.push("#FFFFFF");' in source
 
 
 def test_prompt_builder_decrypts_private_fields_without_changing_output(monkeypatch, tmp_path):
