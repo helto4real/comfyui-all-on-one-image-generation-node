@@ -261,7 +261,7 @@ class AIOIdeogram4PromptBuilder:
         )
         prompt = prompt_builder.format_caption(caption, output_format)
         private_prompt = privacy.encrypt_state({"value": prompt}) if privacy_mode else prompt
-        prompt_output = json.dumps(private_prompt, ensure_ascii=False, separators=(",", ":")) if privacy_mode else prompt
+        prompt_output = prompt
         preview = self._render_preview(boxes, width, height, image, int(bg_brightness))
         bboxes_out = prompt_builder.pixel_bboxes(boxes, width, height)
         payload = {

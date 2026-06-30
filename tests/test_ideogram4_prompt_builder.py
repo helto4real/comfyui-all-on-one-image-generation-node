@@ -175,7 +175,7 @@ def test_invalid_bbox_coordinate_options_fall_back_to_ideogram_defaults():
 
 
 @pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
-def test_private_prompt_builder_encrypts_prompt_outputs(monkeypatch, tmp_path):
+def test_private_prompt_builder_encrypts_payload_but_returns_plain_prompt_output(monkeypatch, tmp_path):
     monkeypatch.setattr(privacy, "config_dir", lambda: tmp_path)
 
     result = AIOIdeogram4PromptBuilder().build_prompt(
@@ -190,13 +190,13 @@ def test_private_prompt_builder_encrypts_prompt_outputs(monkeypatch, tmp_path):
     )["result"]
 
     payload, prompt_output = result[0], result[1]
-    dumped = json.dumps(payload) + str(prompt_output)
 
-    assert "Private overview" not in dumped
-    assert "Private room" not in dumped
+    assert "Private overview" not in json.dumps(payload)
+    assert "Private room" not in json.dumps(payload)
     assert privacy.is_encrypted_payload(payload["prompt"])
-    assert privacy.decrypt_text_if_encrypted(payload["prompt"]) == privacy.decrypt_text_if_encrypted(prompt_output)
-    assert "Private overview" in privacy.decrypt_text_if_encrypted(prompt_output)
+    assert privacy.decrypt_text_if_encrypted(payload["prompt"]) == prompt_output
+    assert "Private overview" in prompt_output
+    assert "Private room" in prompt_output
 
 
 def test_pretty_json_matches_kj_scalar_array_formatting():
@@ -513,4 +513,4 @@ def test_prompt_builder_decrypts_private_fields_without_changing_output(monkeypa
         '{"type":"text","bbox":[100,500,300,700],"text":"PRIVATE","desc":"sign"}]}}'
     )
     assert privacy.decrypt_text_if_encrypted(payload["prompt"]) == expected
-    assert privacy.decrypt_text_if_encrypted(prompt) == expected
+    assert prompt == expected
