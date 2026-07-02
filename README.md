@@ -96,11 +96,11 @@ The prompt builder's default JSON output is KJ/Ideogram-compatible: compact outp
 
 ## Privacy Mode
 
-`AIO Image Generate` and `Ideogram 4 Prompt Builder` include a `privacy_mode` toggle. When enabled, prompt text and prompt-builder editor state are saved to workflow JSON as AES-256-GCM envelopes under the `helto.aio-image-generate` schema, using a local key file at `config/privacy_key.json`. The frontend also masks private text while the node is not hovered and reveals it while the pointer is inside the node.
+`AIO Image Generate` and `Ideogram 4 Prompt Builder` include a `privacy_mode` toggle. When enabled, prompt text and prompt-builder editor state are saved to workflow JSON as AES-256-GCM envelopes under the `helto.aio-image-generate.v2` schema, using the shared Helto privacy keystore at `~/.config/helto/privacy_keystore.json`. The frontend also masks private text while the node is not hovered and reveals it while the pointer is inside the node.
 
-Encrypted workflows require the same local privacy key to decrypt. If the key is missing or different, the node keeps a locked/error state instead of restoring private text as clear text.
+Encrypted workflows require the shared privacy keystore to be initialized and unlocked through the Helto privacy dialog. Older AIO envelopes written under the `helto.aio-image-generate` schema are intentionally unsupported by this version and must be re-entered.
 
-Privacy mode protects prompt text and prompt-builder state from being stored as plaintext in workflow JSON. It does not protect against clients or processes that can reach the ComfyUI server and ask its local privacy routes to decrypt with the local key.
+Privacy mode protects prompt text, prompt-builder state, and private prompt-library metadata from being stored as plaintext in workflow JSON or library list data. It does not protect against clients or processes that can reach an unlocked ComfyUI server with a valid local privacy token.
 
 All settings nodes expose `attention_mode` (`auto`, `off`, `sage`, `sage3`, `flash`, `xformers`, `pytorch`, `split`, `sub_quad`), `torch_compile_mode` (`auto`, `off`, `on`), `torch_compile_backend` (`inductor`, `cudagraphs`), and `performance_apply_timing` (`after_loras`, `before_loras`). `auto` attention selects the best installed compatible backend, `off` leaves ComfyUI defaults untouched, and `after_loras` applies attention/compile patches to the final LoRA-patched model.
 

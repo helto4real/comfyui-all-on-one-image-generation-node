@@ -3,6 +3,7 @@ import math
 from pathlib import Path
 
 import pytest
+from helto_privacy import initialize_keystore
 
 from nodes.aio_generate import (
     AIOImageGenerate,
@@ -19,6 +20,7 @@ from services import pipeline, privacy
 
 
 ROOT = Path(__file__).resolve().parents[1]
+PASSWORD = "correct horse battery"
 
 
 class FakeImage:
@@ -1316,6 +1318,7 @@ def test_main_node_decrypts_private_prompt_widgets(monkeypatch, tmp_path):
     from services import privacy
 
     monkeypatch.setattr(aio_generate.privacy, "config_dir", lambda: tmp_path)
+    initialize_keystore(PASSWORD)
     captured = {}
 
     class FakeAdapter:
@@ -1339,8 +1342,8 @@ def test_main_node_decrypts_private_prompt_widgets(monkeypatch, tmp_path):
             captured["generated"] = kwargs
             return "image", {"samples": "latent"}, "positive", "negative", "vae"
 
-    positive = json.dumps(privacy.encrypt_state({"value": "private positive"}, base_dir=tmp_path))
-    negative = json.dumps(privacy.encrypt_state({"value": "private negative"}, base_dir=tmp_path))
+    positive = json.dumps(privacy.encrypt_state({"value": "private positive"}))
+    negative = json.dumps(privacy.encrypt_state({"value": "private negative"}))
     monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
 
     AIOImageGenerate().generate(
@@ -1767,6 +1770,7 @@ def test_krea2_inpaint_settings_prompt_is_ignored_without_inpaint(monkeypatch):
 @pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
 def test_ideogram_prompt_builder_privacy_marker_redacts_settings_but_debug_exposes_prompt(monkeypatch, tmp_path):
     monkeypatch.setattr(privacy, "config_dir", lambda: tmp_path)
+    initialize_keystore(PASSWORD)
 
     captured = {}
 

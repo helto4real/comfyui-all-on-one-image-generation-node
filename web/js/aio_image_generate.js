@@ -1,6 +1,13 @@
 import { app } from "/scripts/app.js";
 import { api } from "/scripts/api.js";
-import { decryptValue, encryptValueSync, isEncryptedPrivacyPayload } from "./aio_privacy.js";
+import {
+  assertSupportedPrivacyPayload,
+  decryptValue,
+  encryptValueSync,
+  isAnyAioPrivacyPayload,
+  isEncryptedPrivacyPayload,
+  isLegacyPrivacyPayload,
+} from "./aio_privacy.js";
 import { ensureHeltoTokens, HELTO } from "./aio_helto_theme.js";
 
 const NODE_NAME = "AIOLoraConfiguration";
@@ -746,7 +753,7 @@ function stabilizeAioPrivatePromptNodeOutput(prompt, node) {
     }
     inputs[name] = envelope;
     const currentValue = syncPromptWidgetFromDom(node, widget);
-    if (!isEncryptedPrivacyPayload(currentValue)) {
+    if (!isAnyAioPrivacyPayload(currentValue)) {
       rememberPrivacyEnvelope(widget, currentValue ?? "", envelope);
     }
   }
@@ -1076,7 +1083,7 @@ function directPromptWidgetValue(widget) {
   if (typeof value === "string") {
     return value;
   }
-  if (isEncryptedPrivacyPayload(value)) {
+  if (isAnyAioPrivacyPayload(value)) {
     return JSON.stringify(value);
   }
   return "";
@@ -1105,7 +1112,7 @@ function livePromptDomValue(widget) {
 
 function syncPromptWidgetFromDom(node, widget) {
   restorePromptWidgetsAfterDraw(node);
-  if (!widget || isEncryptedPrivacyPayload(widget.value)) {
+  if (!widget || isAnyAioPrivacyPayload(widget.value)) {
     return directPromptWidgetValue(widget);
   }
   const value = livePromptDomValue(widget);
@@ -1125,6 +1132,7 @@ function syncPromptWidgetsFromDom(node) {
 }
 
 function privacyEnvelopeString(value) {
+  assertSupportedPrivacyPayload(value);
   if (!isEncryptedPrivacyPayload(value)) {
     return null;
   }
@@ -1343,7 +1351,7 @@ function maskPromptWidgetsForDraw(node) {
 }
 
 async function decryptPromptWidget(node, widget) {
-  if (!widget || widget._aioPrivacyDecrypting || !isEncryptedPrivacyPayload(widget.value)) {
+  if (!widget || widget._aioPrivacyDecrypting || (!isEncryptedPrivacyPayload(widget.value) && !isLegacyPrivacyPayload(widget.value))) {
     return;
   }
   widget._aioPrivacyDecrypting = true;

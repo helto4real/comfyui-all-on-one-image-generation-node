@@ -74,6 +74,12 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 try:
     register_privacy_routes()
     register_ideogram4_prompt_library_routes()
+    try:
+        from helto_privacy import register_helto_privacy_ui
+
+        register_helto_privacy_ui()
+    except Exception:
+        pass
 except Exception:
     # Direct imports and tests often run outside ComfyUI's server process.
     pass

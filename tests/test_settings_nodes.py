@@ -1,5 +1,6 @@
 import json
 import pytest
+from helto_privacy import initialize_keystore
 
 from nodes.flux2_klein_settings import AIOFlux2Klein9BSettings
 from nodes.ideogram4_settings import AIOIdeogram4Settings, DEFAULT_UNCONDITIONAL_MODEL
@@ -7,6 +8,8 @@ from nodes.krea2_settings import AIOKrea2Settings
 from nodes.z_image_settings import AIOZImageTurboSettings
 from services import privacy
 import sys
+
+PASSWORD = "correct horse battery"
 
 
 def test_z_settings_returns_family_dict():
@@ -97,7 +100,8 @@ def test_krea2_settings_accepts_inpaint_positive_prompt():
 @pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
 def test_krea2_settings_decrypts_private_inpaint_positive_prompt(monkeypatch, tmp_path):
     monkeypatch.setattr(privacy, "config_dir", lambda: tmp_path)
-    encrypted_prompt = json.dumps(privacy.encrypt_state({"value": "private inpaint prompt"}, base_dir=tmp_path))
+    initialize_keystore(PASSWORD)
+    encrypted_prompt = json.dumps(privacy.encrypt_state({"value": "private inpaint prompt"}))
 
     settings = AIOKrea2Settings().build_settings(
         True,
@@ -138,6 +142,7 @@ def test_krea2_settings_accepts_prompt_builder_payload():
 @pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
 def test_krea2_settings_encrypts_private_prompt_builder_override(monkeypatch, tmp_path):
     monkeypatch.setattr(privacy, "config_dir", lambda: tmp_path)
+    initialize_keystore(PASSWORD)
     prompt = '{"compositional_deconstruction":{"background":"Private beach","elements":[]}}'
 
     settings = AIOKrea2Settings().build_settings(
@@ -263,6 +268,7 @@ def test_ideogram4_settings_accepts_prompt_builder_payload():
 @pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
 def test_ideogram4_settings_encrypts_private_prompt_builder_override(monkeypatch, tmp_path):
     monkeypatch.setattr(privacy, "config_dir", lambda: tmp_path)
+    initialize_keystore(PASSWORD)
     prompt = '{"compositional_deconstruction":{"background":"Private room","elements":[]}}'
 
     settings = AIOIdeogram4Settings().build_settings(

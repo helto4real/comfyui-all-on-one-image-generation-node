@@ -6,27 +6,36 @@ import logging
 from typing import Any
 
 try:
+    from helto_privacy import aiohttp_check_privacy_token
+except Exception:  # pragma: no cover - dependency errors surface through privacy helpers
+    aiohttp_check_privacy_token = None  # type: ignore[assignment]
+
+try:
     from ..services.ideogram4_prompt_library import (
         Ideogram4PromptLibraryError,
         create_prompt,
         delete_prompt,
         duplicate_prompt,
+        item_is_private,
         list_items,
         patch_prompt,
         replace_prompt,
         use_prompt,
     )
+    from ..services.privacy import PrivacyError
 except ImportError:  # pragma: no cover - direct test imports
     from services.ideogram4_prompt_library import (
         Ideogram4PromptLibraryError,
         create_prompt,
         delete_prompt,
         duplicate_prompt,
+        item_is_private,
         list_items,
         patch_prompt,
         replace_prompt,
         use_prompt,
     )
+    from services.privacy import PrivacyError
 
 
 ROUTE_PREFIX = "/aio_image_generate/ideogram4_prompt_library"
@@ -65,6 +74,9 @@ def register_ideogram4_prompt_library_routes() -> bool:
     async def post_prompt(request):
         try:
             data = await _json_payload(request)
+            denied = _privacy_token_denied_if(request, bool(data.get("private")))
+            if denied is not None:
+                return denied
             item = create_prompt(_entry_payload(data), metadata=data)
             return web.json_response({"ok": True, "item": item})
         except Exception as exc:
@@ -74,7 +86,11 @@ def register_ideogram4_prompt_library_routes() -> bool:
     async def put_prompt(request):
         try:
             data = await _json_payload(request)
-            item = replace_prompt(request.match_info["item_id"], _entry_payload(data), metadata=data)
+            item_id = request.match_info["item_id"]
+            denied = _privacy_token_denied_if(request, bool(data.get("private")) or item_is_private(item_id))
+            if denied is not None:
+                return denied
+            item = replace_prompt(item_id, _entry_payload(data), metadata=data)
             return web.json_response({"ok": True, "item": item})
         except Exception as exc:
             return _error_response(web, exc)
@@ -83,8 +99,12 @@ def register_ideogram4_prompt_library_routes() -> bool:
     async def patch_prompt_route(request):
         try:
             data = await _json_payload(request)
+            item_id = request.match_info["item_id"]
+            denied = _privacy_token_denied_if(request, bool(data.get("private")) or item_is_private(item_id))
+            if denied is not None:
+                return denied
             item = patch_prompt(
-                request.match_info["item_id"],
+                item_id,
                 metadata=data,
                 payload=_optional_entry_payload(data),
             )
@@ -96,7 +116,11 @@ def register_ideogram4_prompt_library_routes() -> bool:
     async def duplicate_prompt_route(request):
         try:
             data = await _json_payload(request, empty_ok=True)
-            item = duplicate_prompt(request.match_info["item_id"], metadata=data)
+            item_id = request.match_info["item_id"]
+            denied = _privacy_token_denied_if(request, bool(data.get("private")) or item_is_private(item_id))
+            if denied is not None:
+                return denied
+            item = duplicate_prompt(item_id, metadata=data)
             return web.json_response({"ok": True, "item": item})
         except Exception as exc:
             return _error_response(web, exc)
@@ -104,7 +128,11 @@ def register_ideogram4_prompt_library_routes() -> bool:
     @routes.delete(f"{ROUTE_PREFIX}/prompts" + "/{item_id}")
     async def delete_prompt_route(request):
         try:
-            deleted = delete_prompt(request.match_info["item_id"])
+            item_id = request.match_info["item_id"]
+            denied = _privacy_token_denied_if(request, item_is_private(item_id))
+            if denied is not None:
+                return denied
+            deleted = delete_prompt(item_id)
             return web.json_response({"ok": True, **deleted})
         except Exception as exc:
             return _error_response(web, exc)
@@ -112,7 +140,11 @@ def register_ideogram4_prompt_library_routes() -> bool:
     @routes.post(f"{ROUTE_PREFIX}/prompts" + "/{item_id}/use")
     async def use_prompt_route(request):
         try:
-            item = use_prompt(request.match_info["item_id"])
+            item_id = request.match_info["item_id"]
+            denied = _privacy_token_denied_if(request, item_is_private(item_id))
+            if denied is not None:
+                return denied
+            item = use_prompt(item_id)
             return web.json_response({"ok": True, "item": item, "prompt": item["payload"]})
         except Exception as exc:
             return _error_response(web, exc)
@@ -149,8 +181,14 @@ def _optional_entry_payload(data: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _error_response(web, exc: Exception):
-    status = 400 if isinstance(exc, Ideogram4PromptLibraryError) else 500
+    status = 400 if isinstance(exc, (Ideogram4PromptLibraryError, PrivacyError)) else 500
     return web.json_response({"ok": False, "error": str(exc)}, status=status)
+
+
+def _privacy_token_denied_if(request, required: bool):
+    if not required or aiohttp_check_privacy_token is None:
+        return None
+    return aiohttp_check_privacy_token(request)
 
 
 __all__ = ["ROUTE_PREFIX", "register_ideogram4_prompt_library_routes"]

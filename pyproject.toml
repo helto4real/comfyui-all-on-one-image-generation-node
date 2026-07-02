@@ -3,7 +3,10 @@ name = "comfyui-helto-image-gen-all-in-one"
 version = "0.1.0"
 description = "Classic ComfyUI all-in-one image generation node scaffold."
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "helto-privacy @ git+https://github.com/helto4real/helto-privacy.git@v0.2.0",
+    "cryptography>=42.0",
+]
 license = "MIT"
 
 [tool.pytest.ini_options]

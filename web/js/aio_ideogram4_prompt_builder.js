@@ -1,5 +1,17 @@
 import { app } from "/scripts/app.js";
-import { decryptState, decryptValue, encryptStateSync, encryptValueSync, isEncryptedPrivacyPayload, parsePrivacyPayload } from "./aio_privacy.js";
+import {
+  assertSupportedPrivacyPayload,
+  decryptState,
+  decryptValue,
+  encryptStateSync,
+  encryptValueSync,
+  getSharedPrivacyUi,
+  isAnyAioPrivacyPayload,
+  isEncryptedPrivacyPayload,
+  isLegacyPrivacyPayload,
+  parsePrivacyPayload,
+  privacyFetchHeaders,
+} from "./aio_privacy.js";
 import { ensureHeltoTokens, HELTO } from "./aio_helto_theme.js";
 
 const NODE_NAME = "AIOIdeogram4PromptBuilder";
@@ -108,7 +120,7 @@ function parseElementsPayload(value) {
 }
 
 function parseStatePayload(value) {
-  if (!value || isEncryptedPrivacyPayload(value)) return null;
+  if (!value || isAnyAioPrivacyPayload(value)) return null;
   if (typeof value === "object") return value;
   try {
     const parsed = JSON.parse(value);
@@ -148,8 +160,14 @@ function cloneJson(value, fallback) {
   }
 }
 
-async function fetchLibraryJson(url, options) {
-  const response = await fetch(url, options);
+async function fetchLibraryJson(url, options = {}, retry = true) {
+  const privacy = await getSharedPrivacyUi();
+  privacy?.ensureStoredPrivacyTokenCookie?.();
+  const requestOptions = {
+    ...options,
+    headers: privacyFetchHeaders(options.headers || {}),
+  };
+  const response = await fetch(url, requestOptions);
   const text = await response.text();
   let data = {};
   try {
@@ -157,7 +175,15 @@ async function fetchLibraryJson(url, options) {
   } catch {
     throw new Error(text || response.statusText || `HTTP ${response.status}`);
   }
-  if (!response.ok || data.ok === false || data.error) throw new Error(data.error || response.statusText || `HTTP ${response.status}`);
+  if (!response.ok || data.ok === false || data.error) {
+    const error = new Error(data.error || response.statusText || `HTTP ${response.status}`);
+    if (retry && privacy?.isPrivacyLockedError?.(error)) {
+      const unlocked = await privacy.showPrivacyKeystoreDialog?.("auto");
+      privacy.ensureStoredPrivacyTokenCookie?.();
+      if (unlocked) return fetchLibraryJson(url, options, false);
+    }
+    throw error;
+  }
   return data;
 }
 
@@ -683,7 +709,7 @@ function createEditor(node) {
     const value = widget?.value;
     if (value == null) return "";
     if (typeof value === "string") return value;
-    if (isEncryptedPrivacyPayload(value)) return JSON.stringify(parsePrivacyPayload(value));
+    if (isAnyAioPrivacyPayload(value)) return JSON.stringify(parsePrivacyPayload(value));
     return "";
   }
 
@@ -737,7 +763,7 @@ function createEditor(node) {
 
   function syncLiveWidgetTextValue(widget) {
     const domValue = widgetDomTextValue(widget);
-    if (domValue == null || isEncryptedPrivacyPayload(widget?.value)) return;
+    if (domValue == null || isAnyAioPrivacyPayload(widget?.value)) return;
     setExecutionWidgetValue(widget, domValue);
   }
 
@@ -765,6 +791,7 @@ function createEditor(node) {
 
   function serializePrivateValue(widget, value) {
     if (!privacyEnabled()) return value;
+    assertSupportedPrivacyPayload(widget?.value);
     if (isEncryptedPrivacyPayload(widget?.value)) {
       return typeof widget.value === "string" ? widget.value : JSON.stringify(parsePrivacyPayload(widget.value));
     }
@@ -784,6 +811,7 @@ function createEditor(node) {
       node._aioIdeogram4PendingWorkflowInfo?.ideo,
     ];
     for (const candidate of candidates) {
+      assertSupportedPrivacyPayload(candidate);
       if (isEncryptedPrivacyPayload(candidate)) return parsePrivacyPayload(candidate);
     }
     return null;
@@ -1209,6 +1237,9 @@ function createEditor(node) {
   }
 
   async function decryptPayloadState(rawPayload, label = "prompt builder") {
+    if (isLegacyPrivacyPayload(rawPayload)) {
+      throw new Error("Unsupported legacy AIO privacy payload. Re-enter the private value to save it with the shared privacy keystore.");
+    }
     if (!isEncryptedPrivacyPayload(rawPayload)) {
       return parseWorkflowStatePayload(rawPayload);
     }
@@ -1233,7 +1264,7 @@ function createEditor(node) {
     let restored = false;
     for (const name of SENSITIVE_WIDGET_NAMES) {
       const widget = widgetByName(node, name);
-      if (!widget || !isEncryptedPrivacyPayload(widget.value)) continue;
+      if (!widget || (!isEncryptedPrivacyPayload(widget.value) && !isLegacyPrivacyPayload(widget.value))) continue;
       privacyRestorePending = true;
       setStatus("Decrypting private prompt builder widgets...");
       try {
@@ -1263,9 +1294,15 @@ function createEditor(node) {
   function restoreFromWorkflow(info) {
     if (!info || typeof info !== "object") return;
     const rawPayload = info[WORKFLOW_STATE_KEY] || info.ideo || node.properties?.[STATE_PROPERTY];
-    if (isEncryptedPrivacyPayload(rawPayload)) {
+    if (isAnyAioPrivacyPayload(rawPayload)) {
       decryptPayloadState(rawPayload, "prompt builder").then((state) => {
         if (state) restorePlainState(state);
+      }).catch((error) => {
+        privacyRestorePending = false;
+        privacyRestoreFailed = true;
+        setStatus(`Private prompt builder locked: ${error.message}`);
+        console.error("[AIO Ideogram 4 Prompt Builder] privacy decrypt failed", error);
+        updatePrivacyClasses();
       });
       return;
     }
@@ -1591,7 +1628,9 @@ function createEditor(node) {
         try {
           await saveCurrentPromptToLibrary({
             itemId: item.id,
-            metadata: { name: item.name, description: item.description, tags: item.tags, private: privacyEnabled() },
+            metadata: item.private
+              ? { private: privacyEnabled() }
+              : { name: item.name, description: item.description, tags: item.tags, private: privacyEnabled() },
             statusCallback: setLibraryStatus,
           });
           await refreshLibrary();
@@ -1703,7 +1742,17 @@ function createEditor(node) {
       node._aioIdeogram4PendingWorkflowInfo?.[WORKFLOW_STATE_KEY] ||
       node._aioIdeogram4PendingWorkflowInfo?.ideo ||
       node.properties?.[STATE_PROPERTY];
-    const state = await decryptPayloadState(rawState, "prompt builder");
+    let state = null;
+    try {
+      state = await decryptPayloadState(rawState, "prompt builder");
+    } catch (error) {
+      privacyRestorePending = false;
+      privacyRestoreFailed = true;
+      setStatus(`Private prompt builder locked: ${error.message}`);
+      console.error("[AIO Ideogram 4 Prompt Builder] privacy decrypt failed", error);
+      updatePrivacyClasses();
+      return;
+    }
     if (state) {
       restorePlainState(state, { markDirty: false });
       return;

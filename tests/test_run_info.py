@@ -1,9 +1,12 @@
 import json
 
 import pytest
+from helto_privacy import initialize_keystore
 
 from services import privacy
 from services.run_info import build_run_info, to_json
+
+PASSWORD = "correct horse battery"
 
 
 def test_run_info_json_serializable_and_contains_core_fields():
@@ -186,6 +189,7 @@ def test_run_info_reports_memory_policy_and_reference_dedupe():
 @pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
 def test_run_info_encrypts_prompt_override_when_private(monkeypatch, tmp_path):
     monkeypatch.setattr(privacy, "config_dir", lambda: tmp_path)
+    initialize_keystore(PASSWORD)
     settings = {
         "family": "ideogram4",
         "steps": 20,

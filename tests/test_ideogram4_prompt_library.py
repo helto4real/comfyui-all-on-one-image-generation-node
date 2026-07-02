@@ -1,9 +1,13 @@
 import json
 
 import pytest
+from helto_privacy import initialize_keystore
+from helto_privacy import lock_keystore
 
 from services import privacy
 from services import ideogram4_prompt_library as library
+
+PASSWORD = "correct horse battery"
 
 
 def sample_payload(prompt='{"compositional_deconstruction":{"background":"studio","elements":[]}}'):
@@ -84,6 +88,7 @@ def test_ideogram_prompt_library_replace_patch_duplicate_delete(tmp_path):
 
 @pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
 def test_private_ideogram_prompt_encrypts_without_cleartext_leak(tmp_path):
+    initialize_keystore(PASSWORD)
     payload = sample_payload('{"secret":"private room"}')
     payload["state"]["widgets"]["background"] = "private room"
     payload["state"]["elements"] = [{"desc": "secret subject", "x": 0, "y": 0, "w": 1, "h": 1}]
@@ -92,8 +97,9 @@ def test_private_ideogram_prompt_encrypts_without_cleartext_leak(tmp_path):
         payload,
         metadata={
             "id": "private-prompt",
-            "name": "Private",
+            "name": "secret title",
             "description": "secret description",
+            "tags": ["secret tag"],
             "private": True,
         },
         base_dir=tmp_path,
@@ -103,28 +109,80 @@ def test_private_ideogram_prompt_encrypts_without_cleartext_leak(tmp_path):
     listed_text = json.dumps(library.list_items(tmp_path), ensure_ascii=False)
     assert "private room" not in stored_text
     assert "secret subject" not in stored_text
+    assert "secret title" not in stored_text
     assert "secret description" not in stored_text
+    assert "secret tag" not in stored_text
     assert '"encrypted_payload"' in stored_text
     assert '"payload"' not in json.dumps(library.load_library(tmp_path)["prompts"][0])
     assert "private room" not in listed_text
     assert "secret subject" not in listed_text
+    assert "secret title" not in listed_text
     assert "secret description" not in listed_text
+    assert "secret tag" not in listed_text
+    assert library.list_items(tmp_path)["prompts"][0]["name"] == library.PRIVATE_ITEM_NAME
     assert library.list_items(tmp_path)["prompts"][0]["description"] == ""
+    assert library.list_items(tmp_path)["prompts"][0]["tags"] == []
+    assert library.list_items(tmp_path)["prompts"][0]["summary"] == {"is_private": True}
+    assert created["name"] == "secret title"
     assert created["payload"] == payload
     assert created["description"] == "secret description"
+    assert created["tags"] == ["secret tag"]
 
     used = library.use_prompt("private-prompt", base_dir=tmp_path)
     assert used["payload"] == payload
+    assert used["name"] == "secret title"
+    assert used["tags"] == ["secret tag"]
 
 
 @pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
-def test_private_ideogram_prompt_missing_key_raises_readable_error(tmp_path):
+def test_private_ideogram_prompt_locked_keystore_raises_readable_error(tmp_path):
+    initialize_keystore(PASSWORD)
     library.create_prompt(
         sample_payload('{"secret":"locked"}'),
         metadata={"id": "private-prompt", "private": True},
         base_dir=tmp_path,
     )
-    privacy.key_path(tmp_path).unlink()
+    lock_keystore()
 
-    with pytest.raises(privacy.PrivacyError, match="key file is missing"):
+    with pytest.raises(privacy.PrivacyError, match="PRIVACY_LOCKED"):
         library.use_prompt("private-prompt", base_dir=tmp_path)
+
+
+def test_private_ideogram_prompt_old_shell_metadata_is_scrubbed_on_write(tmp_path):
+    old_library = {
+        "schema_version": library.LIBRARY_SCHEMA_VERSION,
+        "version": library.LIBRARY_VERSION,
+        "prompts": [
+            {
+                "id": "old-private",
+                "kind": "prompt",
+                "type": library.PROMPT_LIBRARY_ITEM_TYPE,
+                "name": "secret old name",
+                "description": "secret old description",
+                "tags": ["secret old tag"],
+                "private": True,
+                "is_private": True,
+                "summary": {"prompt_char_count": 999, "is_private": True},
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "encrypted_payload": {
+                    "encrypted": True,
+                    "schema": privacy.LEGACY_ENVELOPE_SCHEMA,
+                    "algorithm": privacy.ALGORITHM,
+                },
+            }
+        ],
+    }
+    path = library.library_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(old_library), encoding="utf-8")
+
+    library.create_prompt(sample_payload(), metadata={"id": "public-prompt", "name": "Public"}, base_dir=tmp_path)
+
+    stored_text = path.read_text(encoding="utf-8")
+    listed_text = json.dumps(library.list_items(tmp_path), ensure_ascii=False)
+    assert "secret old name" not in stored_text
+    assert "secret old description" not in stored_text
+    assert "secret old tag" not in stored_text
+    assert "secret old name" not in listed_text
+    assert library.list_items(tmp_path)["prompts"][0]["name"] == library.PRIVATE_ITEM_NAME

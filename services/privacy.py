@@ -1,34 +1,47 @@
-"""Local privacy encryption helpers for AIO Image Generate."""
+"""Shared privacy helpers for AIO Image Generate."""
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import json
 import os
-import secrets
 from pathlib import Path
 from typing import Any, Mapping
 
 try:
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    import helto_privacy.envelope as _envelope
+    import helto_privacy.keystore as _keystore
+    from helto_privacy import PrivacyEnvelopeCodec
+    from helto_privacy import PrivacyError as _HeltoPrivacyError
+    from helto_privacy import PrivacyKeystoreError
 
-    CRYPTO_AVAILABLE = True
-    CRYPTO_IMPORT_ERROR = ""
-except Exception as exc:  # noqa: BLE001 - optional dependency in ComfyUI installs
-    AESGCM = None  # type: ignore[assignment]
+    CRYPTO_AVAILABLE = _envelope.CRYPTO_AVAILABLE and _keystore.KEYSTORE_CRYPTO_AVAILABLE
+    CRYPTO_IMPORT_ERROR = _envelope.CRYPTO_IMPORT_ERROR or _keystore.KEYSTORE_CRYPTO_IMPORT_ERROR
+    _IMPORT_ERROR = ""
+except Exception as exc:  # noqa: BLE001 - keep imports readable when dependency is missing.
+    _envelope = None  # type: ignore[assignment]
+    _keystore = None  # type: ignore[assignment]
+    PrivacyEnvelopeCodec = None  # type: ignore[assignment]
+    PrivacyKeystoreError = RuntimeError  # type: ignore[assignment]
     CRYPTO_AVAILABLE = False
     CRYPTO_IMPORT_ERROR = str(exc)
+    _IMPORT_ERROR = str(exc)
+
+    class _HeltoPrivacyError(RuntimeError):
+        """Fallback privacy error when helto-privacy is not installed."""
 
 
-ENVELOPE_SCHEMA = "helto.aio-image-generate"
+ENVELOPE_SCHEMA = "helto.aio-image-generate.v2"
+LEGACY_ENVELOPE_SCHEMA = "helto.aio-image-generate"
 ENVELOPE_VERSION = 1
 ALGORITHM = "AES-256-GCM"
 KEY_FILE_NAME = "privacy_key.json"
 
 
-class PrivacyError(RuntimeError):
-    """Raised when local privacy encryption/decryption cannot complete safely."""
+class PrivacyError(_HeltoPrivacyError):
+    """Raised when AIO privacy encryption/decryption cannot complete safely."""
+
+
+_codec = PrivacyEnvelopeCodec(ENVELOPE_SCHEMA) if PrivacyEnvelopeCodec is not None else None
 
 
 def config_dir() -> Path:
@@ -36,76 +49,79 @@ def config_dir() -> Path:
 
 
 def key_path(base_dir: str | os.PathLike[str] | None = None) -> Path:
-    return Path(base_dir) / KEY_FILE_NAME if base_dir is not None else config_dir() / KEY_FILE_NAME
+    root = Path(base_dir) if base_dir is not None else config_dir()
+    return root / KEY_FILE_NAME
 
 
 def crypto_status(base_dir: str | os.PathLike[str] | None = None) -> dict[str, Any]:
-    path = key_path(base_dir)
-    return {
+    del base_dir
+    status = {
         "available": CRYPTO_AVAILABLE,
         "algorithm": ALGORITHM,
-        "keyExists": path.exists(),
-        "keyPath": str(path),
-        "error": "" if CRYPTO_AVAILABLE else f"Python package 'cryptography' is required: {CRYPTO_IMPORT_ERROR}",
+        "schema": ENVELOPE_SCHEMA,
+        "legacySchema": LEGACY_ENVELOPE_SCHEMA,
+        "legacyKeyEnabled": False,
+        "keyExists": False,
+        "keyPath": "",
+        "error": "",
     }
+    if _IMPORT_ERROR:
+        status["error"] = f"Python package 'helto-privacy' is required for privacy mode: {_IMPORT_ERROR}"
+    elif not CRYPTO_AVAILABLE:
+        status["error"] = f"Python package 'cryptography' is required for privacy mode: {CRYPTO_IMPORT_ERROR}"
+    if _keystore is not None:
+        status.update(_keystore.keystore_status())
+    return status
 
 
 def is_encrypted_payload(value: Any) -> bool:
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except Exception:
-            return False
+    payload = _parse_payload(value)
     return (
-        isinstance(value, Mapping)
-        and value.get("encrypted") is True
-        and value.get("schema") == ENVELOPE_SCHEMA
-        and value.get("algorithm") == ALGORITHM
+        isinstance(payload, Mapping)
+        and payload.get("encrypted") is True
+        and payload.get("schema") == ENVELOPE_SCHEMA
+        and payload.get("algorithm") == ALGORITHM
+    )
+
+
+def is_legacy_encrypted_payload(value: Any) -> bool:
+    payload = _parse_payload(value)
+    return (
+        isinstance(payload, Mapping)
+        and payload.get("encrypted") is True
+        and payload.get("schema") == LEGACY_ENVELOPE_SCHEMA
+        and payload.get("algorithm") == ALGORITHM
     )
 
 
 def encrypt_state(state: Mapping[str, Any], base_dir: str | os.PathLike[str] | None = None) -> dict[str, Any]:
-    key, key_id = _load_or_create_key(base_dir, create=True)
-    nonce = secrets.token_bytes(12)
-    plaintext = json.dumps(state, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ciphertext = AESGCM(key).encrypt(nonce, plaintext, _aad(key_id))  # type: ignore[operator]
-    return {
-        "version": ENVELOPE_VERSION,
-        "schema": ENVELOPE_SCHEMA,
-        "encrypted": True,
-        "algorithm": ALGORITHM,
-        "keyId": key_id,
-        "nonce": _b64url_encode(nonce),
-        "ciphertext": _b64url_encode(ciphertext),
-    }
+    del base_dir
+    try:
+        return _require_codec().encrypt_state(state)
+    except (_HeltoPrivacyError, PrivacyKeystoreError) as exc:
+        raise PrivacyError(str(exc)) from exc
 
 
 def decrypt_state(payload: Any, base_dir: str | os.PathLike[str] | None = None) -> dict[str, Any]:
-    if isinstance(payload, str):
-        try:
-            payload = json.loads(payload)
-        except Exception as exc:
-            raise PrivacyError(f"Encrypted AIO data is not valid JSON: {exc}") from exc
+    del base_dir
+    payload = _parse_payload_or_raise(payload)
+    if is_legacy_encrypted_payload(payload):
+        raise PrivacyError(
+            "Unsupported legacy AIO privacy payload. Re-enter the private value to save it with the shared privacy keystore."
+        )
     if not is_encrypted_payload(payload):
         raise PrivacyError("AIO data is not an encrypted privacy payload.")
-    key, key_id = _load_or_create_key(base_dir, create=False)
-    if str(payload.get("keyId", "")) != key_id:
-        raise PrivacyError("Encrypted AIO data was created with a different local privacy key.")
     try:
-        nonce = _b64url_decode(str(payload.get("nonce", "")))
-        ciphertext = _b64url_decode(str(payload.get("ciphertext", "")))
-        plaintext = AESGCM(key).decrypt(nonce, ciphertext, _aad(key_id))  # type: ignore[operator]
-        loaded = json.loads(plaintext.decode("utf-8"))
-    except PrivacyError:
-        raise
-    except Exception as exc:  # noqa: BLE001 - auth/key failures should stay user-readable
-        raise PrivacyError(f"Could not decrypt AIO data: {exc}") from exc
-    if not isinstance(loaded, Mapping):
-        raise PrivacyError("Encrypted AIO data did not contain a state object.")
-    return dict(loaded)
+        return _require_codec().decrypt_state(payload)
+    except (_HeltoPrivacyError, PrivacyKeystoreError) as exc:
+        raise PrivacyError(str(exc)) from exc
 
 
 def decrypt_if_encrypted(value: Any) -> Any:
+    if is_legacy_encrypted_payload(value):
+        raise PrivacyError(
+            "Unsupported legacy AIO privacy payload. Re-enter the private value to save it with the shared privacy keystore."
+        )
     if not is_encrypted_payload(value):
         return value
     state = decrypt_state(value)
@@ -117,67 +133,34 @@ def decrypt_text_if_encrypted(value: Any) -> str:
     return "" if decrypted is None else str(decrypted)
 
 
-def _load_or_create_key(base_dir: str | os.PathLike[str] | None = None, create: bool = True) -> tuple[bytes, str]:
+def _require_codec():
+    if _IMPORT_ERROR:
+        raise PrivacyError(f"Python package 'helto-privacy' is required for privacy mode: {_IMPORT_ERROR}")
     if not CRYPTO_AVAILABLE:
         raise PrivacyError(f"Python package 'cryptography' is required for privacy mode: {CRYPTO_IMPORT_ERROR}")
+    if _keystore is None or _codec is None:
+        raise PrivacyError("Python package 'helto-privacy' is required for privacy mode.")
+    if not _keystore.keystore_exists():
+        raise PrivacyError(
+            f"{_keystore.ERROR_UNINITIALIZED}: Privacy keystore has not been created yet. "
+            "Open the Helto privacy dialog and set a privacy password."
+        )
+    return _codec
 
-    path = key_path(base_dir)
-    if path.exists():
+
+def _parse_payload(value: Any) -> Any:
+    if isinstance(value, str):
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            key = _b64url_decode(str(payload.get("key", "")))
-            key_id = str(payload.get("keyId", "")).strip()
-        except Exception as exc:  # noqa: BLE001
-            raise PrivacyError(f"Could not read privacy key file '{path}': {exc}") from exc
-        if len(key) != 32 or not key_id:
-            raise PrivacyError(f"Privacy key file '{path}' is malformed.")
-        return key, key_id
-
-    if not create:
-        raise PrivacyError(f"Privacy key file is missing: {path}")
-
-    key = secrets.token_bytes(32)
-    key_id = _b64url_encode(hashlib.sha256(key).digest()[:12])
-    _write_private_json(
-        path,
-        {
-            "version": 1,
-            "algorithm": ALGORITHM,
-            "keyId": key_id,
-            "key": _b64url_encode(key),
-        },
-    )
-    return key, key_id
+            return json.loads(value)
+        except Exception:
+            return None
+    return value
 
 
-def _write_private_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(path.parent, 0o700)
-    except OSError:
-        pass
-    text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(text, encoding="utf-8")
-    try:
-        os.chmod(tmp_path, 0o600)
-    except OSError:
-        pass
-    tmp_path.replace(path)
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
-
-
-def _aad(key_id: str) -> bytes:
-    return f"{ENVELOPE_SCHEMA}|{ENVELOPE_VERSION}|{ALGORITHM}|{key_id}".encode("utf-8")
-
-
-def _b64url_encode(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
-
-
-def _b64url_decode(value: str) -> bytes:
-    padding = "=" * (-len(value) % 4)
-    return base64.urlsafe_b64decode((value + padding).encode("ascii"))
+def _parse_payload_or_raise(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except Exception as exc:
+            raise PrivacyError(f"Encrypted AIO data is not valid JSON: {exc}") from exc
+    return value

@@ -2,12 +2,14 @@ import json
 from pathlib import Path
 
 import pytest
+from helto_privacy import initialize_keystore
 
 from nodes.ideogram4_prompt_builder import AIOIdeogram4PromptBuilder
 from services import privacy
 from services import ideogram4_prompt_builder as builder
 
 ROOT = Path(__file__).resolve().parents[1]
+PASSWORD = "correct horse battery"
 
 
 def test_compact_json_matches_kj_key_order_and_formatting():
@@ -177,6 +179,7 @@ def test_invalid_bbox_coordinate_options_fall_back_to_ideogram_defaults():
 @pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
 def test_private_prompt_builder_encrypts_payload_but_returns_plain_prompt_output(monkeypatch, tmp_path):
     monkeypatch.setattr(privacy, "config_dir", lambda: tmp_path)
+    initialize_keystore(PASSWORD)
 
     result = AIOIdeogram4PromptBuilder().build_prompt(
         high_level_description="Private overview",
@@ -470,6 +473,7 @@ def test_prompt_builder_decrypts_private_fields_without_changing_output(monkeypa
     from services import privacy
 
     monkeypatch.setattr(node_module.privacy, "config_dir", lambda: tmp_path)
+    initialize_keystore(PASSWORD)
     monkeypatch.setattr(
         AIOIdeogram4PromptBuilder,
         "_render_preview",
@@ -496,8 +500,8 @@ def test_prompt_builder_decrypts_private_fields_without_changing_output(monkeypa
             }
         ]
     )
-    encrypted_background = json.dumps(privacy.encrypt_state({"value": "Private room"}, base_dir=tmp_path))
-    encrypted_elements = json.dumps(privacy.encrypt_state({"value": elements}, base_dir=tmp_path))
+    encrypted_background = json.dumps(privacy.encrypt_state({"value": "Private room"}))
+    encrypted_elements = json.dumps(privacy.encrypt_state({"value": elements}))
 
     payload, prompt, *_ = AIOIdeogram4PromptBuilder().build_prompt(
         background=encrypted_background,

@@ -21,6 +21,7 @@ LIBRARY_SCHEMA_VERSION = "1.0"
 LIBRARY_VERSION = 1
 PROMPT_KIND = "prompt"
 PROMPT_LIBRARY_ITEM_TYPE = "IDEOGRAM4_PROMPT_LIBRARY_ITEM"
+PRIVATE_ITEM_NAME = "Private Ideogram Prompt"
 
 
 class Ideogram4PromptLibraryError(ValueError):
@@ -95,12 +96,28 @@ def replace_prompt(
     library = load_library(base_dir)
     entry = _find_entry(library, item_id)
     normalized_payload = _normalize_payload(payload)
+    existing_private = _entry_private(entry)
+    next_private = bool(metadata.get("private", existing_private))
+    existing_meta = _safe_private_metadata(entry, base_dir=base_dir) if existing_private else {}
+    name = _coerce_text(metadata.get("name"))
+    if not name or (existing_private and name == PRIVATE_ITEM_NAME):
+        name = existing_meta.get("name") or ("" if next_private else str(entry.get("name") or "")) or _default_name(normalized_payload)
+    description = (
+        _coerce_text(metadata.get("description"))
+        if "description" in metadata
+        else str(existing_meta.get("description") or ("" if next_private else entry.get("description") or ""))
+    )
+    tags = (
+        _coerce_tags(metadata.get("tags"))
+        if "tags" in metadata
+        else list(existing_meta.get("tags") or ([] if next_private else _coerce_tags(entry.get("tags"))))
+    )
     replacement = _pack_entry(
         item_id=item_id,
-        name=_coerce_text(metadata.get("name")) or str(entry.get("name") or _default_name(normalized_payload)),
-        description=_coerce_text(metadata.get("description")),
-        tags=_coerce_tags(metadata.get("tags", entry.get("tags", []))),
-        private=bool(metadata.get("private", entry.get("private", False))),
+        name=name,
+        description=description,
+        tags=tags,
+        private=next_private,
         payload=normalized_payload,
         created_at=str(entry.get("created_at") or _utc_now()),
         updated_at=_utc_now(),
@@ -123,12 +140,32 @@ def patch_prompt(
     entry = _find_entry(library, item_id)
     current_payload = _unpack_payload(entry, base_dir=base_dir)
     next_payload = _normalize_payload(payload if payload is not None else current_payload)
+    existing_private = _entry_private(entry)
+    next_private = bool(metadata.get("private", existing_private))
+    existing_meta = _safe_private_metadata(entry, base_dir=base_dir) if existing_private else {}
+    name = (
+        _coerce_text(metadata.get("name"))
+        if "name" in metadata
+        else str(existing_meta.get("name") or ("" if next_private else entry.get("name") or ""))
+    )
+    if not name or (existing_private and name == PRIVATE_ITEM_NAME):
+        name = _default_name(next_payload)
+    description = (
+        _coerce_text(metadata.get("description"))
+        if "description" in metadata
+        else str(existing_meta.get("description") or ("" if next_private else entry.get("description") or ""))
+    )
+    tags = (
+        _coerce_tags(metadata.get("tags"))
+        if "tags" in metadata
+        else list(existing_meta.get("tags") or ([] if next_private else _coerce_tags(entry.get("tags"))))
+    )
     patched = _pack_entry(
         item_id=item_id,
-        name=_coerce_text(metadata.get("name", entry.get("name"))) or _default_name(next_payload),
-        description=_coerce_text(metadata.get("description", _unpack_description(entry, base_dir=base_dir))),
-        tags=_coerce_tags(metadata.get("tags", entry.get("tags", []))),
-        private=bool(metadata.get("private", entry.get("private", False))),
+        name=name,
+        description=description,
+        tags=tags,
+        private=next_private,
         payload=next_payload,
         created_at=str(entry.get("created_at") or _utc_now()),
         updated_at=_utc_now(),
@@ -149,13 +186,18 @@ def duplicate_prompt(
     library = load_library(base_dir)
     source = _find_entry(library, item_id)
     payload = _unpack_payload(source, base_dir=base_dir)
+    source_private = _entry_private(source)
+    source_meta = _safe_private_metadata(source, base_dir=base_dir) if source_private else {}
+    source_name = str(source_meta.get("name") or source.get("name") or _default_name(payload))
+    source_description = str(source_meta.get("description") or source.get("description") or "")
+    source_tags = list(source_meta.get("tags") or _coerce_tags(source.get("tags")))
     now = _utc_now()
     duplicate = _pack_entry(
         item_id=str(metadata.get("id") or _new_id()),
-        name=_coerce_text(metadata.get("name")) or f"{source.get('name') or _default_name(payload)} Copy",
-        description=_coerce_text(metadata.get("description", _unpack_description(source, base_dir=base_dir))),
-        tags=_coerce_tags(metadata.get("tags", source.get("tags", []))),
-        private=bool(metadata.get("private", source.get("private", False))),
+        name=_coerce_text(metadata.get("name")) or f"{source_name} Copy",
+        description=_coerce_text(metadata.get("description", source_description)),
+        tags=_coerce_tags(metadata.get("tags", source_tags)),
+        private=bool(metadata.get("private", source_private)),
         payload=payload,
         created_at=now,
         updated_at=now,
@@ -196,6 +238,11 @@ def use_prompt(
     return item
 
 
+def item_is_private(item_id: str, *, base_dir: str | os.PathLike[str] | None = None) -> bool:
+    library = load_library(base_dir)
+    return _entry_private(_find_entry(library, item_id))
+
+
 def _pack_entry(
     *,
     item_id: str,
@@ -212,20 +259,28 @@ def _pack_entry(
         "id": str(item_id),
         "kind": PROMPT_KIND,
         "type": PROMPT_LIBRARY_ITEM_TYPE,
-        "name": str(name),
-        "tags": tags,
         "private": bool(private),
         "is_private": bool(private),
-        "summary": {**_summary_for(payload), "is_private": bool(private)},
         "created_at": created_at,
         "updated_at": updated_at,
     }
     if private:
+        entry["name"] = PRIVATE_ITEM_NAME
+        entry["tags"] = []
+        entry["summary"] = _private_summary()
         entry["encrypted_payload"] = encrypt_state(
-            {"payload": payload, "description": description},
+            {
+                "payload": payload,
+                "name": str(name),
+                "description": description,
+                "tags": tags,
+            },
             base_dir=base_dir,
         )
     else:
+        entry["name"] = str(name)
+        entry["tags"] = tags
+        entry["summary"] = {**_summary_for(payload), "is_private": False}
         entry["description"] = description
         entry["payload"] = copy.deepcopy(dict(payload))
     return entry
@@ -233,25 +288,32 @@ def _pack_entry(
 
 def _with_payload(entry: Mapping[str, Any], *, base_dir: str | os.PathLike[str] | None = None) -> dict[str, Any]:
     item = _public_item(entry)
-    payload = _unpack_payload(entry, base_dir=base_dir)
-    item["description"] = _unpack_description(entry, base_dir=base_dir)
+    if _entry_private(entry):
+        state = _unpack_private_state(entry, base_dir=base_dir)
+        payload = state["payload"]
+        item["name"] = state["name"] or PRIVATE_ITEM_NAME
+        item["description"] = state["description"]
+        item["tags"] = state["tags"]
+    else:
+        payload = _unpack_payload(entry, base_dir=base_dir)
+        item["description"] = _unpack_description(entry, base_dir=base_dir)
     item["payload"] = payload
     item["prompt"] = payload
     return item
 
 
 def _public_item(entry: Mapping[str, Any]) -> dict[str, Any]:
-    private = bool(entry.get("private") or entry.get("is_private"))
+    private = _entry_private(entry)
     item = {
         "id": str(entry.get("id") or ""),
         "kind": PROMPT_KIND,
         "type": str(entry.get("type") or PROMPT_LIBRARY_ITEM_TYPE),
-        "name": str(entry.get("name") or ""),
+        "name": PRIVATE_ITEM_NAME if private else str(entry.get("name") or ""),
         "description": "" if private else str(entry.get("description") or ""),
-        "tags": _coerce_tags(entry.get("tags")),
+        "tags": [] if private else _coerce_tags(entry.get("tags")),
         "private": private,
         "is_private": private,
-        "summary": copy.deepcopy(entry.get("summary") if isinstance(entry.get("summary"), dict) else {}),
+        "summary": _private_summary() if private else copy.deepcopy(entry.get("summary") if isinstance(entry.get("summary"), dict) else {}),
         "created_at": str(entry.get("created_at") or ""),
         "updated_at": str(entry.get("updated_at") or ""),
         "last_used_at": entry.get("last_used_at") if entry.get("last_used_at") else None,
@@ -264,19 +326,40 @@ def _public_item(entry: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _unpack_payload(entry: Mapping[str, Any], *, base_dir: str | os.PathLike[str] | None = None) -> dict[str, Any]:
-    if entry.get("private"):
-        state = decrypt_state(entry.get("encrypted_payload"), base_dir=base_dir)
-        payload = state.get("payload")
+    if _entry_private(entry):
+        payload = _unpack_private_state(entry, base_dir=base_dir)["payload"]
     else:
         payload = entry.get("payload")
     return _normalize_payload(payload if isinstance(payload, Mapping) else {})
 
 
 def _unpack_description(entry: Mapping[str, Any], *, base_dir: str | os.PathLike[str] | None = None) -> str:
-    if entry.get("private"):
-        state = decrypt_state(entry.get("encrypted_payload"), base_dir=base_dir)
-        return _coerce_text(state.get("description"))
+    if _entry_private(entry):
+        return _unpack_private_state(entry, base_dir=base_dir)["description"]
     return _coerce_text(entry.get("description"))
+
+
+def _unpack_private_state(entry: Mapping[str, Any], *, base_dir: str | os.PathLike[str] | None = None) -> dict[str, Any]:
+    state = decrypt_state(entry.get("encrypted_payload"), base_dir=base_dir)
+    payload = _normalize_payload(state.get("payload") if isinstance(state.get("payload"), Mapping) else {})
+    return {
+        "payload": payload,
+        "name": _coerce_text(state.get("name")),
+        "description": _coerce_text(state.get("description")),
+        "tags": _coerce_tags(state.get("tags")),
+    }
+
+
+def _safe_private_metadata(entry: Mapping[str, Any], *, base_dir: str | os.PathLike[str] | None = None) -> dict[str, Any]:
+    try:
+        state = _unpack_private_state(entry, base_dir=base_dir)
+    except Exception:
+        return {}
+    return {
+        "name": state["name"],
+        "description": state["description"],
+        "tags": state["tags"],
+    }
 
 
 def _normalize_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -328,8 +411,32 @@ def _normalize_library(payload: Any) -> dict[str, Any]:
     library = _empty_library()
     prompts = payload.get("prompts")
     if isinstance(prompts, list):
-        library["prompts"] = [dict(item) for item in prompts if isinstance(item, dict)]
+        library["prompts"] = [
+            _scrub_private_entry_shell(dict(item)) if _entry_private(item) else dict(item)
+            for item in prompts
+            if isinstance(item, dict)
+        ]
     return library
+
+
+def _scrub_private_entry_shell(entry: Mapping[str, Any]) -> dict[str, Any]:
+    scrubbed = {
+        "id": str(entry.get("id") or ""),
+        "kind": str(entry.get("kind") or PROMPT_KIND),
+        "type": str(entry.get("type") or PROMPT_LIBRARY_ITEM_TYPE),
+        "name": PRIVATE_ITEM_NAME,
+        "tags": [],
+        "private": True,
+        "is_private": True,
+        "summary": _private_summary(),
+        "created_at": str(entry.get("created_at") or ""),
+        "updated_at": str(entry.get("updated_at") or ""),
+    }
+    if entry.get("last_used_at"):
+        scrubbed["last_used_at"] = entry.get("last_used_at")
+    if entry.get("encrypted_payload") is not None:
+        scrubbed["encrypted_payload"] = copy.deepcopy(entry.get("encrypted_payload"))
+    return scrubbed
 
 
 def _save_library(library: Mapping[str, Any], base_dir: str | os.PathLike[str] | None = None) -> None:
@@ -374,6 +481,14 @@ def _default_name(payload: Mapping[str, Any]) -> str:
     return preview[:48] or "Untitled Ideogram Prompt"
 
 
+def _private_summary() -> dict[str, Any]:
+    return {"is_private": True}
+
+
+def _entry_private(entry: Mapping[str, Any]) -> bool:
+    return bool(entry.get("private") or entry.get("is_private"))
+
+
 def _new_id() -> str:
     return f"prompt_{secrets.token_hex(8)}"
 
@@ -414,6 +529,7 @@ __all__ = [
     "create_prompt",
     "delete_prompt",
     "duplicate_prompt",
+    "item_is_private",
     "library_path",
     "list_items",
     "load_library",

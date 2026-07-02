@@ -5,6 +5,11 @@ from __future__ import annotations
 import logging
 
 try:
+    from helto_privacy import aiohttp_check_privacy_token
+except Exception:  # pragma: no cover - dependency errors surface through privacy helpers
+    aiohttp_check_privacy_token = None  # type: ignore[assignment]
+
+try:
     from ..services.privacy import crypto_status, decrypt_state, encrypt_state
 except ImportError:  # pragma: no cover - direct test imports
     from services.privacy import crypto_status, decrypt_state, encrypt_state
@@ -41,6 +46,9 @@ def register_privacy_routes() -> bool:
 
     @routes.post(f"{ROUTE_PREFIX}/encrypt")
     async def post_privacy_encrypt(request):
+        denied = _privacy_token_denied(request)
+        if denied is not None:
+            return denied
         try:
             payload = await request.json()
             envelope = encrypt_state(payload.get("state", {}))
@@ -50,6 +58,9 @@ def register_privacy_routes() -> bool:
 
     @routes.post(f"{ROUTE_PREFIX}/decrypt")
     async def post_privacy_decrypt(request):
+        denied = _privacy_token_denied(request)
+        if denied is not None:
+            return denied
         try:
             payload = await request.json()
             state = decrypt_state(payload.get("payload", {}))
@@ -59,3 +70,9 @@ def register_privacy_routes() -> bool:
 
     _ROUTES_REGISTERED = True
     return True
+
+
+def _privacy_token_denied(request):
+    if aiohttp_check_privacy_token is None:
+        return None
+    return aiohttp_check_privacy_token(request)
