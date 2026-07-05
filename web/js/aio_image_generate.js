@@ -75,6 +75,8 @@ const USE_ZERO_NEGATIVE_CONDITIONING_WIDGET_NAME = "use_zero_negative_conditioni
 const KREA_INPAINT_PROMPT_WIDGET_NAME = "inpaint_positive_prompt";
 const BATCH_COUNT_WIDGET_NAME = "batch_count";
 const PRIVACY_STYLE_ID = "aio-generate-privacy-style";
+const PROMPT_FIELD_CLASS = "aio-generate-prompt-field";
+const PRIVATE_FIELD_CLASS = "aio-generate-private-field";
 const MASKED_PROMPT_VALUE = "Private prompt - hover to reveal";
 const PRIVACY_ENVELOPE_MEMO_KEY = "__aioPrivacyEnvelopeMemo";
 
@@ -1165,6 +1167,7 @@ function privacyRevealed(node) {
 }
 
 function installGeneratePrivacyStyles() {
+  ensureHeltoTokens();
   if (document.getElementById(PRIVACY_STYLE_ID)) {
     return;
   }
@@ -1173,7 +1176,30 @@ function installGeneratePrivacyStyles() {
   // Privacy mask: keep prompt glyphs visually unreadable while concealed.
   // -webkit-text-fill-color guards against partial glyph/selection leaks.
   style.textContent = `
-    .aio-generate-private-field {
+    .${PROMPT_FIELD_CLASS} {
+      box-sizing: border-box !important;
+      width: 100%;
+      padding: 7px 9px !important;
+      border: 1px solid var(--helto-border-strong) !important;
+      border-radius: var(--helto-radius-sm) !important;
+      background: var(--helto-surface-2) !important;
+      color: var(--helto-text) !important;
+      -webkit-text-fill-color: var(--helto-text) !important;
+      caret-color: var(--helto-text) !important;
+      font: 12px/var(--helto-line) var(--helto-font-sans, system-ui, sans-serif) !important;
+      outline: none !important;
+      transition: border-color var(--helto-transition), box-shadow var(--helto-transition), background var(--helto-transition) !important;
+    }
+    .${PROMPT_FIELD_CLASS}::placeholder {
+      color: var(--helto-text-faint) !important;
+      -webkit-text-fill-color: var(--helto-text-faint) !important;
+    }
+    .${PROMPT_FIELD_CLASS}:focus,
+    .${PROMPT_FIELD_CLASS}:focus-visible {
+      border-color: var(--helto-focus) !important;
+      box-shadow: var(--helto-focus-ring) !important;
+    }
+    .${PRIVATE_FIELD_CLASS} {
       background: var(--helto-surface-2) !important;
       border-color: var(--helto-surface-2) !important;
       color: transparent !important;
@@ -1181,8 +1207,9 @@ function installGeneratePrivacyStyles() {
       text-shadow: none !important;
       caret-color: transparent !important;
     }
-    .aio-generate-private-field::placeholder {
+    .${PRIVATE_FIELD_CLASS}::placeholder {
       color: transparent !important;
+      -webkit-text-fill-color: transparent !important;
     }
   `;
   document.head.appendChild(style);
@@ -1356,6 +1383,15 @@ function promptWidgetDomElements(widget) {
   return [...new Set(elements)].filter((element) => element instanceof HTMLElement);
 }
 
+function promptWidgetTextElements(widget) {
+  return promptWidgetDomElements(widget).filter(
+    (element) =>
+      element instanceof HTMLTextAreaElement ||
+      element instanceof HTMLInputElement ||
+      element.isContentEditable,
+  );
+}
+
 function updatePromptPrivacyReveal(node, source, revealed) {
   restorePromptWidgetsAfterDraw(node);
   setPrivacyRevealSource(node, source, revealed);
@@ -1424,9 +1460,10 @@ function updatePromptDomPrivacy(node) {
   const masked = privacyEnabled(node) && !privacyRevealed(node);
   for (const name of privacyPromptWidgetNames(node)) {
     const widget = widgetByName(node, name);
-    for (const element of promptWidgetDomElements(widget)) {
+    for (const element of promptWidgetTextElements(widget)) {
       patchPromptPrivacyElement(node, element);
-      element.classList.toggle("aio-generate-private-field", masked);
+      element.classList.add(PROMPT_FIELD_CLASS);
+      element.classList.toggle(PRIVATE_FIELD_CLASS, masked);
       element.setAttribute("data-aio-private", masked ? "true" : "false");
     }
   }

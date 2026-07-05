@@ -377,6 +377,41 @@ def test_aio_frontend_scopes_helto_widget_theme_to_aio_nodes():
     assert "applyAioNodeTheme(this)" in patch_block
 
 
+def test_aio_frontend_themes_prompt_dom_fields_without_weakening_privacy_mask():
+    source = (ROOT / "web/js/aio_image_generate.js").read_text(encoding="utf-8")
+
+    assert 'const PROMPT_FIELD_CLASS = "aio-generate-prompt-field";' in source
+    assert 'const PRIVATE_FIELD_CLASS = "aio-generate-private-field";' in source
+    assert "function promptWidgetTextElements(widget)" in source
+
+    style_start = source.index("function installGeneratePrivacyStyles")
+    style_end = source.index("function directPromptWidgetValue", style_start)
+    style_block = source[style_start:style_end]
+    assert "ensureHeltoTokens();" in style_block
+    assert ".${PROMPT_FIELD_CLASS}" in style_block
+    assert "background: var(--helto-surface-2) !important;" in style_block
+    assert "border: 1px solid var(--helto-border-strong) !important;" in style_block
+    assert "color: var(--helto-text) !important;" in style_block
+    assert "border-color: var(--helto-focus) !important;" in style_block
+    assert ".${PRIVATE_FIELD_CLASS}" in style_block
+    assert "color: transparent !important;" in style_block
+    assert "caret-color: transparent !important;" in style_block
+
+    text_elements_start = source.index("function promptWidgetTextElements")
+    text_elements_end = source.index("function updatePromptPrivacyReveal", text_elements_start)
+    text_elements_block = source[text_elements_start:text_elements_end]
+    assert "element instanceof HTMLTextAreaElement" in text_elements_block
+    assert "element instanceof HTMLInputElement" in text_elements_block
+    assert "element.isContentEditable" in text_elements_block
+
+    dom_start = source.index("function updatePromptDomPrivacy")
+    dom_end = source.index("function promptPrivacyMasked", dom_start)
+    dom_block = source[dom_start:dom_end]
+    assert "promptWidgetTextElements(widget)" in dom_block
+    assert "element.classList.add(PROMPT_FIELD_CLASS)" in dom_block
+    assert "element.classList.toggle(PRIVATE_FIELD_CLASS, masked)" in dom_block
+
+
 def test_aio_fixed_seed_button_sets_control_back_to_fixed():
     source = (ROOT / "web/js/aio_image_generate.js").read_text(encoding="utf-8")
     start = source.index("function ensureAioGenerateSeedButton")
