@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Classic ComfyUI all-in-one image generation node scaffold."
 requires-python = ">=3.10"
 dependencies = [
-    "helto-privacy @ git+https://github.com/helto4real/helto-privacy.git@v0.2.0",
+    "helto-privacy @ git+https://github.com/helto4real/helto-privacy.git@v0.3.0",
     "cryptography>=42.0",
 ]
 license = "MIT"

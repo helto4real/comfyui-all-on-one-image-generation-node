@@ -1,6 +1,7 @@
 import pytest
 
 import helto_privacy.keystore as hp_keystore
+from services import lora_config
 from services import privacy
 
 
@@ -11,3 +12,8 @@ def isolated_privacy(tmp_path_factory, monkeypatch):
     monkeypatch.setenv(hp_keystore.SESSION_DIR_ENV, str(root / "session"))
     monkeypatch.setattr(hp_keystore, "SCRYPT_N", 2**12, raising=False)
     monkeypatch.setattr(privacy, "config_dir", lambda: root / "legacy_config")
+
+
+@pytest.fixture(autouse=True)
+def isolated_lora_lookup(monkeypatch):
+    monkeypatch.setattr(lora_config, "_available_loras", lambda: None)

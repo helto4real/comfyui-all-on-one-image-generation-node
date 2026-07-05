@@ -12,7 +12,11 @@ import {
   parsePrivacyPayload,
   privacyFetchHeaders,
 } from "./aio_privacy.js";
-import { ensureHeltoTokens, HELTO } from "./aio_helto_theme.js";
+import {
+  appendPrivacyRecoveryMenuOption,
+  registerAioPrivacyRecoveryDescriptors,
+} from "./aio_privacy_recovery.js";
+import { applyHeltoNodeTheme, ensureHeltoTokens, HELTO } from "./aio_helto_theme.js";
 
 const NODE_NAME = "AIOIdeogram4PromptBuilder";
 const MIN_WIDTH = 620;
@@ -21,6 +25,7 @@ const EDITOR_MIN_HEIGHT = EDITOR_HEIGHT;
 const EDITOR_NODE_MARGIN = 10;
 const MIN_NODE_WIDTH = MIN_WIDTH + EDITOR_NODE_MARGIN * 2;
 const EDITOR_INITIAL_NODE_HEIGHT = 760 + EDITOR_NODE_MARGIN * 2;
+// Display-only bbox palette default kept for prompt data compatibility.
 const DEFAULT_COLOR = "#8ca8ff";
 const DEFAULT_COLOR_UPPER = DEFAULT_COLOR.toUpperCase();
 // Selection highlight on the canvas = Helto gold accent (selection/active).
@@ -177,7 +182,11 @@ async function fetchLibraryJson(url, options = {}, retry = true) {
   }
   if (!response.ok || data.ok === false || data.error) {
     const error = new Error(data.error || response.statusText || `HTTP ${response.status}`);
-    if (retry && privacy?.isPrivacyLockedError?.(error)) {
+    const unlockRequired = Boolean(
+      privacy?.isPrivacyUnlockRequiredError?.(error) ||
+        privacy?.isPrivacyLockedError?.(error)
+    );
+    if (retry && unlockRequired) {
       const unlocked = await privacy.showPrivacyKeystoreDialog?.("auto");
       privacy.ensureStoredPrivacyTokenCookie?.();
       if (unlocked) return fetchLibraryJson(url, options, false);
@@ -418,31 +427,31 @@ function installStyles() {
        rows, list and standalone side-panel buttons so none fall back to the
        native gray control). ---- */
     .aio-ideo-wrap button{min-width:28px;height:24px;display:inline-flex;align-items:center;justify-content:center;gap:6px;background:linear-gradient(180deg,var(--helto-surface-3),var(--helto-surface-2));color:var(--helto-text);border:1px solid var(--helto-border-strong);border-radius:var(--helto-radius-sm);padding:0 8px;font:inherit;white-space:nowrap;cursor:pointer;transition:background var(--helto-transition),border-color var(--helto-transition),color var(--helto-transition),box-shadow var(--helto-transition),transform .03s ease}
-    .aio-ideo-wrap button:hover:not(:disabled){background:linear-gradient(180deg,var(--helto-surface-hover),var(--helto-surface-3));border-color:var(--helto-border-hover);color:#fff}
+    .aio-ideo-wrap button:hover:not(:disabled){background:linear-gradient(180deg,var(--helto-surface-hover),var(--helto-surface-3));border-color:var(--helto-border-hover);color:var(--helto-text)}
     .aio-ideo-wrap button:active:not(:disabled){transform:translateY(1px)}
     .aio-ideo-wrap button:disabled{opacity:.4;cursor:not-allowed}
     .aio-ideo-wrap button:focus-visible{outline:none;border-color:var(--helto-focus);box-shadow:var(--helto-focus-ring)}
     /* Constructive "+ add" actions = GOLD (affirmative) gradient. */
-    .aio-ideo-wrap button.aio-ideo-accent{border-color:var(--helto-accent-border);background:linear-gradient(180deg,#4f4322,#3c3318);color:var(--helto-accent-strong)}
-    .aio-ideo-wrap button.aio-ideo-accent:hover:not(:disabled){background:linear-gradient(180deg,#5b4d27,#46391b);color:#fff3cf}
+    .aio-ideo-wrap button.aio-ideo-accent{border-color:var(--helto-accent-border);background:linear-gradient(180deg,#4f3a2a,#3d2d20);color:var(--helto-accent-strong)}
+    .aio-ideo-wrap button.aio-ideo-accent:hover:not(:disabled){background:linear-gradient(180deg,#5d4531,#493626);color:var(--helto-accent-strong)}
     /* Destructive actions = red gradient. */
-    .aio-ideo-wrap button.aio-ideo-danger{border-color:var(--helto-danger-border);background:linear-gradient(180deg,#5a2330,#471b25);color:#ffd6dc}
-    .aio-ideo-wrap button.aio-ideo-danger:hover:not(:disabled){border-color:#d0505f;background:linear-gradient(180deg,#6e2937,#57212c);color:#fff3f5}
+    .aio-ideo-wrap button.aio-ideo-danger{border-color:var(--helto-danger-border);background:linear-gradient(180deg,#5c2c3d,#482331);color:var(--helto-danger)}
+    .aio-ideo-wrap button.aio-ideo-danger:hover:not(:disabled){border-color:var(--helto-danger);background:linear-gradient(180deg,#6e3549,#5a2a3c);color:var(--helto-danger)}
     /* Compact list reorder button. */
     .aio-ideo-item button{min-width:22px;height:22px;padding:0 5px}
     .aio-ideo-toolbar .aio-ideo-icon-btn{width:28px;min-width:28px;height:28px;padding:0}
     .aio-ideo-icon-btn svg,.aio-ideo-library svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
     /* Linked-to-library = GOLD active state. */
-    .aio-ideo-toolbar .aio-ideo-library-linked{border-color:var(--helto-accent-border);background:linear-gradient(180deg,#4f4322,#3c3318);color:var(--helto-accent-strong);box-shadow:inset 0 0 0 1px rgba(241,199,92,.18)}
-    .aio-ideo-toolbar .aio-ideo-library-linked:hover{background:linear-gradient(180deg,#5b4d27,#46391b);color:#fff3cf}
+    .aio-ideo-toolbar .aio-ideo-library-linked{border-color:var(--helto-accent-border);background:linear-gradient(180deg,#4f3a2a,#3d2d20);color:var(--helto-accent-strong);box-shadow:inset 0 0 0 1px var(--helto-accent-border)}
+    .aio-ideo-toolbar .aio-ideo-library-linked:hover{background:linear-gradient(180deg,#5d4531,#493626);color:var(--helto-accent-strong)}
     .aio-ideo-count{margin-left:auto;color:var(--helto-text-dim);white-space:nowrap;font-variant-numeric:tabular-nums}
     .aio-ideo-toolbar label{color:var(--helto-text-dim)}
     .aio-ideo-toolbar input[type="checkbox"]{accent-color:var(--helto-accent)}
 
     /* ---- Main split + canvas inset ---- */
     .aio-ideo-main{display:grid;grid-template-columns:minmax(260px,1fr) 340px;gap:8px;width:100%;min-width:0;min-height:0;flex:1 1 auto}
-    .aio-ideo-canvasBox{position:relative;display:flex;align-items:center;justify-content:center;min-height:0;background:var(--helto-bg);border:1px solid var(--helto-border);border-radius:var(--helto-radius);box-shadow:inset 0 1px 0 rgba(255,255,255,.02);overflow:hidden}
-    .aio-ideo-canvas{background:#050505;outline:none;max-width:100%;max-height:100%;border-radius:4px}
+    .aio-ideo-canvasBox{position:relative;display:flex;align-items:center;justify-content:center;min-height:0;background:var(--helto-bg);border:1px solid var(--helto-border);border-radius:var(--helto-radius);box-shadow:inset 0 0 0 1px var(--helto-border);overflow:hidden}
+    .aio-ideo-canvas{background:var(--helto-bg);outline:none;max-width:100%;max-height:100%;border-radius:4px}
     .aio-ideo-side{display:flex;flex-direction:column;gap:6px;min-height:0;overflow:hidden}
     .aio-ideo-list{flex:1 1 auto;min-height:92px;overflow:auto;border:1px solid var(--helto-border);border-radius:var(--helto-radius);background:var(--helto-bg);padding:4px}
     .aio-ideo-item{display:grid;grid-template-columns:18px 1fr auto;gap:6px;align-items:center;padding:4px 6px;border-radius:var(--helto-radius-sm);cursor:pointer;border:1px solid transparent;transition:background var(--helto-transition),border-color var(--helto-transition)}
@@ -480,6 +489,8 @@ function installStyles() {
       color: transparent !important;
     }
     .aio-ideo-private-field {
+      background: var(--helto-surface-2) !important;
+      border-color: var(--helto-surface-2) !important;
       color: transparent !important;
       -webkit-text-fill-color: transparent !important;
       text-shadow: none !important;
@@ -489,12 +500,19 @@ function installStyles() {
       color: transparent !important;
     }
     /* Privacy status banner (warm, communicates concealed state). */
-    .aio-ideo-privacy-status{position:absolute;left:9px;right:9px;bottom:9px;z-index:4;padding:7px 10px;border:1px solid #7a4f32;border-radius:var(--helto-radius);background:#2b1d18;color:#ffd8c2;box-shadow:var(--helto-shadow-pop)}
+    .aio-ideo-wrap.is-private:not(.is-privacy-revealed) input[type="text"],
+    .aio-ideo-wrap.is-private:not(.is-privacy-revealed) input:not([type]),
+    .aio-ideo-wrap.is-private:not(.is-privacy-revealed) input[type="number"],
+    .aio-ideo-wrap.is-private:not(.is-privacy-revealed) textarea {
+      background: var(--helto-surface-2) !important;
+      border-color: var(--helto-surface-2) !important;
+    }
+    .aio-ideo-privacy-status{position:absolute;left:9px;right:9px;bottom:9px;z-index:4;padding:7px 10px;border:1px solid var(--helto-accent-border);border-radius:var(--helto-radius);background:var(--helto-accent-bg);color:var(--helto-accent-strong);box-shadow:var(--helto-shadow-pop)}
 
     /* ---- Prompt Library (modal/overlay) ---- */
-    .aio-ideo-library{position:fixed;inset:0;z-index:10020;display:flex;align-items:center;justify-content:center;padding:28px;box-sizing:border-box;background:rgba(6,9,15,.72);backdrop-filter:blur(4px);color:var(--helto-text);font:var(--helto-font-size)/var(--helto-line) var(--helto-font-sans)}
+    .aio-ideo-library{position:fixed;inset:0;z-index:10020;display:flex;align-items:center;justify-content:center;padding:28px;box-sizing:border-box;background:color-mix(in srgb,var(--helto-bg) 72%,transparent);backdrop-filter:blur(4px);color:var(--helto-text);font:var(--helto-font-size)/var(--helto-line) var(--helto-font-sans)}
     .aio-ideo-library *,.aio-ideo-library *::before,.aio-ideo-library *::after{box-sizing:border-box}
-    .aio-ideo-library-panel{width:min(980px,calc(100vw - 56px));height:min(700px,calc(100vh - 56px));min-height:480px;display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;border:1px solid var(--helto-border-strong);border-radius:var(--helto-radius-lg);background:linear-gradient(135deg,rgba(27,35,51,.92),rgba(13,19,32,.96));box-shadow:var(--helto-shadow-pop);backdrop-filter:blur(15px);overflow:hidden;animation:aio-ideo-rise .2s var(--helto-ease-spring)}
+    .aio-ideo-library-panel{width:min(980px,calc(100vw - 56px));height:min(700px,calc(100vh - 56px));min-height:480px;display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;border:1px solid var(--helto-border-strong);border-radius:var(--helto-radius-lg);background:linear-gradient(135deg,var(--helto-surface-2),var(--helto-bg));box-shadow:var(--helto-shadow-pop);backdrop-filter:blur(15px);overflow:hidden;animation:aio-ideo-rise .2s var(--helto-ease-spring)}
     @keyframes aio-ideo-rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
     .aio-ideo-library-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid var(--helto-border)}
     .aio-ideo-library-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:16px;font-weight:700;letter-spacing:.02em;color:var(--helto-text)}
@@ -520,15 +538,15 @@ function installStyles() {
     .aio-ideo-library-preview{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;white-space:normal;min-height:72px;padding:8px;border:1px solid var(--helto-border);border-radius:var(--helto-radius-sm);background:var(--helto-bg);color:var(--helto-text-dim);font:11px/1.35 var(--helto-font-mono)}
     .aio-ideo-library-actions,.aio-ideo-library-card-actions{display:flex;align-items:center;justify-content:flex-end;gap:7px;margin-top:auto}
     .aio-ideo-library button{min-width:28px;height:28px;min-height:28px;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:0 10px;border:1px solid var(--helto-border-strong);border-radius:var(--helto-radius-sm);background:linear-gradient(180deg,var(--helto-surface-3),var(--helto-surface-2));color:var(--helto-text);font:inherit;cursor:pointer;transition:background var(--helto-transition),border-color var(--helto-transition),color var(--helto-transition),box-shadow var(--helto-transition)}
-    .aio-ideo-library button:hover{background:linear-gradient(180deg,var(--helto-surface-hover),var(--helto-surface-3));border-color:var(--helto-border-hover);color:#fff}
+    .aio-ideo-library button:hover{background:linear-gradient(180deg,var(--helto-surface-hover),var(--helto-surface-3));border-color:var(--helto-border-hover);color:var(--helto-text)}
     .aio-ideo-library button:active{transform:translateY(1px)}
     .aio-ideo-library button:focus-visible{outline:none;border-color:var(--helto-focus);box-shadow:var(--helto-focus-ring)}
     /* Affirmative action = GOLD gradient (not a solid block). */
-    .aio-ideo-library button.primary,.aio-ideo-library button.positive{border-color:var(--helto-accent-border);background:linear-gradient(180deg,#4f4322,#3c3318);color:var(--helto-accent-strong)}
-    .aio-ideo-library button.primary:hover,.aio-ideo-library button.positive:hover{background:linear-gradient(180deg,#5b4d27,#46391b);color:#fff3cf}
+    .aio-ideo-library button.primary,.aio-ideo-library button.positive{border-color:var(--helto-accent-border);background:linear-gradient(180deg,#4f3a2a,#3d2d20);color:var(--helto-accent-strong)}
+    .aio-ideo-library button.primary:hover,.aio-ideo-library button.positive:hover{background:linear-gradient(180deg,#5d4531,#493626);color:var(--helto-accent-strong)}
     /* Destructive = red gradient. */
-    .aio-ideo-library button.danger{border-color:var(--helto-danger-border);background:linear-gradient(180deg,#5a2330,#471b25);color:#ffd6dc}
-    .aio-ideo-library button.danger:hover{border-color:#d0505f;background:linear-gradient(180deg,#6e2937,#57212c);color:#fff3f5}
+    .aio-ideo-library button.danger{border-color:var(--helto-danger-border);background:linear-gradient(180deg,#5c2c3d,#482331);color:var(--helto-danger)}
+    .aio-ideo-library button.danger:hover{border-color:var(--helto-danger);background:linear-gradient(180deg,#6e3549,#5a2a3c);color:var(--helto-danger)}
     .aio-ideo-library .aio-ideo-icon-btn{width:34px;padding:0}
     .aio-ideo-library-status{min-height:18px;padding:0 16px 12px;color:var(--helto-text-dim)}
     .aio-ideo-library-empty{grid-column:1/-1;padding:28px 8px;text-align:center;color:var(--helto-text-faint)}
@@ -539,7 +557,7 @@ function installStyles() {
     .aio-ideo-library-private-row input[type="checkbox"]{accent-color:var(--helto-accent)}
     .aio-ideo-library.privacy-mode:not(.is-revealed) .aio-ideo-library-preview,
     .aio-ideo-library.privacy-mode:not(.is-revealed) .aio-ideo-library-card-meta,
-    .aio-ideo-library.privacy-mode:not(.is-revealed) .aio-ideo-library-detail-meta { color: transparent; text-shadow: none; }
+    .aio-ideo-library.privacy-mode:not(.is-revealed) .aio-ideo-library-detail-meta { color: transparent !important; -webkit-text-fill-color: transparent !important; text-shadow: none !important; }
     .aio-ideo-library.privacy-mode.is-revealed .aio-ideo-library-preview,
     .aio-ideo-library.privacy-mode.is-revealed .aio-ideo-library-card-meta,
     .aio-ideo-library.privacy-mode.is-revealed .aio-ideo-library-detail-meta { color: var(--helto-text-dim); }
@@ -1236,7 +1254,30 @@ function createEditor(node) {
     else repaintRestoredState();
   }
 
+  node._aioIdeogram4RecoveryReset = () => {
+    const widgets = Object.fromEntries(SENSITIVE_WIDGET_NAMES.map((name) => [name, ""]));
+    delete node._aioIdeogram4LastPrivatePayload;
+    if (node.properties) delete node.properties[STATE_PROPERTY];
+    if (node._aioIdeogram4PendingWorkflowInfo) {
+      delete node._aioIdeogram4PendingWorkflowInfo[WORKFLOW_STATE_KEY];
+      delete node._aioIdeogram4PendingWorkflowInfo.ideo;
+    }
+    restorePlainState({
+      version: 1,
+      widgets,
+      elements: [],
+      style_palette: [],
+      bg_brightness: brightnessWidget?.value ?? 25,
+      output_format: outputFormatWidget?.value ?? "compact",
+      coord_mode: coordModeWidget?.value === "absolute" ? "absolute" : "normalized",
+      bbox_order: bboxOrderWidget?.value === "xy" ? "xy" : "yx",
+      active: -1,
+    });
+    setStatus("Private prompt builder state reset.");
+  };
+
   async function decryptPayloadState(rawPayload, label = "prompt builder") {
+    assertSupportedPrivacyPayload(rawPayload);
     if (isLegacyPrivacyPayload(rawPayload)) {
       throw new Error("Unsupported legacy AIO privacy payload. Re-enter the private value to save it with the shared privacy keystore.");
     }
@@ -1264,7 +1305,18 @@ function createEditor(node) {
     let restored = false;
     for (const name of SENSITIVE_WIDGET_NAMES) {
       const widget = widgetByName(node, name);
-      if (!widget || (!isEncryptedPrivacyPayload(widget.value) && !isLegacyPrivacyPayload(widget.value))) continue;
+      if (!widget) continue;
+      try {
+        assertSupportedPrivacyPayload(widget.value);
+      } catch (error) {
+        privacyRestorePending = false;
+        privacyRestoreFailed = true;
+        setStatus(`Private prompt builder recovery needed: ${error.message}`);
+        console.error("[AIO Ideogram 4 Prompt Builder] privacy widget payload unsupported", error);
+        updatePrivacyClasses();
+        return false;
+      }
+      if (!isEncryptedPrivacyPayload(widget.value) && !isLegacyPrivacyPayload(widget.value)) continue;
       privacyRestorePending = true;
       setStatus("Decrypting private prompt builder widgets...");
       try {
@@ -1420,6 +1472,13 @@ function createEditor(node) {
     setLibraryItemId(item.id);
     statusCallback(`Loaded ${data.item?.name || item.name || "saved prompt"}.`);
     finish?.();
+  }
+
+  function libraryLoadErrorMessage(item, error) {
+    if (item?.private || item?.is_private) {
+      return `Private saved prompt cannot be decrypted. It can still be deleted from the library. ${error.message}`;
+    }
+    return error.message;
   }
 
   function showPromptLibrary({ openSave = false } = {}) {
@@ -1621,7 +1680,7 @@ function createEditor(node) {
         try {
           await loadLibraryItem(item, { finish, statusCallback: setLibraryStatus });
         } catch (error) {
-          setLibraryStatus(`Private prompt locked: ${error.message}`);
+          setLibraryStatus(libraryLoadErrorMessage(item, error));
         }
       });
       overwriteBtn.addEventListener("click", async () => {
@@ -1919,10 +1978,9 @@ function createEditor(node) {
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = "#050505";
+    ctx.fillStyle = HELTO.bg;
     ctx.fillRect(0, 0, width, height);
-    const guideColor = "rgba(255,255,255,0.14)";
-    ctx.strokeStyle = guideColor;
+    ctx.strokeStyle = HELTO.borderStrong;
     ctx.lineWidth = 1;
     for (let i = 1; i < 3; i++) {
       const gridX = Math.round((width * i) / 3) + 0.5;
@@ -1959,7 +2017,7 @@ function createEditor(node) {
           [x + w, y + h],
         ];
         ctx.fillStyle = ACTIVE_COLOR;
-        ctx.strokeStyle = "#111";
+        ctx.strokeStyle = HELTO.bg;
         ctx.lineWidth = 1;
         for (const [hx, hy] of points) {
           ctx.fillRect(hx - handle / 2, hy - handle / 2, handle, handle);
@@ -1967,7 +2025,7 @@ function createEditor(node) {
         }
       }
       if (!isPrivateMasked) {
-        ctx.fillStyle = "#000";
+        ctx.fillStyle = HELTO.bg;
         ctx.font = "11px sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
@@ -2348,6 +2406,9 @@ function createEditor(node) {
 
 app.registerExtension({
   name: "AIO.Ideogram4PromptBuilder",
+  setup() {
+    registerAioPrivacyRecoveryDescriptors();
+  },
   async beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData?.name !== NODE_NAME) return;
     if (!nodeType.prototype._aioIdeogram4WorkflowPatched) {
@@ -2356,6 +2417,7 @@ app.registerExtension({
       const originalConfigure = nodeType.prototype.configure;
       nodeType.prototype.configure = function (info) {
         originalConfigure?.apply(this, arguments);
+        applyHeltoNodeTheme(this);
         this._aioIdeogram4PendingWorkflowInfo = info;
         this._aioIdeogram4EditorApi?.restoreFromWorkflow?.(info);
       };
@@ -2366,11 +2428,18 @@ app.registerExtension({
         this._aioIdeogram4EditorApi?.serializeForWorkflow?.(output);
         return result;
       };
+
+      const originalMenu = nodeType.prototype.getExtraMenuOptions;
+      nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
+        originalMenu?.apply(this, arguments);
+        appendPrivacyRecoveryMenuOption(this, options);
+      };
     }
 
     const original = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
       original?.apply(this, arguments);
+      applyHeltoNodeTheme(this);
       this.resizable = true;
       const editor = createEditor(this);
       if (this._aioIdeogram4PendingWorkflowInfo) {

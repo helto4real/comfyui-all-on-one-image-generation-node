@@ -231,7 +231,14 @@ def use_prompt(
 ) -> dict[str, Any]:
     library = load_library(base_dir)
     entry = _find_entry(library, item_id)
-    item = _with_payload(entry, base_dir=base_dir)
+    try:
+        item = _with_payload(entry, base_dir=base_dir)
+    except Exception as exc:
+        if _entry_private(entry) and not _privacy_unlock_error(exc):
+            raise Ideogram4PromptLibraryError(
+                "Private saved prompt cannot be decrypted. It can still be deleted from the library."
+            ) from exc
+        raise
     entry["last_used_at"] = _utc_now()
     _save_library(library, base_dir)
     item["last_used_at"] = entry["last_used_at"]
@@ -241,6 +248,14 @@ def use_prompt(
 def item_is_private(item_id: str, *, base_dir: str | os.PathLike[str] | None = None) -> bool:
     library = load_library(base_dir)
     return _entry_private(_find_entry(library, item_id))
+
+
+def _privacy_unlock_error(exc: BaseException) -> bool:
+    message = str(exc)
+    return any(
+        code in message
+        for code in ("PRIVACY_LOCKED", "PRIVACY_TOKEN_REQUIRED", "PRIVACY_KEYSTORE_UNINITIALIZED")
+    )
 
 
 def _pack_entry(

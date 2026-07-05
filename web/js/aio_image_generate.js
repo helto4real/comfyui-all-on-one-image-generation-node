@@ -9,6 +9,10 @@ import {
   isLegacyPrivacyPayload,
 } from "./aio_privacy.js";
 import {
+  appendPrivacyRecoveryMenuOption,
+  registerAioPrivacyRecoveryDescriptors,
+} from "./aio_privacy_recovery.js";
+import {
   applyHeltoLiteGraphWidgetTheme,
   applyHeltoNodeTheme,
   ensureHeltoTokens,
@@ -1463,7 +1467,17 @@ function maskPromptWidgetsForDraw(node) {
 }
 
 async function decryptPromptWidget(node, widget) {
-  if (!widget || widget._aioPrivacyDecrypting || (!isEncryptedPrivacyPayload(widget.value) && !isLegacyPrivacyPayload(widget.value))) {
+  if (!widget || widget._aioPrivacyDecrypting) {
+    return;
+  }
+  try {
+    assertSupportedPrivacyPayload(widget.value);
+  } catch (error) {
+    setPrivacyStatus(node, `Private prompt recovery needed: ${error.message}`);
+    console.error("[AIO Image Generate] privacy payload unsupported", error);
+    return;
+  }
+  if (!isEncryptedPrivacyPayload(widget.value) && !isLegacyPrivacyPayload(widget.value)) {
     return;
   }
   widget._aioPrivacyDecrypting = true;
@@ -3315,6 +3329,12 @@ function patchAioGenerateNodeType(nodeType) {
       ensureAioGenerateRuntimePhaseUi(this);
     }
   };
+
+  const originalMenu = nodeType.prototype.getExtraMenuOptions;
+  nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
+    originalMenu?.apply(this, arguments);
+    appendPrivacyRecoveryMenuOption(this, options);
+  };
 }
 
 function patchKrea2SettingsNodeType(nodeType) {
@@ -3329,6 +3349,12 @@ function patchKrea2SettingsNodeType(nodeType) {
     ensureKrea2SettingsPrivacyUi(this);
     return result;
   };
+
+  const originalMenu = nodeType.prototype.getExtraMenuOptions;
+  nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
+    originalMenu?.apply(this, arguments);
+    appendPrivacyRecoveryMenuOption(this, options);
+  };
 }
 
 scheduleAioSeedQueuePatch();
@@ -3337,6 +3363,7 @@ scheduleAioPrivacyGraphToPromptPatch();
 app.registerExtension({
   name: "aio.image.generate",
   setup() {
+    registerAioPrivacyRecoveryDescriptors();
     installAioWidgetThemeBridge();
     scheduleAioSeedQueuePatch("setup");
     scheduleAioPrivacyGraphToPromptPatch("setup");

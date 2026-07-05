@@ -148,6 +148,27 @@ def test_private_ideogram_prompt_locked_keystore_raises_readable_error(tmp_path)
         library.use_prompt("private-prompt", base_dir=tmp_path)
 
 
+@pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
+def test_private_ideogram_prompt_unrecoverable_payload_can_still_be_deleted(tmp_path):
+    initialize_keystore(PASSWORD)
+    library.create_prompt(
+        sample_payload('{"secret":"lost"}'),
+        metadata={"id": "private-prompt", "private": True},
+        base_dir=tmp_path,
+    )
+    stored = library.load_library(tmp_path)
+    stored["prompts"][0]["encrypted_payload"]["schema"] = privacy.LEGACY_ENVELOPE_SCHEMA
+    library.library_path(tmp_path).write_text(json.dumps(stored), encoding="utf-8")
+
+    with pytest.raises(library.Ideogram4PromptLibraryError, match="can still be deleted"):
+        library.use_prompt("private-prompt", base_dir=tmp_path)
+
+    assert library.delete_prompt("private-prompt", base_dir=tmp_path) == {
+        "id": "private-prompt",
+        "kind": "prompt",
+    }
+
+
 def test_private_ideogram_prompt_old_shell_metadata_is_scrubbed_on_write(tmp_path):
     old_library = {
         "schema_version": library.LIBRARY_SCHEMA_VERSION,
