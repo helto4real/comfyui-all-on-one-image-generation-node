@@ -338,6 +338,45 @@ def test_aio_frontend_tracks_runtime_phase_from_progress_text():
     assert "ctx.roundRect" in draw_block
 
 
+def test_aio_frontend_scopes_helto_widget_theme_to_aio_nodes():
+    source = (ROOT / "web/js/aio_image_generate.js").read_text(encoding="utf-8")
+
+    assert 'const AIO_WIDGET_THEME_BRIDGE_KEY = "__aioHeltoLiteGraphWidgetThemeBridgeInstalled";' in source
+    assert 'const AIO_WIDGET_THEME_FALLBACK_KEY = "__aioHeltoLiteGraphWidgetThemeFallbackInstalled";' in source
+    assert "function isAioThemedNode(node)" in source
+    assert "function installAioWidgetThemeBridge()" in source
+    assert "function ensureAioWidgetThemeFallback(node)" in source
+    assert "installAioWidgetThemeBridge();" in source
+
+    bridge_start = source.index("function installAioWidgetThemeBridge")
+    bridge_end = source.index("function ensureAioWidgetThemeFallback", bridge_start)
+    bridge_block = source[bridge_start:bridge_end]
+    assert "prototype.drawNodeWidgets = function (node)" in bridge_block
+    assert "isAioThemedNode(node)" in bridge_block
+    assert "withHeltoLiteGraphWidgetTheme" in bridge_block
+    assert "originalDrawNodeWidgets.apply(this, arguments)" in bridge_block
+
+    fallback_start = source.index("function ensureAioWidgetThemeFallback")
+    fallback_end = source.index("function applyAioNodeTheme", fallback_start)
+    fallback_block = source[fallback_start:fallback_end]
+    assert "applyHeltoLiteGraphWidgetTheme()" in fallback_block
+    assert "restoreHeltoLiteGraphWidgetTheme" in fallback_block
+    assert "node.onDrawBackground = function ()" in fallback_block
+    assert "node.onDrawForeground = function ()" in fallback_block
+
+    apply_start = source.index("function applyAioNodeTheme")
+    apply_end = source.index("function isAioGenerateNode", apply_start)
+    apply_block = source[apply_start:apply_end]
+    assert "if (!installAioWidgetThemeBridge())" in apply_block
+    assert "ensureAioWidgetThemeFallback(node)" in apply_block
+    assert "return applyHeltoNodeTheme(node);" in apply_block
+
+    patch_start = source.index("function patchAioThemeNodeType")
+    patch_end = source.index("function patchAioGenerateNodeType", patch_start)
+    patch_block = source[patch_start:patch_end]
+    assert "applyAioNodeTheme(this)" in patch_block
+
+
 def test_aio_fixed_seed_button_sets_control_back_to_fixed():
     source = (ROOT / "web/js/aio_image_generate.js").read_text(encoding="utf-8")
     start = source.index("function ensureAioGenerateSeedButton")

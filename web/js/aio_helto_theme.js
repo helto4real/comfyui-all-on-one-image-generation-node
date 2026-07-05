@@ -1,94 +1,148 @@
 // Helto Design System — canonical design tokens, inlined for self-styled
 // ComfyUI widgets that inject their own <style> (no shared stylesheet).
-// Values are copied verbatim from helto-designsystem/reference/tokens.css.
-// Dark-navy surfaces, a GOLD accent for selection/active, a BLUE focus ring.
+// Values are copied verbatim from helto-design-system/assets/tokens.css.
+// Catppuccin Mocha surfaces, a GOLD accent for selection/active, a BLUE focus ring.
 // Keep this in sync with the design system; do not introduce new colors here.
 
 export const HELTO_TOKENS_CSS = `
 :root {
-  /* ---- Surfaces: deepest inset -> most raised ---- */
-  --helto-bg:            #0d1320;
-  --helto-surface:       #151c2a;
-  --helto-surface-2:     #1b2333;
-  --helto-surface-3:     #232d3f;
-  --helto-surface-hover: #2c3850;
+  /* ---- Surfaces (deepest → raised) ------------------------------------ */
+  --helto-bg: #181825;            /* mantle — input wells, grids, viewports */
+  --helto-surface: #1e1e2e;       /* base — panels */
+  --helto-surface-2: #313244;     /* surface0 — fields, list items */
+  --helto-surface-3: #45475a;     /* surface1 — button gradient top */
+  --helto-surface-hover: #585b70; /* surface2 — hovered controls */
 
-  /* ---- Borders ---- */
-  --helto-border:        #2a3346;
-  --helto-border-strong: #3a465c;
-  --helto-border-hover:  #4c5970;
+  /* ---- Borders ---------------------------------------------------------- */
+  --helto-border: #313244;        /* surface0 */
+  --helto-border-strong: #45475a; /* surface1 */
+  --helto-border-hover: #6c7086;  /* overlay0 */
 
-  /* ---- Text (3 tiers) ---- */
-  --helto-text:          #e7ebf3;
-  --helto-text-dim:      #9aa6bd;
-  --helto-text-faint:    #6f7c95;
+  /* ---- Text (three tiers only) ------------------------------------------ */
+  --helto-text: #cdd6f4;          /* text */
+  --helto-text-dim: #a6adc8;      /* subtext0 */
+  --helto-text-faint: #7f849c;    /* overlay1 */
 
-  /* ---- Accent (GOLD) — selection / active emphasis ---- */
-  --helto-accent:        #f1c75c;
-  --helto-accent-strong: #ffd873;
-  --helto-accent-bg:     rgba(241, 199, 92, 0.16);
-  --helto-accent-border: rgba(241, 199, 92, 0.55);
+  /* ---- Accent (GOLD → mocha peach) — selection / active / primary ------- */
+  --helto-accent: #fab387;        /* peach */
+  --helto-accent-strong: #fddcc4; /* peach, lightened */
+  --helto-accent-border: #93664a; /* peach, darkened */
+  --helto-accent-bg: #46301f;     /* peach well (switch track on) */
 
-  /* ---- Focus (BLUE) — keyboard/focus only, never selection ---- */
-  --helto-focus:         #5e9bff;
-  --helto-focus-ring:    0 0 0 2px rgba(94, 155, 255, 0.5);
+  /* ---- Focus (BLUE) — focus rings only ----------------------------------- */
+  --helto-focus: #89b4fa;         /* blue */
+  --helto-focus-ring: 0 0 0 3px rgba(137, 180, 250, 0.28);
 
-  /* ---- Danger / destructive ---- */
-  --helto-danger:        #ec5a6b;
-  --helto-danger-bg:     #3a1a22;
-  --helto-danger-border: #8f3a44;
+  /* ---- Status ------------------------------------------------------------ */
+  --helto-danger: #f38ba8;        /* red */
+  --helto-danger-border: #96526a; /* red, darkened */
+  --helto-ok: #a6e3a1;            /* green */
+  --helto-warn: #f9e2af;          /* yellow (peach is the accent) */
+  --helto-info: #74c7ec;          /* sapphire */
 
-  /* ---- Status accents (pills) ---- */
-  --helto-ok:            #baf0c8;
-  --helto-warn:          #ffe3a3;
-  --helto-info:          #b9dafc;
+  /* ---- Radii -------------------------------------------------------------- */
+  --helto-radius-sm: 5px;  /* controls */
+  --helto-radius: 6px;     /* panels, inputs */
+  --helto-radius-lg: 10px; /* modals */
 
-  /* ---- Radii ---- */
-  --helto-radius-sm:     5px;
-  --helto-radius:        6px;
-  --helto-radius-lg:     10px;
+  /* ---- Elevation ----------------------------------------------------------- */
+  --helto-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --helto-shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.5);
+  --helto-shadow-glow: 0 0 0 1px rgba(250, 179, 135, 0.35),
+                       0 0 12px rgba(250, 179, 135, 0.22);
 
-  /* ---- Typography ---- */
-  --helto-font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-                     Roboto, Helvetica, Arial, sans-serif;
-  --helto-font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-                     "Roboto Mono", monospace;
-  --helto-font-size: 12px;
-  --helto-line: 1.4;
-
-  /* ---- Elevation ---- */
-  --helto-shadow:      0 1px 2px rgba(0, 0, 0, 0.35);
-  --helto-shadow-pop:  0 14px 36px rgba(0, 0, 0, 0.55);
-  --helto-shadow-glow: 0 0 10px rgba(241, 199, 92, 0.35);
-
-  /* ---- Motion ---- */
+  /* ---- Motion --------------------------------------------------------------- */
   --helto-transition: 0.12s ease;
   --helto-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* ---- Type ------------------------------------------------------------------ */
+  --helto-font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --helto-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --helto-font-size: 12px;
+  --helto-line: 1.4;
 }
 `;
 
 // Raw token literal values, for canvas drawing (where var(--helto-*) cannot
 // be used). Kept identical to the CSS custom properties above.
 export const HELTO = {
-  bg: "#0d1320",
-  surface: "#151c2a",
-  surface2: "#1b2333",
-  surface3: "#232d3f",
-  surfaceHover: "#2c3850",
-  border: "#2a3346",
-  borderStrong: "#3a465c",
-  borderHover: "#4c5970",
-  text: "#e7ebf3",
-  textDim: "#9aa6bd",
-  textFaint: "#6f7c95",
-  accent: "#f1c75c",
-  accentStrong: "#ffd873",
-  focus: "#5e9bff",
-  danger: "#ec5a6b",
-  warn: "#ffe3a3",
-  ok: "#baf0c8",
-  info: "#b9dafc",
+  bg: "#181825",
+  surface: "#1e1e2e",
+  surface2: "#313244",
+  surface3: "#45475a",
+  surfaceHover: "#585b70",
+  border: "#313244",
+  borderStrong: "#45475a",
+  borderHover: "#6c7086",
+  text: "#cdd6f4",
+  textDim: "#a6adc8",
+  textFaint: "#7f849c",
+  accent: "#fab387",
+  accentStrong: "#fddcc4",
+  accentBorder: "#93664a",
+  accentBg: "#46301f",
+  focus: "#89b4fa",
+  danger: "#f38ba8",
+  dangerBorder: "#96526a",
+  warn: "#f9e2af",
+  ok: "#a6e3a1",
+  info: "#74c7ec",
 };
+
+const HELTO_LITEGRAPH_WIDGET_THEME = {
+  WIDGET_BGCOLOR: HELTO.bg,
+  WIDGET_OUTLINE_COLOR: HELTO.borderStrong,
+  WIDGET_PROMOTED_OUTLINE_COLOR: HELTO.accent,
+  WIDGET_ADVANCED_OUTLINE_COLOR: HELTO.focus,
+  WIDGET_TEXT_COLOR: HELTO.text,
+  WIDGET_SECONDARY_TEXT_COLOR: HELTO.textDim,
+  WIDGET_DISABLED_TEXT_COLOR: HELTO.textFaint,
+};
+
+export function applyHeltoNodeTheme(node) {
+  if (!node || typeof node !== "object") {
+    return false;
+  }
+  node.color = HELTO.surface3;
+  node.bgcolor = HELTO.surface;
+  node.setDirtyCanvas?.(true, true);
+  node.graph?.setDirtyCanvas?.(true, true);
+  return true;
+}
+
+export function applyHeltoLiteGraphWidgetTheme(liteGraph = globalThis.LiteGraph) {
+  if (!liteGraph || typeof liteGraph !== "object") {
+    return null;
+  }
+  const previous = {};
+  for (const [key, value] of Object.entries(HELTO_LITEGRAPH_WIDGET_THEME)) {
+    if (key in liteGraph) {
+      previous[key] = liteGraph[key];
+      liteGraph[key] = value;
+    }
+  }
+  return Object.keys(previous).length ? { liteGraph, previous } : null;
+}
+
+export function restoreHeltoLiteGraphWidgetTheme(snapshot) {
+  const { liteGraph, previous } = snapshot || {};
+  if (!liteGraph || !previous) {
+    return false;
+  }
+  for (const [key, value] of Object.entries(previous)) {
+    liteGraph[key] = value;
+  }
+  return true;
+}
+
+export function withHeltoLiteGraphWidgetTheme(callback, liteGraph = globalThis.LiteGraph) {
+  const snapshot = applyHeltoLiteGraphWidgetTheme(liteGraph);
+  try {
+    return callback?.();
+  } finally {
+    restoreHeltoLiteGraphWidgetTheme(snapshot);
+  }
+}
 
 const TOKENS_STYLE_ID = "aio-helto-tokens";
 

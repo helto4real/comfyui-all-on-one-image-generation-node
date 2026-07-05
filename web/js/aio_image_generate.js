@@ -8,7 +8,14 @@ import {
   isEncryptedPrivacyPayload,
   isLegacyPrivacyPayload,
 } from "./aio_privacy.js";
-import { ensureHeltoTokens, HELTO } from "./aio_helto_theme.js";
+import {
+  applyHeltoLiteGraphWidgetTheme,
+  applyHeltoNodeTheme,
+  ensureHeltoTokens,
+  HELTO,
+  restoreHeltoLiteGraphWidgetTheme,
+  withHeltoLiteGraphWidgetTheme,
+} from "./aio_helto_theme.js";
 
 const NODE_NAME = "AIOLoraConfiguration";
 const NODE_DISPLAY_NAME = "AIO LoRA Configuration";
@@ -16,6 +23,20 @@ const GENERATE_NODE_NAME = "AIOImageGenerate";
 const GENERATE_NODE_DISPLAY_NAME = "AIO Image Generate";
 const KREA_SETTINGS_NODE_NAME = "AIOKrea2Settings";
 const KREA_SETTINGS_NODE_DISPLAY_NAME = "Krea 2 Settings";
+const AIO_THEME_NODE_TYPES = new Set([
+  "AIOImageGenerate",
+  "AIOZImageTurboSettings",
+  "AIOFlux2Klein9BSettings",
+  "AIOIdeogram4PromptBuilder",
+  "AIOIdeogram4Settings",
+  "AIOKrea2Settings",
+  "AIOInpaint",
+  "AIOLoraConfiguration",
+  "AIOLoadPipelineModels",
+  "AIOModelInfo",
+  "AIOPIDInfo",
+  "AIOInpaintInfo",
+]);
 const ROW_PREFIX = "lora_";
 const HEADER_NAME = "aio_lora_header";
 const ADD_BUTTON_LABEL = "+ Add LoRA";
@@ -33,6 +54,9 @@ const AIO_PRIVACY_GRAPH_TO_PROMPT_INSTALL_KEY = "__aioGeneratePrivacyGraphToProm
 const AIO_PRIVACY_GRAPH_TO_PROMPT_INSTALL_ATTEMPT_LIMIT = 80;
 const AIO_PROGRESS_TEXT_CLEANUP_KEY = "__aioGenerateProgressTextCleanupInstalled";
 const AIO_RUNTIME_PHASE_BRIDGE_KEY = "__aioGenerateRuntimePhaseBridgeInstalled";
+const AIO_WIDGET_THEME_BRIDGE_KEY = "__aioHeltoLiteGraphWidgetThemeBridgeInstalled";
+const AIO_WIDGET_THEME_FALLBACK_KEY = "__aioHeltoLiteGraphWidgetThemeFallbackInstalled";
+const AIO_WIDGET_THEME_SNAPSHOT_KEY = "__aioHeltoLiteGraphWidgetThemeSnapshot";
 const AIO_RUNTIME_PHASE_STYLE_ID = "aio-generate-runtime-phase-style";
 const AIO_RUNTIME_PHASE_LABEL_CLASS = "aio-generate-runtime-phase-label";
 const AIO_RUNTIME_PHASE_NODE_KEY = "__aioGenerateRuntimePhase";
@@ -80,6 +104,92 @@ function isAioGenerateNodeData(nodeData) {
 
 function isAioKrea2SettingsNodeData(nodeData) {
   return nodeData?.name === KREA_SETTINGS_NODE_NAME || nodeData?.display_name === KREA_SETTINGS_NODE_DISPLAY_NAME;
+}
+
+function aioNodeTypeCandidates(node) {
+  return [
+    node?.type,
+    node?.comfyClass,
+    node?.class_type,
+    node?.constructor?.type,
+    node?.constructor?.comfyClass,
+    node?.title,
+  ].map((value) => String(value || "")).filter(Boolean);
+}
+
+function isAioThemedNodeData(nodeData) {
+  return AIO_THEME_NODE_TYPES.has(String(nodeData?.name || ""));
+}
+
+function isAioThemedNode(node) {
+  return aioNodeTypeCandidates(node).some((candidate) => AIO_THEME_NODE_TYPES.has(candidate));
+}
+
+function liteGraphCanvasPrototype() {
+  return [
+    globalThis.LGraphCanvas?.prototype,
+    globalThis.LiteGraph?.LGraphCanvas?.prototype,
+    app.canvas?.constructor?.prototype,
+  ].find((prototype) => typeof prototype?.drawNodeWidgets === "function") || null;
+}
+
+function installAioWidgetThemeBridge() {
+  const prototype = liteGraphCanvasPrototype();
+  if (!prototype) {
+    return false;
+  }
+  if (prototype[AIO_WIDGET_THEME_BRIDGE_KEY]) {
+    return true;
+  }
+  const originalDrawNodeWidgets = prototype.drawNodeWidgets;
+  prototype[AIO_WIDGET_THEME_BRIDGE_KEY] = true;
+  prototype.drawNodeWidgets = function (node) {
+    if (isAioThemedNode(node)) {
+      return withHeltoLiteGraphWidgetTheme(() => originalDrawNodeWidgets.apply(this, arguments));
+    }
+    return originalDrawNodeWidgets.apply(this, arguments);
+  };
+  return true;
+}
+
+function ensureAioWidgetThemeFallback(node) {
+  if (!node || node[AIO_WIDGET_THEME_FALLBACK_KEY]) {
+    return;
+  }
+  node[AIO_WIDGET_THEME_FALLBACK_KEY] = true;
+
+  const originalDrawBackground = node.onDrawBackground;
+  node.onDrawBackground = function () {
+    restoreHeltoLiteGraphWidgetTheme(this[AIO_WIDGET_THEME_SNAPSHOT_KEY]);
+    this[AIO_WIDGET_THEME_SNAPSHOT_KEY] = applyHeltoLiteGraphWidgetTheme();
+    try {
+      return originalDrawBackground?.apply(this, arguments);
+    } catch (error) {
+      restoreHeltoLiteGraphWidgetTheme(this[AIO_WIDGET_THEME_SNAPSHOT_KEY]);
+      this[AIO_WIDGET_THEME_SNAPSHOT_KEY] = null;
+      throw error;
+    }
+  };
+
+  const originalDrawForeground = node.onDrawForeground;
+  node.onDrawForeground = function () {
+    try {
+      return originalDrawForeground?.apply(this, arguments);
+    } finally {
+      restoreHeltoLiteGraphWidgetTheme(this[AIO_WIDGET_THEME_SNAPSHOT_KEY]);
+      this[AIO_WIDGET_THEME_SNAPSHOT_KEY] = null;
+    }
+  };
+}
+
+function applyAioNodeTheme(node) {
+  if (!isAioThemedNode(node)) {
+    return false;
+  }
+  if (!installAioWidgetThemeBridge()) {
+    ensureAioWidgetThemeFallback(node);
+  }
+  return applyHeltoNodeTheme(node);
 }
 
 function isAioGenerateNode(node) {
@@ -156,16 +266,16 @@ function installAioGenerateRuntimePhaseStyles() {
       max-width: calc(100% - 20px);
       min-height: 18px;
       padding: 2px 8px;
-      border: 1px solid rgba(255, 255, 255, 0.18);
+      border: 1px solid var(--helto-border-strong);
       border-radius: 9px;
-      background: rgba(9, 14, 24, 0.72);
-      color: #fff;
+      background: var(--helto-bg);
+      color: var(--helto-text);
       font: 600 11px/14px var(--helto-font-sans, system-ui, sans-serif);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
       pointer-events: none;
-      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+      box-shadow: var(--helto-shadow);
     }
     .lg-node[data-collapsed] > .${AIO_RUNTIME_PHASE_LABEL_CLASS} {
       top: 8px;
@@ -495,13 +605,13 @@ function drawAioGenerateRuntimePhase(ctx, node) {
   const x = Math.max(10, width - boxWidth - 10);
   const y = 4;
   ctx.globalAlpha = app.canvas?.editor_alpha ?? 1;
-  ctx.fillStyle = "rgba(9, 14, 24, 0.72)";
-  ctx.strokeStyle = "rgba(255, 255, 255, 0.18)";
+  ctx.fillStyle = HELTO.bg;
+  ctx.strokeStyle = HELTO.borderStrong;
   ctx.beginPath();
   ctx.roundRect(x, y, boxWidth, height, [height * 0.5]);
   ctx.fill();
   ctx.stroke();
-  ctx.fillStyle = "#fff";
+  ctx.fillStyle = HELTO.text;
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
   ctx.fillText(text, x + paddingX, y + height * 0.5);
@@ -1060,6 +1170,8 @@ function installGeneratePrivacyStyles() {
   // -webkit-text-fill-color guards against partial glyph/selection leaks.
   style.textContent = `
     .aio-generate-private-field {
+      background: var(--helto-surface-2) !important;
+      border-color: var(--helto-surface-2) !important;
       color: transparent !important;
       -webkit-text-fill-color: transparent !important;
       text-shadow: none !important;
@@ -1663,8 +1775,8 @@ function isLowQuality() {
 function drawRoundedRectangle(ctx, { pos, size, borderRadius = null }) {
   const radius = isLowQuality() ? 0 : borderRadius ?? size[1] * 0.5;
   ctx.save();
-  ctx.strokeStyle = LiteGraph.WIDGET_OUTLINE_COLOR;
-  ctx.fillStyle = LiteGraph.WIDGET_BGCOLOR;
+  ctx.strokeStyle = HELTO.borderStrong;
+  ctx.fillStyle = HELTO.surface2;
   ctx.beginPath();
   ctx.roundRect(pos[0], pos[1], size[0], size[1], [radius]);
   ctx.fill();
@@ -1683,7 +1795,7 @@ function drawTogglePart(ctx, { posX, posY, height, value }) {
     ctx.beginPath();
     ctx.roundRect(posX + 4, posY + 4, toggleBgWidth - 8, height - 8, [height * 0.5]);
     ctx.globalAlpha = app.canvas.editor_alpha * 0.25;
-    ctx.fillStyle = "rgba(255,255,255,0.45)";
+    ctx.fillStyle = HELTO.surface3;
     ctx.fill();
     ctx.globalAlpha = app.canvas.editor_alpha;
   }
@@ -1706,7 +1818,7 @@ function drawNumberWidgetPart(ctx, { posX, posY, height, value, direction = -1, 
   const midY = posY + height / 2;
 
   ctx.save();
-  ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
+  ctx.fillStyle = HELTO.textDim;
   ctx.fill(new Path2D(`M ${x} ${midY} l ${arrowWidth} ${arrowHeight / 2} l 0 -${arrowHeight} L ${x} ${midY} z`));
   const left = [x, posY, arrowWidth, height];
   x += arrowWidth + innerMargin;
@@ -1720,7 +1832,7 @@ function drawNumberWidgetPart(ctx, { posX, posY, height, value, direction = -1, 
   const text = [x, posY, numberWidth, height];
   x += numberWidth + innerMargin;
 
-  ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
+  ctx.fillStyle = HELTO.textDim;
   ctx.fill(new Path2D(`M ${x} ${midY - arrowHeight / 2} l ${arrowWidth} ${arrowHeight / 2} l -${arrowWidth} ${arrowHeight / 2} v -${arrowHeight} z`));
   const right = [x, posY, arrowWidth, height];
   ctx.restore();
@@ -1739,7 +1851,7 @@ function drawInfoIcon(ctx, x, y, size, treatment = "GRAYED") {
   } else {
     ctx.stroke();
   }
-  ctx.strokeStyle = "#fff";
+  ctx.strokeStyle = treatment === "FILLED" ? HELTO.bg : HELTO.textDim;
   ctx.lineWidth = 2;
   const midX = x + size / 2;
   const serif = size * 0.175;
@@ -2008,7 +2120,7 @@ function ensureDialogStyles() {
       display: grid;
       place-items: center;
       padding: 12px;
-      background: rgba(6, 9, 15, 0.72);
+      background: color-mix(in srgb, var(--helto-bg) 72%, transparent);
       backdrop-filter: blur(4px);
       animation: aio-lora-fade 0.2s ease;
     }
@@ -2020,7 +2132,7 @@ function ensureDialogStyles() {
       overflow: hidden;
       border: 1px solid var(--helto-border-strong);
       border-radius: var(--helto-radius-lg);
-      background: linear-gradient(135deg, rgba(27, 35, 51, 0.92), rgba(13, 19, 32, 0.96));
+      background: linear-gradient(135deg, var(--helto-surface-2), var(--helto-bg));
       color: var(--helto-text);
       box-shadow: var(--helto-shadow-pop);
       backdrop-filter: blur(15px);
@@ -2074,7 +2186,7 @@ function ensureDialogStyles() {
     .aio-lora-close:hover {
       background: linear-gradient(180deg, var(--helto-surface-hover), var(--helto-surface-3));
       border-color: var(--helto-border-hover);
-      color: #fff;
+      color: var(--helto-text);
     }
     .aio-lora-close:focus-visible { outline: none; border-color: var(--helto-focus); box-shadow: var(--helto-focus-ring); }
     .aio-rgthree-dialog-content {
@@ -2111,7 +2223,7 @@ function ensureDialogStyles() {
     .rgthree-button:hover {
       background: linear-gradient(180deg, var(--helto-surface-hover), var(--helto-surface-3));
       border-color: var(--helto-border-hover);
-      color: #fff;
+      color: var(--helto-text);
     }
     .rgthree-button:focus-visible { outline: none; border-color: var(--helto-focus); box-shadow: var(--helto-focus-ring); }
     .rgthree-button-reset {
@@ -2160,8 +2272,8 @@ function ensureDialogStyles() {
       display: none;
     }
     .rgthree-info-dialog .rgthree-info-area > li.-type > * {
-      background: #14273d;
-      border-color: #355f8f;
+      background: var(--helto-bg);
+      border-color: var(--helto-info);
       color: var(--helto-info);
     }
     .rgthree-info-dialog .rgthree-info-area > li.rgthree-info-menu {
@@ -2309,7 +2421,7 @@ function ensureDialogStyles() {
     .rgthree-info-dialog .rgthree-info-table td > ul.rgthree-info-trained-words-list > li:hover {
       background: var(--helto-surface-hover);
       border-color: var(--helto-border-hover);
-      color: #fff;
+      color: var(--helto-text);
     }
     .rgthree-info-dialog .rgthree-info-table td > ul.rgthree-info-trained-words-list > li > svg {
       width: auto;
@@ -2328,7 +2440,7 @@ function ensureDialogStyles() {
       align-items: center;
       justify-content: center;
       padding: 0 0.6em;
-      background: rgba(0, 0, 0, 0.2);
+      background: var(--helto-surface);
     }
     .rgthree-info-dialog .rgthree-info-table td > ul.rgthree-info-trained-words-list > li.-rgthree-is-selected {
       background: var(--helto-accent-bg);
@@ -2360,7 +2472,7 @@ function ensureDialogStyles() {
       position: relative;
       border: 1px solid var(--helto-border);
       border-radius: var(--helto-radius);
-      background: #0a0e16;
+      background: var(--helto-bg);
     }
     .rgthree-info-dialog .rgthree-info-images > li figure {
       margin: 0;
@@ -2378,7 +2490,7 @@ function ensureDialogStyles() {
       bottom: 0;
       padding: 12px;
       font-size: 12px;
-      background: rgba(6, 9, 15, 0.85);
+      background: color-mix(in srgb, var(--helto-bg) 85%, transparent);
       opacity: 0;
       transform: translateY(50px);
       transition: all 0.25s ease-in-out;
@@ -2616,7 +2728,7 @@ class LoraHeaderWidget {
     if (!isLowQuality()) {
       posX += this.hitAreas.toggle[2] + innerMargin;
       ctx.globalAlpha = app.canvas.editor_alpha * 0.55;
-      ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
+      ctx.fillStyle = HELTO.textDim;
       ctx.textAlign = "left";
       ctx.textBaseline = "middle";
       ctx.fillText("Toggle All", posX, midY);
@@ -2773,7 +2885,7 @@ class LoraRowWidget {
 
     const loraWidth = rightX - posX;
     this.hitAreas.lora = [posX, posY, loraWidth, height];
-    ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
+    ctx.fillStyle = HELTO.text;
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
     ctx.fillText(fitString(ctx, this.value.lora || "None", loraWidth), posX, midY);
@@ -3162,6 +3274,27 @@ function patchLoraNodeType(nodeType) {
   };
 }
 
+function patchAioThemeNodeType(nodeType) {
+  if (nodeType.prototype.__aioHeltoNodeThemePatched) {
+    return;
+  }
+  nodeType.prototype.__aioHeltoNodeThemePatched = true;
+
+  const originalCreated = nodeType.prototype.onNodeCreated;
+  nodeType.prototype.onNodeCreated = function () {
+    const result = originalCreated?.apply(this, arguments);
+    applyAioNodeTheme(this);
+    return result;
+  };
+
+  const originalConfigure = nodeType.prototype.configure;
+  nodeType.prototype.configure = function () {
+    const result = originalConfigure?.apply(this, arguments);
+    applyAioNodeTheme(this);
+    return result;
+  };
+}
+
 function patchAioGenerateNodeType(nodeType) {
   if (nodeType.prototype.__aioGenerateConfigurePatched) {
     return;
@@ -3204,12 +3337,14 @@ scheduleAioPrivacyGraphToPromptPatch();
 app.registerExtension({
   name: "aio.image.generate",
   setup() {
+    installAioWidgetThemeBridge();
     scheduleAioSeedQueuePatch("setup");
     scheduleAioPrivacyGraphToPromptPatch("setup");
     installAioGenerateProgressTextCleanup();
     installAioGenerateRuntimePhaseBridge();
     requestAnimationFrame(() => {
       for (const node of app.graph?._nodes || []) {
+        applyAioNodeTheme(node);
         ensureLoraUi(node);
         ensureAioGenerateSizingUi(node);
         ensureAioGeneratePrivacyUi(node);
@@ -3229,8 +3364,12 @@ app.registerExtension({
     if (isAioKrea2SettingsNodeData(nodeData)) {
       patchKrea2SettingsNodeType(nodeType);
     }
+    if (isAioThemedNodeData(nodeData)) {
+      patchAioThemeNodeType(nodeType);
+    }
   },
   nodeCreated(node) {
+    applyAioNodeTheme(node);
     ensureLoraUi(node);
     ensureAioGenerateSizingUi(node);
     ensureAioGeneratePrivacyUi(node);
@@ -3239,6 +3378,7 @@ app.registerExtension({
     ensureAioGenerateRuntimePhaseUi(node);
   },
   loadedGraphNode(node) {
+    applyAioNodeTheme(node);
     ensureLoraUi(node);
     ensureAioGenerateSizingUi(node);
     ensureAioGeneratePrivacyUi(node);
