@@ -7,7 +7,7 @@ dependencies = [
     "helto-privacy @ git+https://github.com/helto4real/helto-privacy.git@v0.3.0",
     "cryptography>=42.0",
 ]
-license = "MIT"
+license = "GPL-3.0-only"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

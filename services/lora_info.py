@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
-import os
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -14,6 +15,8 @@ from typing import Any
 
 INFO_SUFFIX = ".aio-lora-info.json"
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
+EDITABLE_FIELDS = frozenset({"name", "strengthMin", "strengthMax", "userNote"})
+_ROUTES_REGISTERED = False
 
 
 def _get_nested(data: dict[str, Any] | None, path: str, default=None):
@@ -39,20 +42,46 @@ def _is_truthy(value: str | None) -> bool:
     return value not in (None, "", "0", "false", "False", "no", "No")
 
 
+def _configured_lora_roots() -> tuple[Path, ...]:
+    import folder_paths  # type: ignore
+
+    try:
+        return tuple(Path(root).expanduser().resolve() for root in folder_paths.get_folder_paths("loras"))
+    except Exception:
+        return ()
+
+
+def _is_in_lora_roots(path: Path) -> bool:
+    try:
+        resolved = path.expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    return any(resolved == root or root in resolved.parents for root in _configured_lora_roots())
+
+
 def _lora_path(file: str) -> Path | None:
     import folder_paths  # type: ignore
 
-    path = folder_paths.get_full_path("loras", file)
-    if path and Path(path).exists():
-        return Path(path)
-    absolute = Path(file).expanduser()
-    if absolute.exists():
-        return absolute
+    if not isinstance(file, str) or not file or Path(file).is_absolute():
+        return None
+    try:
+        path = folder_paths.get_full_path("loras", file)
+    except Exception:
+        return None
+    if path:
+        candidate = Path(path)
+        if candidate.is_file() and _is_in_lora_roots(candidate):
+            return candidate.resolve()
     return None
 
 
 def _sidecar_path(path: Path) -> Path:
     return Path(f"{path}{INFO_SUFFIX}")
+
+
+def _safe_sidecar_path(path: Path) -> Path | None:
+    candidate = _sidecar_path(path)
+    return candidate if _is_in_lora_roots(candidate) else None
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -76,12 +105,18 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _local_image(file: str, path: Path) -> str | None:
+def _preview_image(path: Path) -> Path | None:
     stem = path.with_suffix("")
     for extension in IMAGE_EXTENSIONS:
         candidate = stem.with_suffix(extension)
-        if candidate.exists():
-            return f"/aio-image-gen/api/loras/img?file={urllib.parse.quote(file)}"
+        if candidate.is_file() and _is_in_lora_roots(candidate):
+            return candidate.resolve()
+    return None
+
+
+def _local_image(file: str, path: Path) -> str | None:
+    if _preview_image(path) is not None:
+        return f"/aio-image-gen/api/loras/img?file={urllib.parse.quote(file)}"
     return None
 
 
@@ -112,10 +147,9 @@ def _file_info(file: str) -> dict[str, Any] | None:
         return None
     return {
         "file": file,
-        "path": str(path),
         "modified": path.stat().st_mtime * 1000,
         "imageLocal": _local_image(file, path),
-        "hasInfoFile": _sidecar_path(path).exists(),
+        "hasInfoFile": bool((sidecar := _safe_sidecar_path(path)) and sidecar.is_file()),
     }
 
 
@@ -224,12 +258,15 @@ def get_lora_info(
     light: bool = False,
     fetch_metadata: bool = False,
     fetch_civitai: bool = False,
+    persist: bool = False,
 ) -> dict[str, Any] | None:
     path = _lora_path(file)
     if path is None:
         return None
 
-    info = _read_json(_sidecar_path(path))
+    sidecar = _safe_sidecar_path(path)
+    info = _read_json(sidecar) if sidecar is not None else {}
+    info.pop("path", None)
     info.update({key: value for key, value in (_file_info(file) or {}).items() if value is not None})
     info.setdefault("images", [])
     if info.get("imageLocal") and not any(image.get("url") == info["imageLocal"] for image in info["images"]):
@@ -243,10 +280,11 @@ def get_lora_info(
     info.setdefault("raw", {})
     if fetch_metadata or "metadata" not in info["raw"]:
         _merge_metadata(info, _read_safetensors_metadata(path))
-    if fetch_civitai or "civitai" not in info["raw"]:
+    if fetch_civitai:
         _merge_civitai(info, _fetch_civitai(file_hash))
 
-    _write_json(_sidecar_path(path), info)
+    if persist and sidecar is not None:
+        _write_json(sidecar, info)
     return info
 
 
@@ -254,17 +292,27 @@ def save_lora_info_partial(file: str, partial: dict[str, Any]) -> dict[str, Any]
     path = _lora_path(file)
     if path is None:
         return None
+    sidecar = _safe_sidecar_path(path)
+    if sidecar is None:
+        return None
     info = get_lora_info(file, fetch_metadata=True) or {}
-    info.update(partial)
-    _write_json(_sidecar_path(path), info)
+    for key in EDITABLE_FIELDS:
+        if key in partial:
+            info[key] = partial[key]
+    info.pop("path", None)
+    _write_json(sidecar, info)
     return info
 
 
-def register_routes() -> None:
+def register_routes() -> bool:
+    global _ROUTES_REGISTERED
+    if _ROUTES_REGISTERED or "server" not in sys.modules:
+        return _ROUTES_REGISTERED
+
     from aiohttp import web  # type: ignore
-    from server import PromptServer  # type: ignore
     import folder_paths  # type: ignore
 
+    PromptServer = sys.modules["server"].PromptServer
     routes = PromptServer.instance.routes
 
     @routes.get("/aio-image-gen/api/loras")
@@ -280,11 +328,10 @@ def register_routes() -> None:
         if not files or files == [""]:
             files = folder_paths.get_filename_list("loras")
         light = _is_truthy(_get_param(request, "light"))
-        data = [
-            info
-            for file in files
-            if (info := get_lora_info(file, light=light, fetch_metadata=not light)) is not None
-        ]
+        results = await asyncio.gather(
+            *(asyncio.to_thread(get_lora_info, file, light=light, fetch_metadata=not light) for file in files)
+        )
+        data = [info for info in results if info is not None]
         return web.json_response({"status": 200, "data": data})
 
     @routes.get("/aio-image-gen/api/loras/info/refresh")
@@ -292,11 +339,19 @@ def register_routes() -> None:
         files = (_get_param(request, "files") or "").split(",")
         if not files or files == [""]:
             return _json_response({"status": 404, "error": "No LoRA file provided."})
-        data = [
-            info
-            for file in files
-            if (info := get_lora_info(file, fetch_metadata=True, fetch_civitai=True)) is not None
-        ]
+        results = await asyncio.gather(
+            *(
+                asyncio.to_thread(
+                    get_lora_info,
+                    file,
+                    fetch_metadata=True,
+                    fetch_civitai=True,
+                    persist=True,
+                )
+                for file in files
+            )
+        )
+        data = [info for info in results if info is not None]
         return web.json_response({"status": 200, "data": data})
 
     @routes.post("/aio-image-gen/api/loras/info")
@@ -306,7 +361,9 @@ def register_routes() -> None:
             return _json_response({"status": 404, "error": "No LoRA file provided."})
         post = await request.post()
         partial = json.loads(post.get("json") or "{}")
-        info = save_lora_info_partial(file, partial)
+        if not isinstance(partial, dict):
+            return _json_response({"status": 400, "error": "LoRA info update must be an object."})
+        info = await asyncio.to_thread(save_lora_info_partial, file, partial)
         if info is None:
             return _json_response({"status": 404, "error": "LoRA file not found."})
         return web.json_response({"status": 200, "data": info})
@@ -319,16 +376,9 @@ def register_routes() -> None:
         path = _lora_path(file)
         if path is None:
             return _json_response({"status": 404, "error": "LoRA file not found."})
-        stem = path.with_suffix("")
-        for extension in IMAGE_EXTENSIONS:
-            candidate = stem.with_suffix(extension)
-            if candidate.exists():
-                return web.FileResponse(candidate)
+        if (candidate := _preview_image(path)) is not None:
+            return web.FileResponse(candidate)
         return _json_response({"status": 404, "error": "No preview image found."})
 
-
-try:
-    register_routes()
-except Exception:
-    # Tests and direct imports often run outside ComfyUI's server process.
-    pass
+    _ROUTES_REGISTERED = True
+    return True

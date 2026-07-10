@@ -44,8 +44,8 @@ class Flux2Klein9BAdapter(BaseImageAdapter):
     def resolve_settings(self, **kwargs) -> dict[str, Any]:
         resolved = super().resolve_settings(**kwargs)
         variant = resolved.get("variant", "distilled")
-        if kwargs["steps"] <= 0 and variant == "distilled":
-            resolved["steps"] = 4
+        if kwargs["steps"] <= 0:
+            resolved["steps"] = 4 if variant == "distilled" else 50
         return resolved
 
     def validate_inputs(

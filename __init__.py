@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+import sys
+
 try:
     from .services import lora_info as _lora_info  # noqa: F401
     from .routes.ideogram4_prompt_library import register_ideogram4_prompt_library_routes
@@ -71,17 +74,26 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "AIOInpaintInfo": "AIO Inpaint Info",
 }
 
-try:
-    register_privacy_routes()
-    register_ideogram4_prompt_library_routes()
-    try:
-        from helto_privacy import register_helto_privacy_ui
 
-        register_helto_privacy_ui()
-    except Exception:
-        pass
-except Exception:
-    # Direct imports and tests often run outside ComfyUI's server process.
-    pass
+def _register_safely(label, callback) -> None:
+    try:
+        callback()
+    except Exception as exc:  # noqa: BLE001 - one optional route family must not block another.
+        logging.warning("AIO Image Generate could not register %s: %s", label, exc)
+
+
+def _register_shared_privacy_ui() -> None:
+    from helto_privacy import register_helto_privacy_ui
+
+    server_module = sys.modules.get("server")
+    prompt_server = getattr(getattr(server_module, "PromptServer", None), "instance", None)
+    if prompt_server is not None:
+        register_helto_privacy_ui(prompt_server=prompt_server)
+
+
+_register_safely("LoRA information routes", _lora_info.register_routes)
+_register_safely("privacy routes", register_privacy_routes)
+_register_safely("Ideogram prompt-library routes", register_ideogram4_prompt_library_routes)
+_register_safely("shared privacy UI routes", _register_shared_privacy_ui)
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]

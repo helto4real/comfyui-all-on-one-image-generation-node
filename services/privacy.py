@@ -44,6 +44,18 @@ class PrivacyError(_HeltoPrivacyError):
 _codec = PrivacyEnvelopeCodec(ENVELOPE_SCHEMA) if PrivacyEnvelopeCodec is not None else None
 
 
+def external_cache_providers_registered() -> bool:
+    """Return whether ComfyUI has a cache provider that can persist node outputs."""
+    try:
+        from comfy_execution.cache_provider import _has_cache_providers  # type: ignore
+    except Exception:
+        return False
+    try:
+        return bool(_has_cache_providers())
+    except Exception:
+        return False
+
+
 def config_dir() -> Path:
     return Path(__file__).resolve().parents[1] / "config"
 

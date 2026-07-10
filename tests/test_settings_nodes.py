@@ -13,12 +13,14 @@ PASSWORD = "correct horse battery"
 
 
 def test_z_settings_returns_family_dict():
-    settings = AIOZImageTurboSettings().build_settings(
-        "default", 8, "off", True, "auto"
-    )[0]
+    settings = AIOZImageTurboSettings().build_settings(8, "auto")[0]
 
     assert settings["family"] == "z_image_turbo"
     assert settings["force_steps"] == 8
+    assert {"speed_preset", "prompt_enhance", "ignore_negative_prompt"}.isdisjoint(settings)
+    assert {"speed_preset", "prompt_enhance", "ignore_negative_prompt"}.isdisjoint(
+        AIOZImageTurboSettings.INPUT_TYPES()["required"]
+    )
     assert settings["attention_mode"] == "auto"
     assert settings["torch_compile_mode"] == "off"
     assert settings["torch_compile_backend"] == "inductor"
@@ -44,7 +46,7 @@ def test_ideogram4_settings_can_disable_unconditional_model():
 
 def test_flux_settings_returns_family_dict():
     settings = AIOFlux2Klein9BSettings().build_settings(
-        "distilled", 1.0, "auto", "balanced", 0.5, 1.15
+        "distilled", 1.0, "auto", "balanced"
     )[0]
 
     assert settings["family"] == "flux2_klein_9b"
@@ -54,6 +56,8 @@ def test_flux_settings_returns_family_dict():
     assert "output_size_mode" not in settings
     assert "reference_strength" not in AIOFlux2Klein9BSettings.INPUT_TYPES()["required"]
     assert "reference_strength" not in settings
+    assert {"base_shift", "max_shift"}.isdisjoint(settings)
+    assert {"base_shift", "max_shift"}.isdisjoint(AIOFlux2Klein9BSettings.INPUT_TYPES()["required"])
     assert settings["reference_megapixels"] == 1.0
     assert settings["reference_upscale_method"] == "area"
     assert settings["reference_resolution_steps"] == 1
@@ -348,8 +352,6 @@ def test_flux_settings_can_override_reference_scaling():
         1.0,
         "auto",
         "balanced",
-        0.5,
-        1.15,
         2.0,
         "lanczos",
         8,
@@ -366,10 +368,7 @@ def test_flux_settings_can_override_reference_scaling():
 
 def test_settings_can_override_performance_controls():
     z_settings = AIOZImageTurboSettings().build_settings(
-        "default",
         8,
-        "off",
-        True,
         "auto",
         "sage",
         "on",
@@ -381,8 +380,6 @@ def test_settings_can_override_performance_controls():
         1.0,
         "auto",
         "balanced",
-        0.5,
-        1.15,
         1.0,
         "area",
         1,
@@ -420,15 +417,12 @@ def test_settings_can_override_performance_controls():
     assert krea_settings["fp16_accumulation_enabled"] is False
 
 
-def test_flux_settings_ignores_legacy_reference_strength_argument():
+def test_flux_settings_exposes_only_effective_reference_and_performance_controls():
     settings = AIOFlux2Klein9BSettings().build_settings(
         "distilled",
         1.0,
-        0.75,
         "auto",
         "balanced",
-        0.5,
-        1.15,
         2.0,
         "lanczos",
         8,
@@ -437,8 +431,8 @@ def test_flux_settings_ignores_legacy_reference_strength_argument():
     assert "reference_strength" not in settings
     assert settings["precision_policy"] == "auto"
     assert settings["memory_policy"] == "balanced"
-    assert settings["base_shift"] == 0.5
-    assert settings["max_shift"] == 1.15
+    assert "base_shift" not in settings
+    assert "max_shift" not in settings
     assert settings["reference_megapixels"] == 2.0
     assert settings["reference_upscale_method"] == "lanczos"
     assert settings["reference_resolution_steps"] == 8
@@ -446,29 +440,3 @@ def test_flux_settings_ignores_legacy_reference_strength_argument():
     assert settings["torch_compile_mode"] == "off"
     assert settings["torch_compile_backend"] == "inductor"
     assert settings["performance_apply_timing"] == "after_loras"
-
-
-def test_flux_settings_ignores_legacy_edit_mode_argument():
-    settings = AIOFlux2Klein9BSettings().build_settings(
-        "distilled",
-        1.0,
-        "single_reference",
-        0.75,
-        "auto",
-        "balanced",
-        0.5,
-        1.15,
-        2.0,
-        "lanczos",
-        8,
-    )[0]
-
-    assert "edit_mode" not in settings
-    assert "reference_strength" not in settings
-    assert settings["precision_policy"] == "auto"
-    assert settings["memory_policy"] == "balanced"
-    assert settings["base_shift"] == 0.5
-    assert settings["max_shift"] == 1.15
-    assert settings["reference_megapixels"] == 2.0
-    assert settings["reference_upscale_method"] == "lanczos"
-    assert settings["reference_resolution_steps"] == 8

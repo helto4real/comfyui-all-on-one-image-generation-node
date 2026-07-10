@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Prevented private prompt text from leaking through run-info debug data, execution-history UI payloads, or external ComfyUI caches.
+- Confined LoRA metadata, sidecar, and preview access to configured LoRA roots; made Civitai access an explicit refresh action; moved blocking metadata work off the async server loop; and escaped all untrusted dialog content.
+- Corrected FLUX.2 base defaults to 50 steps while retaining 4-step distilled defaults and explicit step overrides.
+- Removed settings controls that did not affect execution while migrating old serialized widget arrays to the remaining controls.
+- Restored ComfyUI's original reserved-VRAM value after leaving low-VRAM policies.
+- Kept fresh package imports independent of Torch, GGUF, and ComfyUI server imports.
+- Corrected dependency installation guidance and aligned the combined distribution license with its GPL-3.0-derived prompt-builder code.
+
 ## 0.1.0
 
 - Added classic ComfyUI node registration for AIO Image Generate.

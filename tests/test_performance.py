@@ -234,6 +234,17 @@ def test_high_vram_memory_policy_skips_cleanup_and_reserved_vram(monkeypatch):
     assert settings["memory_reserved_vram_gb"] == 0.0
 
 
+def test_memory_policy_restores_reserved_vram_after_low_vram_override(monkeypatch):
+    fake_model_management, _calls = install_fake_model_management(monkeypatch)
+    monkeypatch.setattr(performance, "_reserved_vram_baseline", None)
+    monkeypatch.setattr(performance, "_reserved_vram_overridden", False)
+
+    performance.apply_memory_policy_before_sampling({"memory_policy": "low_vram"})
+    performance.apply_memory_policy_before_sampling({"memory_policy": "high_vram"})
+
+    assert fake_model_management.EXTRA_RESERVED_VRAM == 123
+
+
 def test_memory_policy_handles_missing_comfy_memory_api(monkeypatch):
     fake_comfy = ModuleType("comfy")
     monkeypatch.setitem(sys.modules, "comfy", fake_comfy)

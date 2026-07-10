@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -200,6 +201,45 @@ def test_private_prompt_builder_encrypts_payload_but_returns_plain_prompt_output
     assert privacy.decrypt_text_if_encrypted(payload["prompt"]) == prompt_output
     assert "Private overview" in prompt_output
     assert "Private room" in prompt_output
+
+
+def test_prompt_builder_is_changed_uses_native_cache_for_public_inputs(monkeypatch):
+    monkeypatch.setattr(privacy, "external_cache_providers_registered", lambda: True)
+
+    assert AIOIdeogram4PromptBuilder.IS_CHANGED(privacy_mode=False) is False
+
+
+def test_prompt_builder_is_changed_disables_external_cache_for_private_outputs(monkeypatch):
+    monkeypatch.setattr(privacy, "external_cache_providers_registered", lambda: True)
+
+    assert math.isnan(AIOIdeogram4PromptBuilder.IS_CHANGED(privacy_mode=True))
+
+
+def test_prompt_builder_private_ui_omits_caption_and_boxes(monkeypatch):
+    monkeypatch.setattr(AIOIdeogram4PromptBuilder, "_render_preview", staticmethod(lambda *args: "preview"))
+    monkeypatch.setattr(privacy, "encrypt_state", lambda state: {"encrypted": True, "state": state})
+
+    output = AIOIdeogram4PromptBuilder().build_prompt(
+        import_json=json.dumps(
+            {
+                "compositional_deconstruction": {
+                    "background": "Private room",
+                    "elements": [{"type": "obj", "bbox": [0, 0, 1000, 1000], "desc": "Private person"}],
+                }
+            }
+        ),
+        import_mode="always",
+        privacy_mode=True,
+        **{"max side": 1024, "aspect ratio": "1:1", "multiple value": "none"},
+    )
+    boxes_output = AIOIdeogram4PromptBuilder().build_prompt(
+        bboxes=[{"x": 100, "y": 100, "width": 300, "height": 300}],
+        privacy_mode=True,
+        **{"max side": 1000, "aspect ratio": "1:1", "multiple value": "none"},
+    )
+
+    assert output["ui"] == {"dims": [1024, 1024]}
+    assert boxes_output["ui"] == {"dims": [1000, 1000]}
 
 
 def test_pretty_json_matches_kj_scalar_array_formatting():

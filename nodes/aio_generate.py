@@ -100,14 +100,7 @@ KREA_INPAINT_PROMPT_SOURCE = "krea2_inpaint_settings"
 
 
 def _external_cache_providers_registered() -> bool:
-    try:
-        from comfy_execution.cache_provider import _has_cache_providers  # type: ignore
-    except Exception:
-        return False
-    try:
-        return bool(_has_cache_providers())
-    except Exception:
-        return False
+    return privacy.external_cache_providers_registered()
 
 
 def _truthy_privacy_flag(value: Any) -> bool:
@@ -1520,7 +1513,7 @@ class AIOImageGenerate:
             adapter_version=adapter.version,
             loras=lora_summary,
             privacy_mode=run_info_privacy_mode,
-            debug=debug_info,
+            debug=None if run_info_privacy_mode else debug_info,
             second_pass=second_pass_info,
         )
         model_info = {

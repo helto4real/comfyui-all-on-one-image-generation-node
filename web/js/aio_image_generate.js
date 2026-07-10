@@ -20,6 +20,16 @@ import {
   restoreHeltoLiteGraphWidgetTheme,
   withHeltoLiteGraphWidgetTheme,
 } from "./aio_helto_theme.js";
+import {
+  escapeHtml,
+  escapedValueMarkup,
+  imageInfoFieldMarkup,
+  safeUrl,
+} from "./aio_lora_info_markup.js";
+import {
+  normalizeFluxSettingsWidgetValues,
+  normalizeZImageSettingsWidgetValues,
+} from "./aio_settings_migration.js";
 
 const NODE_NAME = "AIOLoraConfiguration";
 const NODE_DISPLAY_NAME = "AIO LoRA Configuration";
@@ -27,6 +37,8 @@ const GENERATE_NODE_NAME = "AIOImageGenerate";
 const GENERATE_NODE_DISPLAY_NAME = "AIO Image Generate";
 const KREA_SETTINGS_NODE_NAME = "AIOKrea2Settings";
 const KREA_SETTINGS_NODE_DISPLAY_NAME = "Krea 2 Settings";
+const FLUX_SETTINGS_NODE_NAME = "AIOFlux2Klein9BSettings";
+const Z_IMAGE_SETTINGS_NODE_NAME = "AIOZImageTurboSettings";
 const AIO_THEME_NODE_TYPES = new Set([
   "AIOImageGenerate",
   "AIOZImageTurboSettings",
@@ -1950,15 +1962,6 @@ async function getLoras(force = false) {
   return loraListPromise;
 }
 
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
 async function fetchLoraInfo(file, { refresh = false, light = false } = {}) {
   const endpoint = refresh ? "/aio-image-gen/api/loras/info/refresh" : "/aio-image-gen/api/loras/info";
   const params = new URLSearchParams({ files: file });
@@ -2056,12 +2059,23 @@ function infoTableRow(label, value, help = "", editableFieldName = "") {
   return `
     <tr class="${editableFieldName ? "editable" : ""}" ${editableFieldName ? `data-field-name="${editableFieldName}"` : ""}>
       <td><span>${escapeHtml(label)} ${help ? `<span class="-help" title="${escapeHtml(help)}"></span>` : ""}<span></td>
-      <td ${editableFieldName ? "" : 'colspan="2"'}>${String(value).startsWith("<") ? value : `<span>${escapeHtml(value)}<span>`}</td>
+      <td ${editableFieldName ? "" : 'colspan="2"'}>${escapedValueMarkup(value)}</td>
       ${
         editableFieldName
           ? `<td style="width: 24px;"><button class="rgthree-button-reset rgthree-button-edit" data-action="edit-row">${EDIT_ICON}${SAVE_ICON}</button></td>`
           : ""
       }
+    </tr>`;
+}
+
+function infoTableMarkupRow(label, markup, help = "") {
+  if (!markup) {
+    return "";
+  }
+  return `
+    <tr>
+      <td><span>${escapeHtml(label)} ${help ? `<span class="-help" title="${escapeHtml(help)}"></span>` : ""}</span></td>
+      <td colspan="2">${markup}</td>
     </tr>`;
 }
 
@@ -2087,12 +2101,17 @@ function imagesMarkup(images) {
   }
   return `<ul class="rgthree-info-images">${images
     .map((image) => {
+      const mediaUrl = safeUrl(image.url, { allowRelative: true });
+      if (!mediaUrl) {
+        return "";
+      }
       const media =
         image.type === "video"
-          ? `<video src="${escapeHtml(image.url)}" autoplay loop muted></video>`
-          : `<img src="${escapeHtml(image.url)}" alt="">`;
+          ? `<video src="${escapeHtml(mediaUrl)}" autoplay loop muted></video>`
+          : `<img src="${escapeHtml(mediaUrl)}" alt="">`;
+      const civitaiUrl = safeUrl(image.civitaiUrl);
       return `<li><figure>${media}<figcaption>
-        ${imgInfoField("", image.civitaiUrl ? `<a href="${escapeHtml(image.civitaiUrl)}" target="_blank" rel="noreferrer">civitai${EXTERNAL_ICON}</a>` : undefined)}
+        ${civitaiUrl ? imgInfoMarkup(`<a href="${escapeHtml(civitaiUrl)}" target="_blank" rel="noreferrer">civitai${EXTERNAL_ICON}</a>`) : ""}
         ${imgInfoField("seed", image.seed)}
         ${imgInfoField("steps", image.steps)}
         ${imgInfoField("cfg", image.cfg)}
@@ -2106,11 +2125,15 @@ function imagesMarkup(images) {
 }
 
 function imgInfoField(label, value) {
-  return value != null ? `<span>${label ? `<label>${escapeHtml(label)} </label>` : ""}${String(value).startsWith("<") ? value : escapeHtml(value)}</span>` : "";
+  return imageInfoFieldMarkup(label, value);
+}
+
+function imgInfoMarkup(markup) {
+  return markup ? `<span>${markup}</span>` : "";
 }
 
 function renderInfoDialogContent(container, info, file, isLoading = false) {
-  const civitaiLink = info?.links?.find((link) => String(link).includes("civitai.com/models"));
+  const civitaiLink = safeUrl(info?.links?.find((link) => String(link).includes("civitai.com/models")));
   const civitaiError = info?.raw?.civitai?.error;
   const civitaiValue = civitaiLink
     ? `<a href="${escapeHtml(civitaiLink)}" target="_blank" rel="noreferrer">${CIVITAI_LOGO}View on Civitai</a>`
@@ -2140,10 +2163,10 @@ function renderInfoDialogContent(container, info, file, isLoading = false) {
         <table class="rgthree-info-table">
           ${infoTableRow("File", info?.file || file)}
           ${infoTableRow("Hash (sha256)", info?.sha256)}
-          ${infoTableRow("Civitai", civitaiValue)}
+          ${infoTableMarkupRow("Civitai", civitaiValue)}
           ${infoTableRow("Name", info?.name || metadata.ss_output_name || "", "The name for display.", "name")}
           ${!info?.baseModelFile && !info?.baseModel ? "" : infoTableRow("Base Model", `${info?.baseModel || ""}${info?.baseModelFile ? ` (${info.baseModelFile})` : ""}`)}
-          ${trainedWords ? infoTableRow("Trained Words", trainedWords, "Trained words from the metadata and/or civitai. Click to select for copy.") : ""}
+          ${trainedWords ? infoTableMarkupRow("Trained Words", trainedWords, "Trained words from the metadata and/or civitai. Click to select for copy.") : ""}
           ${!metadata.ss_clip_skip || metadata.ss_clip_skip === "None" ? "" : infoTableRow("Clip Skip", metadata.ss_clip_skip)}
           ${infoTableRow("Strength Min", info?.strengthMin ?? "", "The recommended minimum strength. In the Power Lora Loader node, strength will signal when it is below this threshold.", "strengthMin")}
           ${infoTableRow("Strength Max", info?.strengthMax ?? "", "The recommended maximum strength. In the Power Lora Loader node, strength will signal when it is above this threshold.", "strengthMax")}
@@ -3346,6 +3369,25 @@ function patchAioThemeNodeType(nodeType) {
   };
 }
 
+function patchRemovedSettingsWidgets(nodeType, { marker, normalize }) {
+  if (nodeType.prototype[marker]) {
+    return;
+  }
+  nodeType.prototype[marker] = true;
+
+  const originalConfigure = nodeType.prototype.configure;
+  nodeType.prototype.configure = function (info) {
+    const normalizedInfo = info && Array.isArray(info.widgets_values)
+      ? {
+          ...info,
+          widgets_values: normalize(info.widgets_values),
+        }
+      : info;
+    const args = arguments.length ? [normalizedInfo, ...Array.prototype.slice.call(arguments, 1)] : arguments;
+    return originalConfigure?.apply(this, args);
+  };
+}
+
 function patchAioGenerateNodeType(nodeType) {
   if (nodeType.prototype.__aioGenerateConfigurePatched) {
     return;
@@ -3427,6 +3469,18 @@ app.registerExtension({
     }
     if (isAioKrea2SettingsNodeData(nodeData)) {
       patchKrea2SettingsNodeType(nodeType);
+    }
+    if (nodeData?.name === FLUX_SETTINGS_NODE_NAME) {
+      patchRemovedSettingsWidgets(nodeType, {
+        marker: "__aioFluxSettingsWidgetMigrationPatched",
+        normalize: normalizeFluxSettingsWidgetValues,
+      });
+    }
+    if (nodeData?.name === Z_IMAGE_SETTINGS_NODE_NAME) {
+      patchRemovedSettingsWidgets(nodeType, {
+        marker: "__aioZImageSettingsWidgetMigrationPatched",
+        normalize: normalizeZImageSettingsWidgetValues,
+      });
     }
     if (isAioThemedNodeData(nodeData)) {
       patchAioThemeNodeType(nodeType);

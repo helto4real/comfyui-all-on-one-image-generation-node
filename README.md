@@ -4,7 +4,13 @@ A classic ComfyUI custom node pack for an extensible all-in-one image generation
 
 ## Installation
 
-Clone or copy this folder into `ComfyUI/custom_nodes`, then restart ComfyUI. The pack has no extra runtime dependency beyond ComfyUI itself.
+Clone or copy this folder into `ComfyUI/custom_nodes`, install its Python dependencies with the same interpreter that runs ComfyUI, then restart ComfyUI:
+
+```bash
+python -m pip install -r ComfyUI/custom_nodes/comfyui-all-on-one-image-generation-node/requirements.txt
+```
+
+The required packages are `helto-privacy` and `cryptography`. ComfyUI Manager may install `requirements.txt` automatically; the command above is the explicit fallback.
 
 ## Nodes
 
@@ -23,7 +29,7 @@ All nodes appear under `AIO/Image`.
 ## Supported Model Families
 
 - `z_image_turbo`: text-to-image generation, defaults to 8 steps and CFG 1.0.
-- `flux2_klein_9b`: text-to-image, reference-image, and AIO Inpaint generation, distilled defaults to 4 steps and CFG 1.0. Reference mode is inferred from how many reference images are connected. When `ComfyUI-Inpaint-CropAndStitch` is installed, Flux inpaint samples a cropped working area and stitches the decoded result back to the original canvas size.
+- `flux2_klein_9b`: text-to-image, reference-image, and AIO Inpaint generation. Distilled defaults to 4 steps; base defaults to 50 steps. Reference mode is inferred from how many reference images are connected. When `ComfyUI-Inpaint-CropAndStitch` is installed, Flux inpaint samples a cropped working area and stitches the decoded result back to the original canvas size.
 - `ideogram4`: local open-weight Ideogram 4 text-to-image generation, defaults to the official 20-step Ideogram scheduler preset with dual-model CFG 7.0.
 - `krea2`: local Krea 2 text-to-image generation, defaults to the provided workflow's 8-step `er_sde` / `simple` sampler path, CFG 1.0, and 1344x2048 canvas.
 
@@ -82,9 +88,9 @@ The node is not an output node, so it is safe for API-mode workflows.
 
 ## Settings Nodes
 
-`Z-Image Turbo Settings` returns an `AIO_MODEL_SETTINGS` dict with speed preset, forced steps, prompt enhancement, legacy negative-prompt policy, precision policy, attention backend, Torch compile, and performance-apply timing.
+`Z-Image Turbo Settings` returns an `AIO_MODEL_SETTINGS` dict with the effective sampling-step override, precision policy, attention backend, Torch compile, and performance-apply timing. Z-Image Turbo does not expose prompt-enhancement or speed-preset controls because this pack has no runtime implementation for them.
 
-`FLUX.2 Klein 9B Settings` returns an `AIO_MODEL_SETTINGS` dict with distilled/base variant, guidance, reference strength, precision policy, memory policy, shift parameters, reference scaling controls, attention backend, Torch compile, and performance-apply timing. FLUX.2 Klein edit mode is inferred from connected reference image sockets.
+`FLUX.2 Klein 9B Settings` returns an `AIO_MODEL_SETTINGS` dict with distilled/base variant, guidance, precision policy, memory policy, reference scaling controls, attention backend, Torch compile, and performance-apply timing. Distilled uses a 4-step default and base uses a 50-step default; an explicit main-node step count overrides either default. FLUX.2 Klein edit mode is inferred from connected reference image sockets. The settings node does not expose FLUX.1-style shift controls because ComfyUI's FLUX.2 scheduler does not consume them.
 
 `Ideogram 4 Settings` returns an `AIO_MODEL_SETTINGS` dict with the unconditional model toggle and model path, sampling preset, dual CFG, final CFG override window, AuraFlow sampling shift, precision policy, attention backend, Torch compile, and performance-apply timing. The official presets use Ideogram 4 sigmas; `Workflow Compatible` uses the saved workflow's simple scheduler path. Disable `run_unconditional_model` for turbo LoRA workflows that should skip the separate unconditional diffusion model and run the guider with the conditional model only.
 
@@ -100,7 +106,7 @@ The prompt builder's default JSON output is KJ/Ideogram-compatible: compact outp
 
 Encrypted workflows require the shared privacy keystore to be initialized and unlocked through the Helto privacy dialog. Older AIO envelopes written under the `helto.aio-image-generate` schema are intentionally unsupported by this version and must be re-entered.
 
-Privacy mode protects prompt text, prompt-builder state, and private prompt-library metadata from being stored as plaintext in workflow JSON or library list data. It does not protect against clients or processes that can reach an unlocked ComfyUI server with a valid local privacy token.
+Privacy mode protects prompt text, prompt-builder state, private prompt-library metadata, run-info debug data, and UI execution-history payloads from being stored as plaintext. When ComfyUI has an external cache provider, private prompt-producing nodes deliberately bypass its cache. Privacy mode does not protect against clients or processes that can reach an unlocked ComfyUI server with a valid local privacy token.
 
 All settings nodes expose `attention_mode` (`auto`, `off`, `sage`, `sage3`, `flash`, `xformers`, `pytorch`, `split`, `sub_quad`), `torch_compile_mode` (`auto`, `off`, `on`), `torch_compile_backend` (`inductor`, `cudagraphs`), and `performance_apply_timing` (`after_loras`, `before_loras`). `auto` attention selects the best installed compatible backend, `off` leaves ComfyUI defaults untouched, and `after_loras` applies attention/compile patches to the final LoRA-patched model.
 
@@ -116,7 +122,7 @@ LoRAs are applied after the diffusion model and text encoder are loaded, and bef
 
 Ideogram 4 applies LoRAs to the conditional diffusion model only, matching ComfyUI's `LoraLoaderModelOnly` workflow pattern. The Qwen3-VL text encoder and unconditional model are not LoRA-patched by the Ideogram 4 adapter. When `run_unconditional_model` is disabled, the unconditional model is not required, loaded, or patched.
 
-The LoRA info button is also implemented locally. It reads safetensors metadata, stores editable notes/strength hints in a sidecar `*.aio-lora-info.json` file beside the LoRA, can fetch Civitai model-version data by SHA256 hash, and renders a rgthree-style info dialog without requiring rgthree as a runtime dependency.
+The LoRA info button is also implemented locally. A normal backend metadata request reads the selected LoRA and any existing sidecar without a Civitai API lookup or disk write. The explicit Civitai refresh action can fetch model-version data by SHA256 hash and persist it to `*.aio-lora-info.json` beside the LoRA. Editable notes/strength hints are stored in that sidecar. All file access is confined to ComfyUI's configured LoRA roots.
 
 ### Attribution
 
@@ -233,12 +239,8 @@ The adapters compose these existing primitives lazily at execution time so impor
 
 This pack uses classic nodes for broad community compatibility. The contracts are intentionally kept clean for a future V3 wrapper: no frontend-only execution state, no hidden mutable globals, and model-family logic isolated behind adapters and services.
 
-## License Guidance
+## License
 
-The original AIO code is distributed under the MIT License. Because the LoRA UI intentionally adapts behavior and styling from rgthree-comfy, MIT matches rgthree-comfy's license, keeps the same permissive terms, and preserves the original rgthree MIT copyright and permission notice in `THIRD_PARTY_NOTICES.md`.
+This combined node pack is distributed under the GNU General Public License version 3 only (`GPL-3.0-only`) because it includes an Ideogram 4 prompt-builder implementation adapted from GPL-3.0 KJNodes sources. See `LICENSE` for the full terms.
 
-The Ideogram 4 prompt-builder implementation includes code and behavior adapted from GPL-3.0 KJNodes sources. Treat those derived prompt-builder portions as GPL-3.0-covered material, comply with GPL-3.0 when redistributing them, and keep the KJNodes notice intact.
-
-The Krea2T prompt-adherence enhancer implementation includes code and behavior adapted from MIT ComfyUI-Krea2T-Enhancer sources. Preserve the MIT attribution and notice when redistributing those derived enhancer portions.
-
-For new code that does not derive from GPL sources, MIT remains the simplest and most community-friendly fit for this ComfyUI node pack.
+MIT-licensed portions adapted from rgthree-comfy and ComfyUI-Krea2T-Enhancer retain their upstream copyright and permission notices. The original AIO MIT notice is also retained. See `THIRD_PARTY_NOTICES.md` for all retained notices.

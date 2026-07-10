@@ -1842,7 +1842,7 @@ def test_krea2_inpaint_settings_prompt_is_ignored_without_inpaint(monkeypatch):
 
 
 @pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
-def test_ideogram_prompt_builder_privacy_marker_redacts_settings_but_debug_exposes_prompt(monkeypatch, tmp_path):
+def test_ideogram_prompt_builder_privacy_marker_omits_debug_prompt(monkeypatch, tmp_path):
     monkeypatch.setattr(privacy, "config_dir", lambda: tmp_path)
     initialize_keystore(PASSWORD)
 
@@ -1916,7 +1916,8 @@ def test_ideogram_prompt_builder_privacy_marker_redacts_settings_but_debug_expos
     encrypted = parsed["settings"]["positive_prompt_override"]
     assert privacy.is_encrypted_payload(encrypted)
     assert privacy.decrypt_text_if_encrypted(encrypted) == '{"secret":"private room"}'
-    assert parsed["debug"]["prompts"]["effective_positive_prompt"] == '{"secret":"private room"}'
+    assert "debug" not in parsed
+    assert "private room" not in run_info
 
 
 def test_main_node_skips_image_decode_for_latent_only_prompt(monkeypatch):

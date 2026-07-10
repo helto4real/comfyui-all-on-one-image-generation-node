@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from typing import Any
 
 try:
@@ -50,10 +51,12 @@ def register_ideogram4_prompt_library_routes() -> bool:
         return True
 
     try:
+        server_module = sys.modules.get("server")
+        if server_module is None:
+            return False
         from aiohttp import web  # type: ignore
-        import server  # type: ignore
 
-        prompt_server = getattr(server.PromptServer, "instance", None)
+        prompt_server = getattr(server_module.PromptServer, "instance", None)
     except Exception as exc:  # pragma: no cover - direct tests run outside ComfyUI
         logging.debug("AIO Ideogram prompt library routes unavailable: %s", exc)
         return False

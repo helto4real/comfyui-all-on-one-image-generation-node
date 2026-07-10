@@ -27,10 +27,6 @@ class AIOZImageTurboSettings:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "speed_preset": (
-                    ["default", "quality", "experimental"],
-                    {"tooltip": "Preset for Z-Image Turbo generation behavior. Default keeps the standard fast path."},
-                ),
                 "force_steps": (
                     "INT",
                     {
@@ -38,17 +34,6 @@ class AIOZImageTurboSettings:
                         "min": 1,
                         "max": 50,
                         "tooltip": "Exact sampling step count for Z-Image Turbo.",
-                    },
-                ),
-                "prompt_enhance": (
-                    ["off", "light", "strong"],
-                    {"tooltip": "Optional prompt enhancement strength before generation."},
-                ),
-                "ignore_negative_prompt": (
-                    "BOOLEAN",
-                    {
-                        "default": True,
-                        "tooltip": "Ignore the generator node's negative prompt, matching Z-Image Turbo defaults.",
                     },
                 ),
                 "precision_policy": (
@@ -76,10 +61,7 @@ class AIOZImageTurboSettings:
 
     def build_settings(
         self,
-        speed_preset: str,
         force_steps: int,
-        prompt_enhance: str,
-        ignore_negative_prompt: bool,
         precision_policy: str,
         attention_mode: str = "auto",
         torch_compile_mode: str = "off",
@@ -89,10 +71,7 @@ class AIOZImageTurboSettings:
         return (
             {
                 "family": "z_image_turbo",
-                "speed_preset": speed_preset,
                 "force_steps": force_steps,
-                "prompt_enhance": prompt_enhance,
-                "ignore_negative_prompt": ignore_negative_prompt,
                 "precision_policy": precision_policy,
                 "attention_mode": attention_mode,
                 "torch_compile_mode": torch_compile_mode,

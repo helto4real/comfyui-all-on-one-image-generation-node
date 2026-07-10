@@ -807,6 +807,34 @@ def test_flux2_distilled_defaults_to_four_steps():
     assert settings["steps"] == 4
 
 
+def test_flux2_base_defaults_to_fifty_steps():
+    settings = Flux2Klein9BAdapter().resolve_settings(
+        model_settings={"family": "flux2_klein_9b", "variant": "base"},
+        width=1024,
+        height=1024,
+        steps=0,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+    )
+
+    assert settings["steps"] == 50
+
+
+def test_flux2_explicit_steps_override_variant_default():
+    settings = Flux2Klein9BAdapter().resolve_settings(
+        model_settings={"family": "flux2_klein_9b", "variant": "base"},
+        width=1024,
+        height=1024,
+        steps=17,
+        cfg=0.0,
+        sampler="auto",
+        scheduler="auto",
+    )
+
+    assert settings["steps"] == 17
+
+
 def test_krea2_resolve_settings_uses_workflow_defaults():
     settings = Krea2Adapter().resolve_settings(
         model_settings={"family": "krea2"},

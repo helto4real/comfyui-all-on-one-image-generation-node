@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gc
 import logging
+import threading
 from typing import Any, Callable
 
 
@@ -23,6 +24,11 @@ CONSERVATIVE_RESERVED_VRAM_GB = 0.6
 INCOMPATIBLE_MASKED_ATTENTION_MODES = {"flash", "sage3"}
 MEMORY_CLEANUP_POLICIES = {"auto", "low_vram", "balanced"}
 MEMORY_RESERVED_POLICIES = {"auto", "low_vram"}
+
+_reserved_vram_lock = threading.Lock()
+_reserved_vram_owner: Any = None
+_reserved_vram_baseline: int | None = None
+_reserved_vram_overridden = False
 
 
 def performance_settings_present(settings: dict[str, Any]) -> bool:
@@ -130,6 +136,8 @@ def apply_memory_policy_before_sampling(settings: dict[str, Any]) -> None:
     if policy in MEMORY_RESERVED_POLICIES:
         if _set_comfy_reserved_vram(CONSERVATIVE_RESERVED_VRAM_GB, warnings):
             reserved_vram_gb = CONSERVATIVE_RESERVED_VRAM_GB
+    else:
+        _restore_comfy_reserved_vram(warnings)
 
     settings["memory_policy"] = policy
     settings["resolved_memory_policy"] = policy
@@ -166,16 +174,49 @@ def _clean_comfy_gpu_memory(warnings: list[str]) -> bool:
 
 
 def _set_comfy_reserved_vram(reserved_gb: float, warnings: list[str]) -> bool:
+    global _reserved_vram_baseline, _reserved_vram_overridden, _reserved_vram_owner
     model_management = _import_comfy_model_management(warnings)
     if model_management is None:
         return False
 
     try:
-        model_management.EXTRA_RESERVED_VRAM = int(float(reserved_gb) * 1024 * 1024 * 1024)
+        with _reserved_vram_lock:
+            if _reserved_vram_owner is not model_management:
+                _reserved_vram_owner = model_management
+                _reserved_vram_baseline = int(getattr(model_management, "EXTRA_RESERVED_VRAM", 0))
+                _reserved_vram_overridden = False
+            elif not _reserved_vram_overridden:
+                _reserved_vram_baseline = int(getattr(model_management, "EXTRA_RESERVED_VRAM", 0))
+            model_management.EXTRA_RESERVED_VRAM = int(float(reserved_gb) * 1024 * 1024 * 1024)
+            _reserved_vram_overridden = True
         return True
     except Exception as exc:  # pragma: no cover - depends on ComfyUI runtime
         warnings.append(f"could not set ComfyUI reserved VRAM before sampling: {exc}")
         logging.warning("[AIO Image Generate] Could not set ComfyUI reserved VRAM before sampling: %s", exc)
+        return False
+
+
+def _restore_comfy_reserved_vram(warnings: list[str]) -> bool:
+    global _reserved_vram_baseline, _reserved_vram_overridden, _reserved_vram_owner
+    model_management = _import_comfy_model_management(warnings)
+    if model_management is None:
+        return False
+
+    try:
+        with _reserved_vram_lock:
+            if _reserved_vram_owner is not model_management:
+                _reserved_vram_owner = model_management
+                _reserved_vram_baseline = int(getattr(model_management, "EXTRA_RESERVED_VRAM", 0))
+                _reserved_vram_overridden = False
+                return False
+            if not _reserved_vram_overridden or _reserved_vram_baseline is None:
+                return False
+            model_management.EXTRA_RESERVED_VRAM = _reserved_vram_baseline
+            _reserved_vram_overridden = False
+            return True
+    except Exception as exc:  # pragma: no cover - depends on ComfyUI runtime
+        warnings.append(f"could not restore ComfyUI reserved VRAM before sampling: {exc}")
+        logging.warning("[AIO Image Generate] Could not restore ComfyUI reserved VRAM before sampling: %s", exc)
         return False
 
 

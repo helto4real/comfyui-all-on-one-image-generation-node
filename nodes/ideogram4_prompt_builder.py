@@ -45,6 +45,13 @@ class AIOIdeogram4PromptBuilder:
     FUNCTION = "build_prompt"
 
     @classmethod
+    def IS_CHANGED(cls, privacy_mode: bool = False, **kwargs):
+        del cls, kwargs
+        if bool(privacy_mode) and privacy.external_cache_providers_registered():
+            return float("NaN")
+        return False
+
+    @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
@@ -278,9 +285,9 @@ class AIOIdeogram4PromptBuilder:
             "privacy_mode": bool(privacy_mode),
         }
         ui = {"dims": [width, height]}
-        if boxes_seeded:
+        if boxes_seeded and not privacy_mode:
             ui["boxes"] = [json.dumps(boxes)]
-        if used_import:
+        if used_import and not privacy_mode:
             ui["caption"] = [prompt_builder.dumps_pretty(caption)]
         return {
             "ui": ui,

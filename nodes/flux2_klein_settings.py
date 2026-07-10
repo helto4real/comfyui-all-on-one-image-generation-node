@@ -52,26 +52,6 @@ class AIOFlux2Klein9BSettings:
                     ["auto", "low_vram", "balanced", "high_vram"],
                     {"tooltip": "Memory strategy for loading and running the model on your hardware."},
                 ),
-                "base_shift": (
-                    "FLOAT",
-                    {
-                        "default": 0.5,
-                        "min": 0.0,
-                        "max": 10.0,
-                        "step": 0.01,
-                        "tooltip": "Base timestep shift used by the FLUX sampler schedule.",
-                    },
-                ),
-                "max_shift": (
-                    "FLOAT",
-                    {
-                        "default": 1.15,
-                        "min": 0.0,
-                        "max": 10.0,
-                        "step": 0.01,
-                        "tooltip": "Maximum timestep shift used by the FLUX sampler schedule.",
-                    },
-                ),
                 "reference_megapixels": (
                     "FLOAT",
                     {
@@ -119,51 +99,16 @@ class AIOFlux2Klein9BSettings:
         self,
         variant: str,
         guidance: float,
-        precision_policy: str | float | None = "auto",
-        memory_policy: str | float | None = "balanced",
-        base_shift: float | str | None = 0.5,
-        max_shift: float | str | None = 1.15,
+        precision_policy: str = "auto",
+        memory_policy: str = "balanced",
         reference_megapixels: float | str = 1.0,
         reference_upscale_method: str | float = "area",
         reference_resolution_steps: int | str = 1,
-        attention_mode: str | int = "auto",
-        torch_compile_mode: str | int = "off",
+        attention_mode: str = "auto",
+        torch_compile_mode: str = "off",
         torch_compile_backend: str = "inductor",
         performance_apply_timing: str = "after_loras",
-        *legacy_values,
     ):
-        shifted_tail = [
-            attention_mode,
-            torch_compile_mode,
-            torch_compile_backend,
-            performance_apply_timing,
-            *legacy_values,
-        ]
-        if precision_policy in {"text_to_image", "single_reference", "multi_reference"}:
-            precision_policy = base_shift
-            memory_policy = max_shift
-            base_shift = reference_megapixels
-            max_shift = reference_upscale_method
-            reference_megapixels = reference_resolution_steps
-            reference_upscale_method = shifted_tail[0] if shifted_tail else "area"
-            reference_resolution_steps = shifted_tail[1] if len(shifted_tail) > 1 else 1
-            attention_mode = "auto"
-            torch_compile_mode = "off"
-            torch_compile_backend = "inductor"
-            performance_apply_timing = "after_loras"
-        elif not isinstance(precision_policy, str):
-            precision_policy = memory_policy
-            memory_policy = base_shift
-            base_shift = max_shift
-            max_shift = reference_megapixels
-            reference_megapixels = reference_upscale_method
-            reference_upscale_method = reference_resolution_steps
-            reference_resolution_steps = shifted_tail[0] if shifted_tail else 1
-            attention_mode = "auto"
-            torch_compile_mode = "off"
-            torch_compile_backend = "inductor"
-            performance_apply_timing = "after_loras"
-
         return (
             {
                 "family": "flux2_klein_9b",
@@ -171,8 +116,6 @@ class AIOFlux2Klein9BSettings:
                 "guidance": guidance,
                 "precision_policy": precision_policy,
                 "memory_policy": memory_policy,
-                "base_shift": base_shift,
-                "max_shift": max_shift,
                 "reference_megapixels": reference_megapixels,
                 "reference_upscale_method": reference_upscale_method,
                 "reference_resolution_steps": reference_resolution_steps,
