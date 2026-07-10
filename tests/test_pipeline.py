@@ -118,6 +118,38 @@ def test_missing_gguf_node_mapping_uses_backend_message(monkeypatch):
     assert str(exc_info.value) == gguf_backend.explain_missing()
 
 
+def test_krea2_prompt_encoder_uses_and_restores_max_length():
+    captured = {}
+    tokenizer = SimpleNamespace(max_length=2048)
+
+    class FakeClip:
+        def __init__(self):
+            self.tokenizer = SimpleNamespace(clip="qwen3vl_4b", qwen3vl_4b=tokenizer)
+
+        def tokenize(self, prompt):
+            captured["prompt"] = prompt
+            captured["max_length_during_tokenize"] = self.tokenizer.qwen3vl_4b.max_length
+            return {"tokens": prompt}
+
+        def encode_from_tokens_scheduled(self, tokens):
+            captured["tokens"] = tokens
+            return "conditioning"
+
+    result = pipeline.encode_krea2_prompt(
+        clip=FakeClip(),
+        prompt="long prompt",
+        max_length=4096,
+    )
+
+    assert result == "conditioning"
+    assert captured == {
+        "prompt": "long prompt",
+        "max_length_during_tokenize": 4096,
+        "tokens": {"tokens": "long prompt"},
+    }
+    assert tokenizer.max_length == 2048
+
+
 def test_pipeline_applies_loras_before_prompt_encoding(monkeypatch):
     events = []
 
@@ -668,6 +700,11 @@ def test_krea2_pipeline_applies_enhancer_model_after_loras_and_performance(monke
         "clip_type": "krea2",
     }
     assert captured["performance_settings"]["fp16_accumulation_enabled"] is True
+    assert captured["encode"] == {
+        "clip": "clip+lora",
+        "prompt": "prompt",
+        "max_length": 4096,
+    }
     assert captured["zero"] == "positive"
     assert captured["enhancer"] == {
         "model": "model+lora+perf",

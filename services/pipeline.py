@@ -50,6 +50,9 @@ INPAINT_PREVIEW_SAMPLE = "inpaint_sample"
 INPAINT_PREVIEW_MASK = "inpaint_mask"
 INPAINT_PREVIEW_REQUESTED = "requested"
 SEED_WRAP = 2**63
+KREA2_DEFAULT_MAX_LENGTH = 4096
+KREA2_MAX_MAX_LENGTH = 4096
+KREA2_MIN_MAX_LENGTH = 1
 
 
 @dataclass
@@ -475,10 +478,70 @@ def encode_ideogram4_prompt(*, clip: Any, prompt: str):
     return nodes.CLIPTextEncode().encode(clip, prompt)[0]
 
 
-def encode_krea2_prompt(*, clip: Any, prompt: str):
-    import nodes  # type: ignore
+def normalize_krea2_max_length(value: Any) -> int:
+    if value in (None, ""):
+        return KREA2_DEFAULT_MAX_LENGTH
+    try:
+        max_length = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Krea 2 max_length must be an integer.") from exc
+    if max_length < KREA2_MIN_MAX_LENGTH or max_length > KREA2_MAX_MAX_LENGTH:
+        raise ValueError(
+            f"Krea 2 max_length must be between {KREA2_MIN_MAX_LENGTH} and {KREA2_MAX_MAX_LENGTH}."
+        )
+    return max_length
 
-    return nodes.CLIPTextEncode().encode(clip, prompt)[0]
+
+def _clip_tokenizer_max_length_targets(clip: Any) -> tuple[Any, ...]:
+    tokenizer = getattr(clip, "tokenizer", None)
+    if tokenizer is None:
+        return ()
+
+    targets: list[Any] = []
+
+    def add(target: Any) -> None:
+        if (
+            target is not None
+            and hasattr(target, "max_length")
+            and not any(target is seen for seen in targets)
+        ):
+            targets.append(target)
+
+    add(tokenizer)
+    for name in (
+        getattr(tokenizer, "clip", None),
+        getattr(tokenizer, "clip_name", None),
+        "qwen3vl_4b",
+    ):
+        if isinstance(name, str):
+            add(getattr(tokenizer, name, None))
+    return tuple(targets)
+
+
+def _tokenize_with_max_length(clip: Any, prompt: str, max_length: int):
+    previous: list[tuple[Any, Any]] = []
+    try:
+        for target in _clip_tokenizer_max_length_targets(clip):
+            previous.append((target, target.max_length))
+            target.max_length = max_length
+        return clip.tokenize(prompt)
+    finally:
+        for target, old_max_length in previous:
+            target.max_length = old_max_length
+
+
+def encode_krea2_prompt(*, clip: Any, prompt: str, max_length: int | None = None):
+    if max_length is None:
+        import nodes  # type: ignore
+
+        return nodes.CLIPTextEncode().encode(clip, prompt)[0]
+
+    tokens = _tokenize_with_max_length(
+        clip,
+        prompt,
+        normalize_krea2_max_length(max_length),
+    )
+    return clip.encode_from_tokens_scheduled(tokens)
 
 
 def zero_out_conditioning(conditioning: Any):
@@ -1539,11 +1602,12 @@ def generate_krea2_t2i(
         strength=settings.get("enhancer_strength", 1.0),
     )
     _phase(progress, "encoding prompts")
-    positive = encode_krea2_prompt(clip=clip, prompt=positive_prompt)
+    max_length = normalize_krea2_max_length(settings.get("max_length"))
+    positive = encode_krea2_prompt(clip=clip, prompt=positive_prompt, max_length=max_length)
     if use_zero_negative_conditioning(settings):
         negative = zero_out_conditioning(positive)
     else:
-        negative = encode_krea2_prompt(clip=clip, prompt=negative_prompt or "")
+        negative = encode_krea2_prompt(clip=clip, prompt=negative_prompt or "", max_length=max_length)
     loaded_vae = None
     if inpaint_config is not None:
         _phase(progress, "loading vae")

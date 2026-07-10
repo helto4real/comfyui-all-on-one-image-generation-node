@@ -25,6 +25,11 @@ class Krea2Adapter(BaseImageAdapter):
     version = "0.1.0"
     dimension_multiple = 16
 
+    def resolve_settings(self, **kwargs) -> dict[str, Any]:
+        resolved = super().resolve_settings(**kwargs)
+        resolved["max_length"] = pipeline.normalize_krea2_max_length(resolved.get("max_length"))
+        return resolved
+
     def validate_inputs(
         self,
         *,
@@ -50,6 +55,7 @@ class Krea2Adapter(BaseImageAdapter):
             height,
             validation.dimension_multiple_from_settings(settings, self.dimension_multiple),
         )
+        pipeline.normalize_krea2_max_length(settings.get("max_length"))
         if not positive_prompt.strip():
             raise ValueError("positive_prompt is required.")
         validation.validate_reference_inputs(

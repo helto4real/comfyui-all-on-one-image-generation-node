@@ -21,6 +21,7 @@ except ImportError:  # pragma: no cover - direct test imports
 
 
 KREA_PROMPT_BUILDER_SOURCE = "krea2_prompt_builder"
+KREA2_DEFAULT_MAX_LENGTH = 4096
 
 
 class AIOKrea2Settings:
@@ -85,6 +86,16 @@ class AIOKrea2Settings:
                         "tooltip": "Optional positive prompt to use only for Krea 2 inpaint runs.",
                     },
                 ),
+                "max_length": (
+                    "INT",
+                    {
+                        "default": KREA2_DEFAULT_MAX_LENGTH,
+                        "min": 1,
+                        "max": KREA2_DEFAULT_MAX_LENGTH,
+                        "step": 1,
+                        "tooltip": "Maximum Krea 2 text-conditioning token chunk length.",
+                    },
+                ),
             },
             "optional": {
                 "prompt_builder": (
@@ -107,6 +118,7 @@ class AIOKrea2Settings:
         performance_apply_timing: str = "after_loras",
         fp16_accumulation_enabled: bool = True,
         inpaint_positive_prompt: str = "",
+        max_length: int = KREA2_DEFAULT_MAX_LENGTH,
         prompt_builder=None,
     ):
         settings = {
@@ -119,6 +131,7 @@ class AIOKrea2Settings:
             "torch_compile_backend": torch_compile_backend,
             "performance_apply_timing": performance_apply_timing,
             "fp16_accumulation_enabled": bool(fp16_accumulation_enabled),
+            "max_length": int(max_length),
         }
 
         builder_prompt_applied = False

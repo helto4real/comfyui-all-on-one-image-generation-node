@@ -79,9 +79,12 @@ def test_krea2_settings_returns_workflow_defaults():
     assert settings["torch_compile_backend"] == "inductor"
     assert settings["performance_apply_timing"] == "after_loras"
     assert settings["fp16_accumulation_enabled"] is True
+    assert settings["max_length"] == 4096
     assert "positive_prompt_override" not in settings
     assert "positive_prompt_source" not in settings
     inputs = AIOKrea2Settings.INPUT_TYPES()
+    assert list(inputs["required"]).index("max_length") > list(inputs["required"]).index("inpaint_positive_prompt")
+    assert inputs["required"]["max_length"][1]["max"] == 4096
     assert inputs["optional"]["prompt_builder"][0] == "AIO_IDEOGRAM4_PROMPT"
 
 

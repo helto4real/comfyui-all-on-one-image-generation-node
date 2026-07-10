@@ -108,6 +108,7 @@ def test_krea2_adapter_calls_real_generation_pipeline(monkeypatch):
     assert calls["cfg"] == 1.0
     assert calls["sampler"] == "er_sde"
     assert calls["scheduler"] == "simple"
+    assert calls["settings"]["max_length"] == 4096
     assert calls["positive_prompt"] == "prompt"
     assert calls["negative_prompt"] == "ignored"
     assert calls["loaded_model"] == "patched_model"
@@ -654,6 +655,8 @@ def test_krea2_validation_rejects_unsupported_inputs_and_warns_for_negative_prom
         adapter.validate_inputs(**base, reference_inputs=ReferenceInputs(images=("first",)))
     with pytest.raises(ValueError, match="mask was connected"):
         adapter.validate_inputs(**base, reference_inputs=ReferenceInputs(images=(), mask="mask"))
+    with pytest.raises(ValueError, match="max_length must be between 1 and 4096"):
+        adapter.validate_inputs(**{**base, "settings": {"family": "krea2", "max_length": 4097}})
     assert adapter.validate_inputs(**base, inpaint_config={"image": "image", "mask": "mask"}) == []
     monkeypatch.setattr(krea2.gguf_backend, "is_available", lambda: False)
     with pytest.raises(ValueError, match="A GGUF model file was selected"):
@@ -821,3 +824,4 @@ def test_krea2_resolve_settings_uses_workflow_defaults():
     assert settings["scheduler"] == "simple"
     assert settings["width"] == 1344
     assert settings["height"] == 2048
+    assert settings["max_length"] == 4096
