@@ -27,6 +27,8 @@ from helto_privacy import (
     ProfileResource,
     ProtectedField,
     ProtectedOperation,
+    RecordDeclaration,
+    RecordRevealProjection,
     ResourceKind,
     SemanticExecutionProjection,
 )
@@ -57,6 +59,15 @@ from .managed_builder_privacy import (
     builder_legacy_bindings,
     builder_legacy_key_imports,
     builder_protected_fields,
+)
+from .managed_prompt_library_privacy import (
+    PROMPT_LIBRARY_CURRENT_SCHEMA,
+    PROMPT_LIBRARY_LEGACY_BINDING_ID,
+    PROMPT_LIBRARY_LEGACY_KEY_BINDING_ID,
+    PROMPT_LIBRARY_RESOURCE_ID,
+    PROMPT_LIBRARY_STORE_ADAPTER_ID,
+    PROMPT_RECORD_KIND,
+    AioPromptLibraryStoreAdapter,
 )
 from .managed_privacy_execution import (
     AIO_MANAGED_PRIVACY_PROFILE_ID,
@@ -238,6 +249,11 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
             ),
         ),
         ProfileResource(
+            PROMPT_LIBRARY_RESOURCE_ID,
+            ResourceKind.RECORD,
+            (PROMPT_LIBRARY_STORE_ADAPTER_ID,),
+        ),
+        ProfileResource(
             GENERATE_EXECUTION_RESOURCE_ID,
             ResourceKind.EXECUTION,
             (GENERATE_PROJECTION_ADAPTER_ID, GENERATE_DISPATCH_ADAPTER_ID),
@@ -274,6 +290,11 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
                 BUILDER_WORKFLOW_ADAPTER_ID,
                 ResourceKind.WORKFLOW,
                 BUILDER_WORKFLOW_RESOURCE_ID,
+            ),
+            AdapterSlot(
+                PROMPT_LIBRARY_STORE_ADAPTER_ID,
+                ResourceKind.RECORD,
+                PROMPT_LIBRARY_RESOURCE_ID,
             ),
             AdapterSlot(
                 GENERATE_PROJECTION_ADAPTER_ID,
@@ -374,6 +395,22 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
             ),
         ),
         protected_fields=fields,
+        records=(
+            RecordDeclaration(
+                PROMPT_RECORD_KIND,
+                PROMPT_LIBRARY_RESOURCE_ID,
+                BUILDER_SCOPE_ID,
+                PROMPT_LIBRARY_CURRENT_SCHEMA,
+                PROMPT_LIBRARY_STORE_ADAPTER_ID,
+                projections=(
+                    RecordRevealProjection("details", ("record",)),
+                    RecordRevealProjection("use", ("record",)),
+                ),
+                mutation_operations=("create", "replace", "patch", "duplicate"),
+                safe_projection=(),
+                fixed_private_label="Private record",
+            ),
+        ),
         execution_projections=(
             SemanticExecutionProjection(
                 GENERATE_PROJECTION_ID,
@@ -426,7 +463,13 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
                 field_id,
             )
             for field_id, facts in _FIELD_FACTS.items()
-        ), *builder_legacy_bindings()),
+        ), *builder_legacy_bindings(), LegacyReaderBinding(
+            PROMPT_LIBRARY_LEGACY_BINDING_ID,
+            AIO_V1_READER_ID,
+            PROMPT_LIBRARY_RESOURCE_ID,
+            LegacyLocationKind.RECORD,
+            PROMPT_RECORD_KIND,
+        )),
         legacy_key_imports=(*tuple(
             LegacyKeyImportBinding(
                 aio_prompt_legacy_key_binding_id(field_id),
@@ -437,7 +480,14 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
                 LegacyKeyFormat.JSON,
             )
             for field_id, facts in _FIELD_FACTS.items()
-        ), *builder_legacy_key_imports()),
+        ), *builder_legacy_key_imports(), LegacyKeyImportBinding(
+            PROMPT_LIBRARY_LEGACY_KEY_BINDING_ID,
+            AIO_V1_JSON_KEY_IMPORT_ID,
+            PROMPT_LIBRARY_RESOURCE_ID,
+            LegacyLocationKind.RECORD,
+            PROMPT_RECORD_KIND,
+            LegacyKeyFormat.JSON,
+        )),
     )
 
 
@@ -562,6 +612,7 @@ def build_aio_prompt_server_adapters(
     *,
     declarations: Mapping[str, object] | None = None,
     operation_dispatcher: Callable[[object, object], object] | None = None,
+    prompt_library_base_dir: str | None = None,
 ) -> dict[str, object]:
     mode = AioPromptModeAdapter(declarations)
     workflow = AioPromptWorkflowStateAdapter()
@@ -583,6 +634,9 @@ def build_aio_prompt_server_adapters(
         GENERATE_OPERATION_ADAPTER_ID: operation,
         KREA_OPERATION_ADAPTER_ID: operation,
         BUILDER_OPERATION_ADAPTER_ID: AioBuilderOperationAdapter(operation_dispatcher),
+        PROMPT_LIBRARY_STORE_ADAPTER_ID: AioPromptLibraryStoreAdapter(
+            prompt_library_base_dir
+        ),
     }
 
 

@@ -6,6 +6,9 @@ the future atomic `helto.aio-image-generation` privacy profile.
 `services/managed_builder_privacy.py` and
 `web/js/aio_managed_builder_privacy.js` add the inactive Ideogram-builder
 slice to that same profile.
+`services/managed_prompt_library_privacy.py` and
+`web/js/aio_managed_prompt_library_privacy.js` add the inactive Ideogram prompt
+library as a typed private-record resource.
 
 The slice is intentionally not installed from `__init__.py` and the browser
 adapter is intentionally not connected from `aio_image_generate.js`. AIO must
@@ -17,6 +20,29 @@ During this expand phase:
 
 - Generate declares `positive_prompt` and `negative_prompt` as one workflow
   snapshot and Krea declares `inpaint_positive_prompt` as a second snapshot.
+- The prompt library declares `ideogram-prompt` with an empty safe list
+  projection and fixed `Private record` label. Shared privacy owns opaque IDs,
+  authorization, encryption, locked shells, delete confirmation, generic
+  errors, and verified rollback-safe writes. The AIO store adapter owns only
+  JSON document persistence plus name, metadata, timestamp, duplicate, and
+  Ideogram payload normalization. The browser facade maps only product metadata
+  (`name`, `description`, and `tags`); the legacy item-level `private` flag never
+  reaches the adapter because the shared record declaration is authoritative.
+- Authorized details and use return the complete product record behind the
+  declared `record` projection. Use updates `last_used_at` through
+  `RecordProjectionResult`, so shared privacy encrypts and verifies the activity
+  rewrite before returning it. Create, replace, patch, and duplicate return only
+  opaque receipts.
+- The managed store uses `ideogram4_prompt_library_v2.json`; the v1 library is
+  deliberately retained as a separate exact-reader source until the user has
+  opened and re-saved every workflow/library record. Genuine AIO v1 envelopes
+  bind the shared AIO reader and JSON-key import and receive a migration receipt
+  only after the v2 record reopens as the current schema. The inactive adapter
+  enumerates private envelopes from the exact
+  `ideogram4_prompt_library.json` v1 document without decrypting or constructing
+  UI shells; both historical-v1 and already-current envelopes remain visible to
+  the later activation scanner. The genuine-v1 transaction preserves encrypted
+  record timestamps while rewriting the protected state.
 - Missing Generate mode inherits the shared private default. Stored legacy
   `false` remains an explicit public declaration when no private floor applies.
 - Krea has no local privacy toggle and inherits a hard private floor from its
@@ -58,4 +84,8 @@ decrypt branch in `ideogram4_prompt_builder.py`. Keep writing the property
 `aio_ideogram4_prompt_builder` and `ideo` from the one shared envelope until
 legacy workflow support is deliberately retired. The current product path remains available until that
 single cutover so partially migrated AIO installs cannot save or execute with
-mixed privacy authorities.
+  mixed privacy authorities. At that cutover, replace the live
+  `ideogram4_prompt_library` routes and frontend `libraryRequest` calls with the
+  managed record facade, then delete the consumer token checks, encryption,
+  private shell construction, and exception-derived route responses. Keep the
+  legacy v1 reader/import path until the later explicit legacy-removal ticket.

@@ -30,8 +30,11 @@ from helto_privacy import (
     aio_v1_reader_unit,
     install,
     lock_keystore,
+    confirm_record_mutation,
+    generate_private_record_id,
     register_legacy_reader_units,
 )
+from helto_privacy.records import RecordError
 from helto_privacy.guard import authorize_privacy_request
 
 from nodes.aio_generate import AIOImageGenerate
@@ -75,6 +78,18 @@ from services.managed_builder_privacy import (
     AioBuilderModeAdapter,
     builder_legacy_binding_id,
 )
+from services.managed_prompt_library_privacy import (
+    MANAGED_LIBRARY_FILE_NAME,
+    PROMPT_LIBRARY_CURRENT_SCHEMA,
+    PROMPT_LIBRARY_LEGACY_BINDING_ID,
+    PROMPT_LIBRARY_RESOURCE_ID,
+    PROMPT_RECORD_KIND,
+    AioPromptLibraryMigrationTransaction,
+    AioPromptLibraryStoreAdapter,
+    discover_legacy_prompt_record_sources,
+    legacy_library_path,
+    managed_library_path,
+)
 from services.prompt_resolution import resolve_prompt_source
 
 
@@ -104,7 +119,10 @@ def _installed_pack(tmp_path, monkeypatch):
     shared_migration.reset_migration_runtime_for_tests()
     shared_execution.invalidate_execution_session("test-reset")
     register_legacy_reader_units((aio_v1_reader_unit(),))
-    pack = install(build_aio_prompt_privacy_profile(), build_aio_prompt_server_adapters())
+    pack = install(
+        build_aio_prompt_privacy_profile(),
+        build_aio_prompt_server_adapters(prompt_library_base_dir=str(tmp_path)),
+    )
     token = shared_keystore.initialize_keystore("synthetic AIO prompt password")["token"]
     return pack, token
 
@@ -171,8 +189,278 @@ def test_profile_declares_generate_krea_fields_floor_execution_and_legacy_units(
         "generate", "ideogram-builder.build", "inpaint"
     }
     assert {item.import_id for item in profile.legacy_key_imports} == {AIO_V1_JSON_KEY_IMPORT_ID}
-    assert len(profile.legacy_bindings) == 14
-    assert len(profile.legacy_key_imports) == 14
+    assert len(profile.legacy_bindings) == 15
+    assert len(profile.legacy_key_imports) == 15
+
+
+def _library_payload(prompt: str = "synthetic prompt") -> dict[str, object]:
+    return {
+        "family": "ideogram4",
+        "version": 1,
+        "state": {"widgets": {"aspect ratio": "1:1"}, "elements": []},
+        "prompt": prompt,
+    }
+
+
+def test_prompt_library_profile_is_strict_private_and_product_normalized():
+    profile = build_aio_prompt_privacy_profile()
+    declaration = profile.records[0]
+
+    assert declaration.id == PROMPT_RECORD_KIND
+    assert declaration.resource_id == PROMPT_LIBRARY_RESOURCE_ID
+    assert declaration.current_schema == PROMPT_LIBRARY_CURRENT_SCHEMA
+    assert declaration.reveal_operations == ("details", "use")
+    assert declaration.mutation_operations == ("create", "duplicate", "patch", "replace")
+    assert declaration.safe_projection == ()
+    assert declaration.fixed_private_label == "Private record"
+    assert next(
+        item for item in profile.legacy_bindings
+        if item.id == PROMPT_LIBRARY_LEGACY_BINDING_ID
+    ).location_kind.value == "record"
+
+
+def test_prompt_library_shared_crud_locked_shell_delete_and_no_metadata_leak(
+    tmp_path,
+    monkeypatch,
+):
+    pack, token = _installed_pack(tmp_path, monkeypatch)
+    records = pack.records(PROMPT_LIBRARY_RESOURCE_ID)
+    created = records.mutate(
+        PROMPT_RECORD_KIND,
+        "create",
+        {
+            "payload": _library_payload("private canary prompt"),
+            "metadata": {
+                "name": "private canary name",
+                "description": "private canary description",
+                "tags": ["private-canary-tag"],
+            },
+        },
+        _authorization(pack, token, "record.create"),
+    )
+    record_id = created.record_id
+
+    assert [shell.to_payload() for shell in records.list_shells(PROMPT_RECORD_KIND)] == [{
+        "id": record_id,
+        "kind": PROMPT_RECORD_KIND,
+        "private": True,
+        "label": "Private record",
+    }]
+    stored = managed_library_path(tmp_path).read_text(encoding="utf-8")
+    assert MANAGED_LIBRARY_FILE_NAME in str(managed_library_path(tmp_path))
+    for canary in (
+        "private canary prompt",
+        "private canary name",
+        "private canary description",
+        "private-canary-tag",
+    ):
+        assert canary not in stored
+
+    details = records.reveal(
+        PROMPT_RECORD_KIND,
+        record_id,
+        "details",
+        _authorization(pack, token, "record.details"),
+    ).value["record"]
+    assert details["name"] == "private canary name"
+    assert details["payload"] == _library_payload("private canary prompt")
+
+    used = records.reveal(
+        PROMPT_RECORD_KIND,
+        record_id,
+        "use",
+        _authorization(pack, token, "record.use"),
+    ).value["record"]
+    assert used["last_used_at"]
+    persisted_use = records.reveal(
+        PROMPT_RECORD_KIND,
+        record_id,
+        "details",
+        _authorization(pack, token, "record.details"),
+    ).value["record"]
+    assert persisted_use["last_used_at"] == used["last_used_at"]
+    patched = records.mutate(
+        PROMPT_RECORD_KIND,
+        "patch",
+        {"metadata": {"name": "patched name"}},
+        _authorization(pack, token, "record.patch"),
+        record_id=record_id,
+    )
+    assert patched.record_id == record_id
+    assert records.reveal(
+        PROMPT_RECORD_KIND,
+        record_id,
+        "details",
+        _authorization(pack, token, "record.details"),
+    ).value["record"]["name"] == "patched name"
+    replaced = records.mutate(
+        PROMPT_RECORD_KIND,
+        "replace",
+        {
+            "payload": _library_payload("replacement prompt"),
+            "metadata": {"name": "replacement name"},
+        },
+        _authorization(pack, token, "record.replace"),
+        record_id=record_id,
+    )
+    assert replaced.record_id == record_id
+    replaced_record = records.reveal(
+        PROMPT_RECORD_KIND,
+        record_id,
+        "details",
+        _authorization(pack, token, "record.details"),
+    ).value["record"]
+    assert replaced_record["name"] == "replacement name"
+    assert replaced_record["payload"] == _library_payload("replacement prompt")
+    assert replaced_record["last_used_at"] == used["last_used_at"]
+    duplicated = records.mutate(
+        PROMPT_RECORD_KIND,
+        "duplicate",
+        {"metadata": {}},
+        _authorization(pack, token, "record.duplicate"),
+        record_id=record_id,
+    )
+    assert duplicated.record_id != record_id
+
+    lock_keystore()
+    assert len(records.list_shells(PROMPT_RECORD_KIND)) == 2
+    confirmation = confirm_record_mutation(
+        pack_id=pack.profile.id,
+        resource_id=PROMPT_LIBRARY_RESOURCE_ID,
+        record_kind=PROMPT_RECORD_KIND,
+        record_id=record_id,
+        operation="delete",
+        confirmed=True,
+    )
+    assert records.delete(PROMPT_RECORD_KIND, record_id, confirmation).operation == "delete"
+    assert [shell.id for shell in records.list_shells(PROMPT_RECORD_KIND)] == [
+        duplicated.record_id
+    ]
+
+
+def test_prompt_library_failed_decrypt_is_fail_closed(tmp_path, monkeypatch):
+    pack, token = _installed_pack(tmp_path, monkeypatch)
+    records = pack.records(PROMPT_LIBRARY_RESOURCE_ID)
+    created = records.mutate(
+        PROMPT_RECORD_KIND,
+        "create",
+        {"payload": _library_payload()},
+        _authorization(pack, token, "record.create"),
+    )
+    document = json.loads(managed_library_path(tmp_path).read_text(encoding="utf-8"))
+    document["records"][0]["protected"]["ciphertext"] = "corrupt"
+    managed_library_path(tmp_path).write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(RecordError) as exc:
+        records.reveal(
+            PROMPT_RECORD_KIND,
+            created.record_id,
+            "details",
+            _authorization(pack, token, "record.details"),
+        )
+    assert exc.value.code == "PRIVACY_RECORD_DECRYPT_FAILED"
+
+
+def test_prompt_library_genuine_v1_record_gets_verified_current_receipt(
+    tmp_path,
+    monkeypatch,
+):
+    pack, token = _installed_pack(tmp_path, monkeypatch)
+    source = tmp_path / "privacy_key.json"
+    _write_historical_key(source)
+    pack.migration.import_legacy_key_source(
+        AIO_V1_JSON_KEY_IMPORT_ID,
+        source,
+        "synthetic AIO prompt password",
+        LegacyKeyFormat.JSON,
+        _authorization(pack, token, "migration.key-import"),
+    )
+    token = shared_keystore.session_token()
+    legacy = {
+        "payload": _library_payload("legacy synthetic prompt"),
+        "name": "legacy synthetic name",
+        "description": "legacy synthetic description",
+        "tags": ["legacy-synthetic-tag"],
+    }
+    legacy_envelope = _aio_v1_envelope(legacy, "prompt-library")
+    current_container_envelope = PrivacyEnvelopeCodec(
+        PROMPT_LIBRARY_CURRENT_SCHEMA
+    ).encrypt_state(legacy)
+    legacy_library_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "version": 1,
+                "prompts": [
+                    {
+                        "id": "prompt_legacy_synthetic",
+                        "private": True,
+                        "is_private": True,
+                        "created_at": "2026-01-02T03:04:05Z",
+                        "updated_at": "2026-02-03T04:05:06Z",
+                        "last_used_at": "2026-03-04T05:06:07Z",
+                        "encrypted_payload": legacy_envelope,
+                    },
+                    {
+                        "id": "prompt_current_container",
+                        "private": True,
+                        "is_private": True,
+                        "encrypted_payload": current_container_envelope,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    sources = discover_legacy_prompt_record_sources(tmp_path)
+    assert len(sources) == 2
+    assert sources[0].legacy_id == "prompt_legacy_synthetic"
+    assert sources[0].current_format is False
+    assert sources[1].current_format is True
+    assert "prompt_legacy_synthetic" not in repr(sources[0])
+    assert "ciphertext" not in repr(sources[0])
+    discovered = pack.migration.discover_and_read(
+        PROMPT_LIBRARY_LEGACY_BINDING_ID,
+        sources[0].protected,
+        _authorization(pack, token, "migration.read"),
+    )
+    assert discovered.value == legacy
+    record_id = generate_private_record_id()
+    records = pack.records(PROMPT_LIBRARY_RESOURCE_ID)
+    # Store instances are stateless views over the same atomic JSON document.
+    adapter = AioPromptLibraryStoreAdapter(tmp_path)
+    transaction = AioPromptLibraryMigrationTransaction(
+        records,
+        adapter,
+        record_id,
+        _authorization(pack, token, "record.protect"),
+        _authorization(pack, token, "record.details"),
+        sources[0].created_at,
+        sources[0].updated_at,
+        sources[0].last_used_at,
+    )
+    receipt = pack.migration.complete(
+        discovered.obligation.id,
+        discovered.value,
+        transaction,
+        _authorization(pack, token, "migration.complete"),
+    )
+
+    assert receipt.disposition == "migrated"
+    protected = adapter.read_protected(record_id)
+    assert protected["schema"] == PROMPT_LIBRARY_CURRENT_SCHEMA
+    current = records.reveal(
+        PROMPT_RECORD_KIND,
+        record_id,
+        "details",
+        _authorization(pack, token, "record.details"),
+    ).value["record"]
+    assert current["name"] == "legacy synthetic name"
+    assert current["created_at"] == "2026-01-02T03:04:05Z"
+    assert current["updated_at"] == "2026-02-03T04:05:06Z"
+    assert current["last_used_at"] == "2026-03-04T05:06:07Z"
+    stored = managed_library_path(tmp_path).read_text(encoding="utf-8")
+    assert "legacy synthetic" not in stored
 
 
 def _builder_state(text: str = "synthetic builder") -> dict[str, object]:

@@ -17,6 +17,10 @@ import {
   createAioBuilderModeBrowserAdapter,
   createAioBuilderWorkflowBrowserAdapter,
 } from "../../web/js/aio_managed_builder_privacy.js";
+import {
+  AIO_PROMPT_RECORD_KIND,
+  createAioManagedPromptLibrary,
+} from "../../web/js/aio_managed_prompt_library_privacy.js";
 
 
 function generateNode(mode = undefined) {
@@ -29,6 +33,70 @@ function generateNode(mode = undefined) {
     ],
   };
 }
+
+
+test("managed prompt library delegates every private operation to the typed record handle", async () => {
+  const id = `hp-rec-${"A".repeat(32)}`;
+  const calls = [];
+  const handle = {
+    list: async (...args) => {
+      calls.push(["list", ...args]);
+      return [{ id, kind: AIO_PROMPT_RECORD_KIND, private: true, label: "Private record" }];
+    },
+    create: async (...args) => {
+      calls.push(["create", ...args]);
+      return { recordId: id, kind: AIO_PROMPT_RECORD_KIND, operation: "create" };
+    },
+    reveal: async (...args) => {
+      calls.push(["reveal", ...args]);
+      return { value: { record: { name: "authorized", payload: { state: {} } } } };
+    },
+    mutate: async (...args) => {
+      calls.push(["mutate", ...args]);
+      return { recordId: id, kind: AIO_PROMPT_RECORD_KIND, operation: args[2] };
+    },
+    delete: async (...args) => {
+      calls.push(["delete", ...args]);
+      return { operation: "delete" };
+    },
+  };
+  const library = createAioManagedPromptLibrary({ recordsHandle: handle });
+  const payload = { state: {}, prompt: "synthetic" };
+
+  assert.equal((await library.list())[0].label, "Private record");
+  assert.equal((await library.create(payload, {
+    name: "synthetic",
+    private: false,
+  })).recordId, id);
+  assert.equal((await library.details(id)).id, id);
+  assert.equal((await library.use(id)).name, "authorized");
+  assert.equal((await library.replace(id, payload)).operation, "replace");
+  assert.equal((await library.patch(id, { metadata: { tags: ["one"] } })).operation, "patch");
+  assert.equal((await library.duplicate(id)).operation, "duplicate");
+  await library.delete(id);
+
+  assert.deepEqual(calls.map((item) => item[0]), [
+    "list", "create", "reveal", "reveal", "mutate", "mutate", "mutate", "delete",
+  ]);
+  assert.deepEqual(calls[1][2].metadata, { name: "synthetic" });
+  assert.ok(calls.every((item) => item[0] === "list" || item[1] === AIO_PROMPT_RECORD_KIND));
+});
+
+
+test("managed prompt library rejects consumer-built metadata shells", async () => {
+  const library = createAioManagedPromptLibrary({
+    recordsHandle: {
+      list: async () => [{
+        id: `hp-rec-${"A".repeat(32)}`,
+        kind: AIO_PROMPT_RECORD_KIND,
+        private: true,
+        label: "Private record",
+        name: "leak",
+      }],
+    },
+  });
+  await assert.rejects(library.list(), /PRIVACY_AIO_PROMPT_LIBRARY_INVALID/);
+});
 
 
 test("Generate legacy boolean maps explicitly while missing and Krea inherit", () => {
