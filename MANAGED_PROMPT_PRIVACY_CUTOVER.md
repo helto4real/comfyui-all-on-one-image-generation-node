@@ -29,7 +29,10 @@ During this expand phase:
   `helto.aio-image-generate.v2` through the shared migration transaction.
 - The builder declares ten sensitive widgets plus one whole-editor field. Its
   property and both workflow keys are mirrors of the same shared envelope, and
-  all eleven logical fields migrate under one grouped receipt.
+  all eleven logical fields migrate under one grouped receipt. The migration
+  transaction requires the shared resolved effective mode and writes that
+  derived fact into the current whole-state envelope before read-back, while
+  preserving the legacy local boolean as the durable declaration.
 - The builder execution projection includes its prompt text, palettes,
   elements, coordinates, dimensions, and output controls. It rejects missing
   fields or a widget value that disagrees with the whole-editor generation.

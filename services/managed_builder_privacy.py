@@ -275,8 +275,13 @@ class AioBuilderMigrationTransaction:
     store: MutableMapping[str, object]
     protect_authorization: object
     reveal_authorization: object
+    effective_privacy_mode: bool
     original: object = None
     staged: object = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.effective_privacy_mode, bool):
+            raise ValueError("AIO builder migration effective mode is invalid.")
 
     def capture_original(self) -> object:
         self.original = copy.deepcopy(self.store)
@@ -285,11 +290,15 @@ class AioBuilderMigrationTransaction:
     def stage_current(self, normalized: object) -> None:
         if not isinstance(normalized, Mapping) or set(normalized) != set(BUILDER_EXECUTION_FIELD_IDS):
             raise ValueError("AIO builder migration set is incomplete.")
-        project_builder_generation(normalized)
+        current = copy.deepcopy(dict(normalized))
+        state = normalize_builder_state(current[BUILDER_STATE_FIELD_ID])
+        state["effective_privacy_mode"] = self.effective_privacy_mode
+        current[BUILDER_STATE_FIELD_ID] = state
+        project_builder_generation(current)
         self.staged = {
             field_id: self.workflow.protect(
                 field_id,
-                normalized[field_id],
+                current[field_id],
                 self.protect_authorization,
             ).envelope
             for field_id in BUILDER_EXECUTION_FIELD_IDS
@@ -341,6 +350,7 @@ class AioBuilderMigrationTransaction:
         normalized[BUILDER_STATE_FIELD_ID] = state_result.value
         current = current and _mapping_get(mirrors[0], "schema") == AIO_BUILDER_CURRENT_SCHEMA
         project_builder_generation(normalized)
+        normalized[BUILDER_STATE_FIELD_ID].pop("effective_privacy_mode", None)
         return MigrationVerification(normalized, current, True)
 
     def rollback(self, original: object) -> None:

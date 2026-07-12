@@ -263,7 +263,9 @@ def test_builder_migration_staging_rejects_an_inconsistent_generation():
             calls.append(args)
             raise AssertionError("inconsistent fields must fail before encryption")
 
-    transaction = AioBuilderMigrationTransaction(Workflow(), {}, object(), object())
+    transaction = AioBuilderMigrationTransaction(
+        Workflow(), {}, object(), object(), True
+    )
     with pytest.raises(ValueError, match="inconsistent"):
         transaction.stage_current(fields)
     assert calls == []
@@ -627,6 +629,7 @@ def test_builder_genuine_v1_fields_and_mirrors_rewrite_under_one_receipt(
     )
     token = shared_keystore.session_token()
     state = _builder_state("legacy")
+    state["widgets"]["privacy_mode"] = False
     state.pop("effective_privacy_mode")  # AIO v1 predates the derived execution fact.
     expected = {
         field_id: {"value": state["widgets"][widget_name]}
@@ -664,6 +667,7 @@ def test_builder_genuine_v1_fields_and_mirrors_rewrite_under_one_receipt(
         store,
         _authorization(pack, token, "snapshot.protect"),
         _authorization(pack, token, "snapshot.reveal"),
+        True,
     )
     receipt = pack.migration.complete_many(
         [item.obligation.id for item in discovered],
@@ -680,6 +684,13 @@ def test_builder_genuine_v1_fields_and_mirrors_rewrite_under_one_receipt(
     assert len(receipt.obligation_ids) == len(BUILDER_EXECUTION_FIELD_IDS)
     assert mirrors[0] == mirrors[1] == mirrors[2]
     assert mirrors[0]["schema"] == AIO_BUILDER_CURRENT_SCHEMA
+    migrated_state = pack.workflow(BUILDER_WORKFLOW_RESOURCE_ID).reveal(
+        BUILDER_STATE_FIELD_ID,
+        mirrors[0],
+        _authorization(pack, token, "snapshot.reveal"),
+    ).value
+    assert migrated_state["widgets"]["privacy_mode"] is False
+    assert migrated_state["effective_privacy_mode"] is True
     assert all(
         envelope["schema"] == AIO_BUILDER_CURRENT_SCHEMA
         for envelope in store["widgets"].values()
