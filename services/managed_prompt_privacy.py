@@ -69,6 +69,14 @@ from .managed_prompt_library_privacy import (
     PROMPT_RECORD_KIND,
     AioPromptLibraryStoreAdapter,
 )
+from .managed_run_info_privacy import (
+    RUN_INFO_ADAPTER_ID,
+    RUN_INFO_OPERATION_ID,
+    RUN_INFO_RESOURCE_ID,
+    AioRunInfoProjectionAdapter,
+    run_info_safe_projection,
+    run_info_sensitive_fields,
+)
 from .managed_privacy_execution import (
     AIO_MANAGED_PRIVACY_PROFILE_ID,
     dispatch_aio_managed_execution,
@@ -228,6 +236,7 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
                 GENERATE_WORKFLOW_ADAPTER_ID,
                 GENERATE_WORKFLOW_BROWSER_ADAPTER_ID,
                 GENERATE_OPERATION_ADAPTER_ID,
+                RUN_INFO_ADAPTER_ID,
             ),
         ),
         ProfileResource(
@@ -278,6 +287,11 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
             AdapterSlot(BUILDER_MODE_ADAPTER_ID, ResourceKind.MODE, PROMPT_MODE_RESOURCE_ID),
             AdapterSlot(
                 GENERATE_WORKFLOW_ADAPTER_ID,
+                ResourceKind.WORKFLOW,
+                GENERATE_WORKFLOW_RESOURCE_ID,
+            ),
+            AdapterSlot(
+                RUN_INFO_ADAPTER_ID,
                 ResourceKind.WORKFLOW,
                 GENERATE_WORKFLOW_RESOURCE_ID,
             ),
@@ -440,6 +454,15 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
                 GENERATE_WORKFLOW_RESOURCE_ID,
                 GENERATE_OPERATION_ADAPTER_ID,
                 "/aio_image_generate/generate",
+            ),
+            ProtectedOperation(
+                RUN_INFO_OPERATION_ID,
+                RUN_INFO_RESOURCE_ID,
+                RUN_INFO_ADAPTER_ID,
+                None,
+                scope_id=GENERATE_SCOPE_ID,
+                sensitive_fields=run_info_sensitive_fields(),
+                safe_projection=run_info_safe_projection(),
             ),
             ProtectedOperation(
                 "inpaint",
@@ -632,6 +655,7 @@ def build_aio_prompt_server_adapters(
         KREA_DISPATCH_ADAPTER_ID: dispatch,
         BUILDER_DISPATCH_ADAPTER_ID: AioBuilderExecutionDispatchAdapter(),
         GENERATE_OPERATION_ADAPTER_ID: operation,
+        RUN_INFO_ADAPTER_ID: AioRunInfoProjectionAdapter(),
         KREA_OPERATION_ADAPTER_ID: operation,
         BUILDER_OPERATION_ADAPTER_ID: AioBuilderOperationAdapter(operation_dispatcher),
         PROMPT_LIBRARY_STORE_ADAPTER_ID: AioPromptLibraryStoreAdapter(

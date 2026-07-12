@@ -9,6 +9,8 @@ slice to that same profile.
 `services/managed_prompt_library_privacy.py` and
 `web/js/aio_managed_prompt_library_privacy.js` add the inactive Ideogram prompt
 library as a typed private-record resource.
+`services/managed_run_info_privacy.py` adds the final inactive AIO slice: one
+server-mode-resolved, sensitive-by-default run-info projection.
 
 The slice is intentionally not installed from `__init__.py` and the browser
 adapter is intentionally not connected from `aio_image_generate.js`. AIO must
@@ -43,6 +45,13 @@ During this expand phase:
   UI shells; both historical-v1 and already-current envelopes remain visible to
   the later activation scanner. The genuine-v1 transaction preserves encrypted
   record timestamps while rewriting the protected state.
+- Run-info keeps its existing product structure and performance calculation in
+  `services/run_info.py`. `build_run_info_candidate` deliberately performs no
+  encryption or debug omission; the shared `emit-run-info` operation resolves
+  the Generate scope on the server and releases only declared performance
+  booleans/counts in private mode. Model paths/names, prompt overrides, LoRA
+  names, warnings, debug data, and every future consumer-derived field are
+  sensitive by default. Public mode returns the unchanged product schema.
 - Missing Generate mode inherits the shared private default. Stored legacy
   `false` remains an explicit public declaration when no private floor applies.
 - Krea has no local privacy toggle and inherits a hard private floor from its
@@ -89,3 +98,9 @@ single cutover so partially migrated AIO installs cannot save or execute with
   managed record facade, then delete the consumer token checks, encryption,
   private shell construction, and exception-derived route responses. Keep the
   legacy v1 reader/import path until the later explicit legacy-removal ticket.
+  Replace the live `build_run_info(... privacy_mode=...)` call at the same
+  activation with `build_managed_run_info_json(pack, ...)`, always supplying the
+  full debug candidate. Then remove `settings_info_from_settings` encryption,
+  the `debug=None if private` omission rule, and request/settings-derived
+  `run_info_privacy_mode`. The inactive projection is not called by the live
+  node before that atomic switch.

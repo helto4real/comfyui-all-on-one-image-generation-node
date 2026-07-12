@@ -61,6 +61,12 @@ from services.managed_prompt_privacy import (
     build_aio_prompt_server_adapters,
     resolve_execution_prompt_semantics,
 )
+from services.managed_run_info_privacy import (
+    RUN_INFO_ADAPTER_ID,
+    RUN_INFO_OPERATION_ID,
+    build_managed_run_info_json,
+)
+from services.run_info import build_run_info_candidate, to_json
 from services.managed_builder_privacy import (
     AIO_BUILDER_CURRENT_SCHEMA,
     BUILDER_EXECUTION_FIELD_IDS,
@@ -107,7 +113,7 @@ def _authorization(pack, token: str, operation: str):
     return authorize_privacy_request(Request(token), operation, pack_id=pack.profile.id)
 
 
-def _installed_pack(tmp_path, monkeypatch):
+def _installed_pack(tmp_path, monkeypatch, *, declarations=None):
     monkeypatch.setenv(shared_migration.MIGRATION_STATE_ENV, str(tmp_path / "migration.json"))
     monkeypatch.setattr(shared_runtime, "_INSTALLATIONS", {})
     monkeypatch.setattr(shared_runtime, "register_helto_privacy_ui", lambda **_kwargs: True)
@@ -121,7 +127,10 @@ def _installed_pack(tmp_path, monkeypatch):
     register_legacy_reader_units((aio_v1_reader_unit(),))
     pack = install(
         build_aio_prompt_privacy_profile(),
-        build_aio_prompt_server_adapters(prompt_library_base_dir=str(tmp_path)),
+        build_aio_prompt_server_adapters(
+            declarations=declarations,
+            prompt_library_base_dir=str(tmp_path),
+        ),
     )
     token = shared_keystore.initialize_keystore("synthetic AIO prompt password")["token"]
     return pack, token
@@ -186,11 +195,33 @@ def test_profile_declares_generate_krea_fields_floor_execution_and_legacy_units(
         "generate", "ideogram-builder", "inpaint"
     }
     assert {item.id for item in profile.protected_operations} == {
-        "generate", "ideogram-builder.build", "inpaint"
+        "emit-run-info", "generate", "ideogram-builder.build", "inpaint"
     }
     assert {item.import_id for item in profile.legacy_key_imports} == {AIO_V1_JSON_KEY_IMPORT_ID}
     assert len(profile.legacy_bindings) == 15
     assert len(profile.legacy_key_imports) == 15
+
+    run_info = next(
+        item for item in profile.protected_operations
+        if item.id == RUN_INFO_OPERATION_ID
+    )
+    assert run_info.scope_id == GENERATE_SCOPE_ID
+    assert any(
+        item.path == "*" and item.field_class.value == "consumer-derived"
+        for item in run_info.sensitive_fields
+    )
+    assert {item.path for item in run_info.safe_projection} == {
+        "performance.configured",
+        "performance.duplicate_inpaint_reference_count",
+        "performance.duplicate_inpaint_reference_skipped",
+        "performance.fp16_accumulation_enabled",
+        "performance.memory_cleanup_applied",
+        "performance.resolved_fp16_accumulation_enabled",
+        "performance.warning_count",
+    }
+    assert profile.server_adapter_contracts[RUN_INFO_ADAPTER_ID] == (
+        "project",
+    )
 
 
 def _library_payload(prompt: str = "synthetic prompt") -> dict[str, object]:
@@ -217,6 +248,124 @@ def test_prompt_library_profile_is_strict_private_and_product_normalized():
         item for item in profile.legacy_bindings
         if item.id == PROMPT_LIBRARY_LEGACY_BINDING_ID
     ).location_kind.value == "record"
+
+
+def _run_info_facts() -> dict[str, object]:
+    return {
+        "model_type": "synthetic-model-family",
+        "display_name": "SYNTHETIC_PRIVATE_DISPLAY_NAME",
+        "diffusion_model": "/SYNTHETIC/PRIVATE/diffusion.safetensors",
+        "diffusion_model_format": "safetensors",
+        "text_encoder": "/SYNTHETIC/PRIVATE/text.safetensors",
+        "text_encoder_format": "safetensors",
+        "vae": "/SYNTHETIC/PRIVATE/vae.safetensors",
+        "vae_format": "safetensors",
+        "width": 1024,
+        "height": 1024,
+        "seed": 123,
+        "steps": 8,
+        "cfg": 1.0,
+        "sampler": "euler",
+        "scheduler": "beta",
+        "settings": {
+            "positive_prompt_override": "SYNTHETIC_PRIVATE_PROMPT",
+            "privacy_mode": False,
+            "attention_mode": "auto",
+            "resolved_attention_mode": "sage",
+            "fp16_accumulation_enabled": True,
+            "resolved_fp16_accumulation_enabled": False,
+            "memory_policy": "balanced",
+            "memory_cleanup_applied": True,
+            "duplicate_inpaint_reference_skipped": True,
+            "duplicate_inpaint_reference_count": 2,
+            "performance_warnings": ["SYNTHETIC_PRIVATE_WARNING"],
+        },
+        "warnings": ["SYNTHETIC_PRIVATE_TOP_LEVEL_WARNING"],
+        "adapter_version": "SYNTHETIC_PRIVATE_ADAPTER_VERSION",
+        "loras": [{"name": "/SYNTHETIC/PRIVATE/style.safetensors"}],
+        "debug": {"workflow": "SYNTHETIC_PRIVATE_WORKFLOW"},
+    }
+
+
+def test_private_run_info_releases_only_validated_coarse_performance_facts(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    pack, _token = _installed_pack(
+        tmp_path,
+        monkeypatch,
+        declarations={GENERATE_SCOPE_ID: True},
+    )
+    facts = _run_info_facts()
+    candidate = build_run_info_candidate(**facts)
+    assert candidate["settings"]["positive_prompt_override"] == (
+        "SYNTHETIC_PRIVATE_PROMPT"
+    )
+
+    dumped = build_managed_run_info_json(pack, **facts)
+    projected = json.loads(dumped)
+
+    assert projected == {
+        "performance": {
+            "configured": True,
+            "duplicate_inpaint_reference_count": 2,
+            "duplicate_inpaint_reference_skipped": True,
+            "fp16_accumulation_enabled": True,
+            "memory_cleanup_applied": True,
+            "resolved_fp16_accumulation_enabled": False,
+            "warning_count": 1,
+        }
+    }
+    assert "SYNTHETIC_PRIVATE" not in dumped
+    assert "SYNTHETIC_PRIVATE" not in caplog.text
+    assert not any(
+        key in projected
+        for key in ("debug", "settings", "warnings", "loras", "diffusion_model")
+    )
+
+
+def test_private_run_info_rejects_unsafe_coarse_diagnostic_type(
+    tmp_path,
+    monkeypatch,
+):
+    from helto_privacy import ProtectedOperationError
+
+    pack, _token = _installed_pack(
+        tmp_path,
+        monkeypatch,
+        declarations={GENERATE_SCOPE_ID: True},
+    )
+    candidate = build_run_info_candidate(**_run_info_facts())
+    candidate["performance"]["configured"] = "SYNTHETIC_PRIVATE_BOOLEAN"
+
+    with pytest.raises(ProtectedOperationError) as failed:
+        pack.operations(GENERATE_WORKFLOW_RESOURCE_ID).project(
+            RUN_INFO_OPERATION_ID,
+            candidate,
+        )
+
+    assert failed.value.code == "PRIVACY_PROTECTED_OPERATION_PROJECTION_INVALID"
+    assert "SYNTHETIC" not in str(failed.value)
+    assert "SYNTHETIC" not in repr(failed.value)
+
+
+def test_public_run_info_preserves_the_existing_product_schema(
+    tmp_path,
+    monkeypatch,
+):
+    pack, _token = _installed_pack(
+        tmp_path,
+        monkeypatch,
+        declarations={GENERATE_SCOPE_ID: False},
+    )
+    facts = _run_info_facts()
+    facts["settings"]["privacy_mode"] = True
+    candidate = build_run_info_candidate(**facts)
+
+    assert json.loads(build_managed_run_info_json(pack, **facts)) == json.loads(
+        to_json(candidate)
+    )
 
 
 def test_prompt_library_shared_crud_locked_shell_delete_and_no_metadata_leak(
