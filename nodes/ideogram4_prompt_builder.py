@@ -180,6 +180,15 @@ class AIOIdeogram4PromptBuilder:
                 ),
             },
             "optional": {
+                "private_execution": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "socketless": True,
+                        "hidden": True,
+                        "tooltip": "Managed private builder execution reference injected by the shared privacy barrier.",
+                    },
+                ),
                 "image": (
                     "IMAGE",
                     {"tooltip": "Optional reference image shown behind the preview/editor regions."},
@@ -223,8 +232,50 @@ class AIOIdeogram4PromptBuilder:
         import_json: str = "",
         bboxes: Any = None,
         privacy_mode: bool = False,
+        private_execution: str = "",
         **dimension_values: Any,
     ):
+        if private_execution:
+            try:
+                from ..services.managed_builder_privacy import dispatch_aio_builder_execution
+            except ImportError:  # pragma: no cover - direct test imports
+                from services.managed_builder_privacy import dispatch_aio_builder_execution
+
+            product_inputs = {
+                "high_level_description": high_level_description,
+                "background": background,
+                "style": style,
+                "photo": photo,
+                "art_style": art_style,
+                "aesthetics": aesthetics,
+                "lighting": lighting,
+                "medium": medium,
+                "import_mode": import_mode,
+                "output_format": output_format,
+                "coord_mode": coord_mode,
+                "bbox_order": bbox_order,
+                "style_palette_data": style_palette_data,
+                "elements_data": elements_data,
+                "bg_brightness": bg_brightness,
+                "image": image,
+                "import_json": import_json,
+                "bboxes": bboxes,
+                "privacy_mode": privacy_mode,
+                **dimension_values,
+            }
+
+            def build_resolved_prompt(semantic: object):
+                if not isinstance(semantic, dict) or not isinstance(semantic.get("widgets"), dict):
+                    raise ValueError("AIO builder execution state is invalid.")
+                resolved_inputs = dict(product_inputs)
+                resolved_inputs.update(semantic["widgets"])
+                return self.build_prompt(**resolved_inputs)
+
+            return dispatch_aio_builder_execution(
+                private_execution,
+                {"dispatch": build_resolved_prompt},
+            )
+
         high_level_description = privacy.decrypt_text_if_encrypted(high_level_description)
         background = privacy.decrypt_text_if_encrypted(background)
         photo = privacy.decrypt_text_if_encrypted(photo)

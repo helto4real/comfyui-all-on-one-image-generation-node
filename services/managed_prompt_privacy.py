@@ -8,7 +8,6 @@ have joined it, so no partial profile can become authoritative in production.
 from __future__ import annotations
 
 import copy
-import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -37,9 +36,35 @@ from .prompt_resolution import (
     KREA_EXECUTION_RESOURCE_ID,
     normalize_prompt_text,
 )
+from .managed_builder_privacy import (
+    BUILDER_DISPATCH_ADAPTER_ID,
+    BUILDER_EXECUTION_RESOURCE_ID,
+    BUILDER_MODE_ADAPTER_ID,
+    BUILDER_MODE_BROWSER_ADAPTER_ID,
+    BUILDER_NODE_TYPE,
+    BUILDER_OPERATION_ADAPTER_ID,
+    BUILDER_PROJECTION_ADAPTER_ID,
+    BUILDER_PROJECTION_ID,
+    BUILDER_SCOPE_ID,
+    BUILDER_WORKFLOW_ADAPTER_ID,
+    BUILDER_WORKFLOW_BROWSER_ADAPTER_ID,
+    BUILDER_WORKFLOW_RESOURCE_ID,
+    AioBuilderExecutionDispatchAdapter,
+    AioBuilderExecutionProjectionAdapter,
+    AioBuilderModeAdapter,
+    AioBuilderOperationAdapter,
+    AioBuilderWorkflowStateAdapter,
+    builder_legacy_bindings,
+    builder_legacy_key_imports,
+    builder_protected_fields,
+)
+from .managed_privacy_execution import (
+    AIO_MANAGED_PRIVACY_PROFILE_ID,
+    dispatch_aio_managed_execution,
+)
 
 
-AIO_PRIVACY_PROFILE_ID = "helto.aio-image-generation"
+AIO_PRIVACY_PROFILE_ID = AIO_MANAGED_PRIVACY_PROFILE_ID
 AIO_PRIVACY_DISTRIBUTION = "comfyui-all-on-one-image-generation-node"
 AIO_CURRENT_PROMPT_SCHEMA = "helto.aio-image-generate.v2"
 
@@ -170,12 +195,20 @@ def _protected_field(field_id: str, facts: AioPromptFieldFacts) -> ProtectedFiel
 def build_aio_prompt_privacy_profile() -> PrivacyProfile:
     """Build the inactive A1 profile slice used for contract-level testing."""
 
-    fields = tuple(_protected_field(field_id, facts) for field_id, facts in _FIELD_FACTS.items())
+    fields = (
+        *tuple(_protected_field(field_id, facts) for field_id, facts in _FIELD_FACTS.items()),
+        *builder_protected_fields(),
+    )
     resources = (
         ProfileResource(
             PROMPT_MODE_RESOURCE_ID,
             ResourceKind.MODE,
-            (PROMPT_MODE_ADAPTER_ID, PROMPT_MODE_BROWSER_ADAPTER_ID),
+            (
+                PROMPT_MODE_ADAPTER_ID,
+                PROMPT_MODE_BROWSER_ADAPTER_ID,
+                BUILDER_MODE_ADAPTER_ID,
+                BUILDER_MODE_BROWSER_ADAPTER_ID,
+            ),
         ),
         ProfileResource(
             GENERATE_WORKFLOW_RESOURCE_ID,
@@ -196,6 +229,15 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
             ),
         ),
         ProfileResource(
+            BUILDER_WORKFLOW_RESOURCE_ID,
+            ResourceKind.WORKFLOW,
+            (
+                BUILDER_WORKFLOW_ADAPTER_ID,
+                BUILDER_WORKFLOW_BROWSER_ADAPTER_ID,
+                BUILDER_OPERATION_ADAPTER_ID,
+            ),
+        ),
+        ProfileResource(
             GENERATE_EXECUTION_RESOURCE_ID,
             ResourceKind.EXECUTION,
             (GENERATE_PROJECTION_ADAPTER_ID, GENERATE_DISPATCH_ADAPTER_ID),
@@ -205,6 +247,11 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
             ResourceKind.EXECUTION,
             (KREA_PROJECTION_ADAPTER_ID, KREA_DISPATCH_ADAPTER_ID),
         ),
+        ProfileResource(
+            BUILDER_EXECUTION_RESOURCE_ID,
+            ResourceKind.EXECUTION,
+            (BUILDER_PROJECTION_ADAPTER_ID, BUILDER_DISPATCH_ADAPTER_ID),
+        ),
     )
     return PrivacyProfile(
         id=AIO_PRIVACY_PROFILE_ID,
@@ -212,6 +259,7 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
         resources=resources,
         server_adapters=(
             AdapterSlot(PROMPT_MODE_ADAPTER_ID, ResourceKind.MODE, PROMPT_MODE_RESOURCE_ID),
+            AdapterSlot(BUILDER_MODE_ADAPTER_ID, ResourceKind.MODE, PROMPT_MODE_RESOURCE_ID),
             AdapterSlot(
                 GENERATE_WORKFLOW_ADAPTER_ID,
                 ResourceKind.WORKFLOW,
@@ -221,6 +269,11 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
                 KREA_WORKFLOW_ADAPTER_ID,
                 ResourceKind.WORKFLOW,
                 KREA_WORKFLOW_RESOURCE_ID,
+            ),
+            AdapterSlot(
+                BUILDER_WORKFLOW_ADAPTER_ID,
+                ResourceKind.WORKFLOW,
+                BUILDER_WORKFLOW_RESOURCE_ID,
             ),
             AdapterSlot(
                 GENERATE_PROJECTION_ADAPTER_ID,
@@ -243,6 +296,16 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
                 KREA_EXECUTION_RESOURCE_ID,
             ),
             AdapterSlot(
+                BUILDER_PROJECTION_ADAPTER_ID,
+                ResourceKind.EXECUTION,
+                BUILDER_EXECUTION_RESOURCE_ID,
+            ),
+            AdapterSlot(
+                BUILDER_DISPATCH_ADAPTER_ID,
+                ResourceKind.EXECUTION,
+                BUILDER_EXECUTION_RESOURCE_ID,
+            ),
+            AdapterSlot(
                 GENERATE_OPERATION_ADAPTER_ID,
                 ResourceKind.WORKFLOW,
                 GENERATE_WORKFLOW_RESOURCE_ID,
@@ -252,8 +315,19 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
                 ResourceKind.WORKFLOW,
                 KREA_WORKFLOW_RESOURCE_ID,
             ),
+            AdapterSlot(
+                BUILDER_OPERATION_ADAPTER_ID,
+                ResourceKind.WORKFLOW,
+                BUILDER_WORKFLOW_RESOURCE_ID,
+            ),
         ),
         browser_adapters=(
+            AdapterSlot(
+                BUILDER_MODE_BROWSER_ADAPTER_ID,
+                ResourceKind.MODE,
+                PROMPT_MODE_RESOURCE_ID,
+                (BUILDER_NODE_TYPE,),
+            ),
             AdapterSlot(
                 PROMPT_MODE_BROWSER_ADAPTER_ID,
                 ResourceKind.MODE,
@@ -272,6 +346,12 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
                 KREA_WORKFLOW_RESOURCE_ID,
                 (KREA_NODE_TYPE,),
             ),
+            AdapterSlot(
+                BUILDER_WORKFLOW_BROWSER_ADAPTER_ID,
+                ResourceKind.WORKFLOW,
+                BUILDER_WORKFLOW_RESOURCE_ID,
+                (BUILDER_NODE_TYPE,),
+            ),
         ),
         scopes=(
             PrivacyScope(
@@ -285,6 +365,12 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
                 PROMPT_MODE_RESOURCE_ID,
                 PROMPT_MODE_ADAPTER_ID,
                 PROMPT_MODE_BROWSER_ADAPTER_ID,
+            ),
+            PrivacyScope(
+                BUILDER_SCOPE_ID,
+                PROMPT_MODE_RESOURCE_ID,
+                BUILDER_MODE_ADAPTER_ID,
+                BUILDER_MODE_BROWSER_ADAPTER_ID,
             ),
         ),
         protected_fields=fields,
@@ -303,6 +389,13 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
                 KREA_PROJECTION_ADAPTER_ID,
                 KREA_DISPATCH_ADAPTER_ID,
             ),
+            SemanticExecutionProjection(
+                BUILDER_PROJECTION_ID,
+                BUILDER_EXECUTION_RESOURCE_ID,
+                BUILDER_WORKFLOW_RESOURCE_ID,
+                BUILDER_PROJECTION_ADAPTER_ID,
+                BUILDER_DISPATCH_ADAPTER_ID,
+            ),
         ),
         protected_operations=(
             ProtectedOperation(
@@ -317,8 +410,14 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
                 KREA_OPERATION_ADAPTER_ID,
                 "/aio_image_generate/inpaint",
             ),
+            ProtectedOperation(
+                "ideogram-builder.build",
+                BUILDER_WORKFLOW_RESOURCE_ID,
+                BUILDER_OPERATION_ADAPTER_ID,
+                "/aio_image_generate/ideogram4/build_prompt",
+            ),
         ),
-        legacy_bindings=tuple(
+        legacy_bindings=(*tuple(
             LegacyReaderBinding(
                 aio_prompt_legacy_binding_id(field_id),
                 AIO_V1_READER_ID,
@@ -327,8 +426,8 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
                 field_id,
             )
             for field_id, facts in _FIELD_FACTS.items()
-        ),
-        legacy_key_imports=tuple(
+        ), *builder_legacy_bindings()),
+        legacy_key_imports=(*tuple(
             LegacyKeyImportBinding(
                 aio_prompt_legacy_key_binding_id(field_id),
                 AIO_V1_JSON_KEY_IMPORT_ID,
@@ -338,7 +437,7 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
                 LegacyKeyFormat.JSON,
             )
             for field_id, facts in _FIELD_FACTS.items()
-        ),
+        ), *builder_legacy_key_imports()),
     )
 
 
@@ -471,14 +570,19 @@ def build_aio_prompt_server_adapters(
     operation = AioPromptOperationAdapter(operation_dispatcher)
     return {
         PROMPT_MODE_ADAPTER_ID: mode,
+        BUILDER_MODE_ADAPTER_ID: AioBuilderModeAdapter(declarations),
         GENERATE_WORKFLOW_ADAPTER_ID: workflow,
         KREA_WORKFLOW_ADAPTER_ID: workflow,
+        BUILDER_WORKFLOW_ADAPTER_ID: AioBuilderWorkflowStateAdapter(),
         GENERATE_PROJECTION_ADAPTER_ID: projection,
         KREA_PROJECTION_ADAPTER_ID: projection,
+        BUILDER_PROJECTION_ADAPTER_ID: AioBuilderExecutionProjectionAdapter(),
         GENERATE_DISPATCH_ADAPTER_ID: dispatch,
         KREA_DISPATCH_ADAPTER_ID: dispatch,
+        BUILDER_DISPATCH_ADAPTER_ID: AioBuilderExecutionDispatchAdapter(),
         GENERATE_OPERATION_ADAPTER_ID: operation,
         KREA_OPERATION_ADAPTER_ID: operation,
+        BUILDER_OPERATION_ADAPTER_ID: AioBuilderOperationAdapter(operation_dispatcher),
     }
 
 
@@ -487,23 +591,7 @@ def dispatch_aio_prompt_execution(
     execution_resource_id: str,
     context: Mapping[str, object],
 ) -> object:
-    """Resolve one injected reference and retain its result only in shared RAM."""
-
-    if isinstance(reference, str):
-        try:
-            reference = json.loads(reference)
-        except json.JSONDecodeError:
-            raise ValueError("PRIVACY_EXECUTION_REFERENCE_INVALID") from None
-    if not isinstance(reference, Mapping):
-        raise ValueError("PRIVACY_EXECUTION_REFERENCE_INVALID")
-    from helto_privacy.runtime import bound_privacy_pack
-
-    execution = bound_privacy_pack(AIO_PRIVACY_PROFILE_ID).execution(
-        execution_resource_id
-    )
-    result = execution.dispatch(reference, context)
-    execution.cache_store(result.cache_identity, result.value)
-    return result.value
+    return dispatch_aio_managed_execution(reference, execution_resource_id, context)
 
 
 def resolve_execution_prompt_semantics(value: object, context: object) -> dict[str, str]:

@@ -1,8 +1,11 @@
-# Managed Generate and Krea prompt privacy
+# Managed Generate, Krea, and Ideogram-builder privacy
 
 `services/managed_prompt_privacy.py` and
 `web/js/aio_managed_prompt_privacy.js` contain the A1 Generate/Krea slice of
 the future atomic `helto.aio-image-generation` privacy profile.
+`services/managed_builder_privacy.py` and
+`web/js/aio_managed_builder_privacy.js` add the inactive Ideogram-builder
+slice to that same profile.
 
 The slice is intentionally not installed from `__init__.py` and the browser
 adapter is intentionally not connected from `aio_image_generate.js`. AIO must
@@ -24,6 +27,12 @@ During this expand phase:
   identities key only the shared session RAM cache.
 - All three locations bind the AIO v1 reader and JSON-key import and rewrite to
   `helto.aio-image-generate.v2` through the shared migration transaction.
+- The builder declares ten sensitive widgets plus one whole-editor field. Its
+  property and both workflow keys are mirrors of the same shared envelope, and
+  all eleven logical fields migrate under one grouped receipt.
+- The builder execution projection includes its prompt text, palettes,
+  elements, coordinates, dimensions, and output controls. It rejects missing
+  fields or a widget value that disagrees with the whole-editor generation.
 
 At atomic activation, connect the profile/browser adapters and let the shared
 queue barrier inject the references that the nodes already understand. Only
@@ -32,6 +41,12 @@ so widget and DOM edits call `markEdited`. Only then remove the old prompt
 `serializeValue` encryption/memo code in
 `aio_image_generate.js` and the legacy-only direct
 `decrypt_text_if_encrypted` branches in `aio_generate.py` and
-`krea2_settings.py`. The current product path remains available until that
+`krea2_settings.py`. At that same cutover, remove the builder's synchronous
+per-widget and whole-state encryption, custom locked preservation/recovery,
+and local toggle policy from `aio_ideogram4_prompt_builder.js`, plus the direct
+decrypt branch in `ideogram4_prompt_builder.py`. Keep writing the property
+`aio_ideogram4_prompt_builder_state` and workflow keys
+`aio_ideogram4_prompt_builder` and `ideo` from the one shared envelope until
+legacy workflow support is deliberately retired. The current product path remains available until that
 single cutover so partially migrated AIO installs cannot save or execute with
 mixed privacy authorities.

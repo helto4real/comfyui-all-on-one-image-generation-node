@@ -34,6 +34,7 @@ from helto_privacy import (
 from helto_privacy.guard import authorize_privacy_request
 
 from nodes.aio_generate import AIOImageGenerate
+from nodes.ideogram4_prompt_builder import AIOIdeogram4PromptBuilder
 from nodes.krea2_settings import AIOKrea2Settings
 from services import pipeline
 from services.managed_prompt_privacy import (
@@ -56,10 +57,28 @@ from services.managed_prompt_privacy import (
     build_aio_prompt_server_adapters,
     resolve_execution_prompt_semantics,
 )
+from services.managed_builder_privacy import (
+    AIO_BUILDER_CURRENT_SCHEMA,
+    BUILDER_EXECUTION_FIELD_IDS,
+    BUILDER_EXECUTION_RESOURCE_ID,
+    BUILDER_LEGACY_WORKFLOW_STATE_KEY,
+    BUILDER_PROJECTION_ID,
+    BUILDER_SCOPE_ID,
+    BUILDER_STATE_FIELD_ID,
+    BUILDER_STATE_PROPERTY,
+    BUILDER_WIDGET_FIELD_IDS,
+    BUILDER_WORKFLOW_RESOURCE_ID,
+    BUILDER_WORKFLOW_STATE_KEY,
+    AioBuilderExecutionProjectionAdapter,
+    AioBuilderMigrationTransaction,
+    AioBuilderModeAdapter,
+    builder_legacy_binding_id,
+)
 from services.prompt_resolution import resolve_prompt_source
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "historical" / "aio_v1_prompt.json"
+BUILDER_FIXTURE = Path(__file__).parent / "fixtures" / "historical" / "aio_v1_builder_state.json"
 
 
 class Request:
@@ -110,20 +129,96 @@ def test_profile_declares_generate_krea_fields_floor_execution_and_legacy_units(
     fields = {field.id: field for field in profile.protected_fields}
     scopes = {scope.id: scope for scope in profile.scopes}
 
-    assert set(fields) == {
+    assert {
         POSITIVE_PROMPT_FIELD_ID,
         NEGATIVE_PROMPT_FIELD_ID,
         KREA_INPAINT_PROMPT_FIELD_ID,
-    }
+    }.issubset(fields)
     assert fields[POSITIVE_PROMPT_FIELD_ID].workflow_resource_id == GENERATE_WORKFLOW_RESOURCE_ID
     assert all(field.execution for field in fields.values())
     assert all(field.legacy_reader_ids == (AIO_V1_READER_ID,) for field in fields.values())
     assert scopes[KREA_SCOPE_ID].floor_scope_ids == ()
-    assert {item.id for item in profile.execution_projections} == {"generate", "inpaint"}
-    assert {item.id for item in profile.protected_operations} == {"generate", "inpaint"}
+    assert {item.id for item in profile.execution_projections} == {
+        "generate", "ideogram-builder", "inpaint"
+    }
+    assert {item.id for item in profile.protected_operations} == {
+        "generate", "ideogram-builder.build", "inpaint"
+    }
     assert {item.import_id for item in profile.legacy_key_imports} == {AIO_V1_JSON_KEY_IMPORT_ID}
-    assert len(profile.legacy_bindings) == 3
-    assert len(profile.legacy_key_imports) == 3
+    assert len(profile.legacy_bindings) == 14
+    assert len(profile.legacy_key_imports) == 14
+
+
+def _builder_state(text: str = "synthetic builder") -> dict[str, object]:
+    widgets = {name: f"{text} {name}" for name in BUILDER_WIDGET_FIELD_IDS}
+    widgets.update(
+        {
+            "max side": 1024,
+            "aspect ratio": "1:1",
+            "multiple value": "none",
+            "privacy_mode": True,
+            "style": "none",
+            "import_mode": "when empty",
+            "output_format": "compact",
+            "coord_mode": "normalized",
+            "bbox_order": "yx",
+            "bg_brightness": 25,
+        }
+    )
+    widgets["style_palette_data"] = ""
+    widgets["elements_data"] = ""
+    widgets["import_json"] = ""
+    return {
+        "version": 1,
+        "widgets": widgets,
+        "elements": [],
+        "style_palette": [],
+        "bg_brightness": 25,
+        "output_format": "compact",
+        "coord_mode": "normalized",
+        "bbox_order": "yx",
+        "active": -1,
+    }
+
+
+def test_builder_profile_declares_widgets_state_mirrors_mode_and_projection():
+    profile = build_aio_prompt_privacy_profile()
+    fields = {field.id: field for field in profile.protected_fields}
+    state = fields[BUILDER_STATE_FIELD_ID]
+
+    assert set(BUILDER_EXECUTION_FIELD_IDS).issubset(fields)
+    assert state.workflow_resource_id == BUILDER_WORKFLOW_RESOURCE_ID
+    assert state.location.name == BUILDER_STATE_PROPERTY
+    assert {location.name for location in state.mirror_locations} == {
+        BUILDER_WORKFLOW_STATE_KEY,
+        BUILDER_LEGACY_WORKFLOW_STATE_KEY,
+    }
+    assert state.current_schema == AIO_BUILDER_CURRENT_SCHEMA
+    assert next(scope for scope in profile.scopes if scope.id == BUILDER_SCOPE_ID).floor_scope_ids == ()
+    assert AioBuilderModeAdapter().read_declared_mode(BUILDER_SCOPE_ID) == "inherit"
+    assert AioBuilderModeAdapter({BUILDER_SCOPE_ID: False}).read_declared_mode(BUILDER_SCOPE_ID) == "public"
+
+
+def test_builder_projection_requires_one_consistent_complete_generation():
+    profile = build_aio_prompt_privacy_profile()
+    declaration = next(
+        item for item in profile.execution_projections if item.id == BUILDER_PROJECTION_ID
+    )
+    state = _builder_state()
+    fields = {
+        field_id: {"value": state["widgets"][widget_name]}
+        for widget_name, field_id in BUILDER_WIDGET_FIELD_IDS.items()
+    }
+    fields[BUILDER_STATE_FIELD_ID] = state
+    projection = AioBuilderExecutionProjectionAdapter()
+
+    assert projection.project(fields, declaration) == state
+    fields[BUILDER_WIDGET_FIELD_IDS["background"]] = {"value": "stale mirror"}
+    with pytest.raises(ValueError, match="inconsistent"):
+        projection.project(fields, declaration)
+    del fields[BUILDER_WIDGET_FIELD_IDS["background"]]
+    with pytest.raises(ValueError, match="incomplete"):
+        projection.project(fields, declaration)
 
 
 def test_mode_mapping_defaults_private_and_krea_cannot_weaken_generate_floor(tmp_path, monkeypatch):
@@ -466,3 +561,140 @@ def test_krea_node_dispatches_private_reference_into_settings(tmp_path, monkeypa
 
     assert settings["positive_prompt_override"] == "managed inpaint"
     assert settings["positive_prompt_source"] == "krea2_inpaint_settings"
+
+
+def test_builder_genuine_v1_fields_and_mirrors_rewrite_under_one_receipt(
+    tmp_path,
+    monkeypatch,
+):
+    pack, token = _installed_pack(tmp_path, monkeypatch)
+    prompt_fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    builder_fixture = json.loads(BUILDER_FIXTURE.read_text(encoding="utf-8"))
+    source = tmp_path / "privacy_key.json"
+    _write_historical_key(source)
+    pack.migration.import_legacy_key_source(
+        AIO_V1_JSON_KEY_IMPORT_ID,
+        source,
+        "synthetic AIO prompt password",
+        LegacyKeyFormat.JSON,
+        _authorization(pack, token, "migration.key-import"),
+    )
+    token = shared_keystore.session_token()
+    expected = {}
+    discovered = []
+    for field_id in BUILDER_EXECUTION_FIELD_IDS:
+        fixture = builder_fixture if field_id == BUILDER_STATE_FIELD_ID else prompt_fixture
+        result = pack.migration.discover_and_read(
+            builder_legacy_binding_id(field_id),
+            fixture["envelope"],
+            _authorization(pack, token, "migration.read"),
+        )
+        discovered.append(result)
+        expected[field_id] = fixture["expectedNormalized"]
+
+    original_state = builder_fixture["envelope"]
+    store = {
+        "widgets": {
+            name: prompt_fixture["envelope"] for name in BUILDER_WIDGET_FIELD_IDS
+        },
+        "properties": {BUILDER_STATE_PROPERTY: original_state},
+        "workflow": {
+            BUILDER_WORKFLOW_STATE_KEY: original_state,
+            BUILDER_LEGACY_WORKFLOW_STATE_KEY: original_state,
+        },
+    }
+    transaction = AioBuilderMigrationTransaction(
+        pack.workflow(BUILDER_WORKFLOW_RESOURCE_ID),
+        store,
+        _authorization(pack, token, "snapshot.protect"),
+        _authorization(pack, token, "snapshot.reveal"),
+    )
+    receipt = pack.migration.complete_many(
+        [item.obligation.id for item in discovered],
+        expected,
+        transaction,
+        _authorization(pack, token, "migration.complete"),
+    )
+
+    mirrors = (
+        store["properties"][BUILDER_STATE_PROPERTY],
+        store["workflow"][BUILDER_WORKFLOW_STATE_KEY],
+        store["workflow"][BUILDER_LEGACY_WORKFLOW_STATE_KEY],
+    )
+    assert len(receipt.obligation_ids) == len(BUILDER_EXECUTION_FIELD_IDS)
+    assert mirrors[0] == mirrors[1] == mirrors[2]
+    assert mirrors[0]["schema"] == AIO_BUILDER_CURRENT_SCHEMA
+    assert all(
+        envelope["schema"] == AIO_BUILDER_CURRENT_SCHEMA
+        for envelope in store["widgets"].values()
+    )
+    assert json.dumps(store).find('"schema": "helto.aio-image-generate"') == -1
+
+
+def test_builder_node_dispatches_managed_generation_through_product_builder(
+    tmp_path,
+    monkeypatch,
+):
+    pack, token = _installed_pack(tmp_path, monkeypatch)
+    state = _builder_state("managed")
+    state["widgets"].update(
+        {
+            "high_level_description": "Managed overview",
+            "background": "Managed room",
+            "style": "none",
+            "privacy_mode": False,
+            "style_palette_data": '["#fab387"]',
+            "elements_data": json.dumps(
+                [
+                    {
+                        "x": 0.1,
+                        "y": 0.2,
+                        "w": 0.3,
+                        "h": 0.4,
+                        "type": "obj",
+                        "desc": "Managed subject",
+                    }
+                ]
+            ),
+            "coord_mode": "absolute",
+            "bbox_order": "xy",
+        }
+    )
+    state.update(
+        {
+            "style_palette": ["#fab387"],
+            "elements": json.loads(state["widgets"]["elements_data"]),
+            "coord_mode": "absolute",
+            "bbox_order": "xy",
+        }
+    )
+    codec = PrivacyEnvelopeCodec(AIO_BUILDER_CURRENT_SCHEMA)
+    protected = {
+        field_id: codec.encrypt_state({"value": state["widgets"][widget_name]})
+        for widget_name, field_id in BUILDER_WIDGET_FIELD_IDS.items()
+    }
+    protected[BUILDER_STATE_FIELD_ID] = codec.encrypt_state(state)
+    prepared = pack.execution(BUILDER_EXECUTION_RESOURCE_ID).prepare(
+        BUILDER_PROJECTION_ID,
+        protected,
+        _authorization(pack, token, "execution.prepare"),
+    )
+    monkeypatch.setattr(
+        AIOIdeogram4PromptBuilder,
+        "_render_preview",
+        staticmethod(lambda *_args: "preview"),
+    )
+
+    result = AIOIdeogram4PromptBuilder().build_prompt(
+        background="untrusted raw background",
+        privacy_mode=False,
+        private_execution=json.dumps(prepared.reference),
+        **{"max side": 512, "aspect ratio": "1:1", "multiple value": "none"},
+    )["result"]
+
+    assert result[2] == "preview"
+    assert result[4:6] == (1024, 1024)
+    assert "Managed overview" in result[1]
+    assert "Managed room" in result[1]
+    assert json.loads(result[1])["compositional_deconstruction"]["elements"][0]["bbox"] == [102, 205, 410, 614]
+    assert "untrusted raw background" not in result[1]

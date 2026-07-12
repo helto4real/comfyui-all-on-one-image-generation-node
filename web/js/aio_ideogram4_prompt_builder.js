@@ -1186,6 +1186,7 @@ function createEditor(node) {
       }
       updatePrivacyClasses();
       app.graph?.setDirtyCanvas?.(true, true);
+      managedEditHandler?.();
     } finally {
       serializeActive = false;
     }
@@ -1386,9 +1387,37 @@ function createEditor(node) {
     else restoreEncryptedWidgets();
   }
 
+  let managedEditHandler = null;
   node._aioIdeogram4EditorApi = {
     serializeForWorkflow,
     restoreFromWorkflow,
+    flushManagedEdits() {
+      syncExecutionWidgets();
+      return currentState();
+    },
+    applyManagedState(state) {
+      restorePlainState(state, { markDirty: false, restorePrivacyMode: true });
+    },
+    clearManagedState() {
+      const widgets = Object.fromEntries(SENSITIVE_WIDGET_NAMES.map((name) => [name, ""]));
+      restorePlainState({
+        version: 1,
+        widgets,
+        elements: [],
+        style_palette: [],
+        bg_brightness: brightnessWidget?.value ?? 25,
+        output_format: outputFormatWidget?.value ?? "compact",
+        coord_mode: coordModeWidget?.value === "absolute" ? "absolute" : "normalized",
+        bbox_order: bboxOrderWidget?.value === "xy" ? "xy" : "yx",
+        active: -1,
+      }, { markDirty: false });
+    },
+    setManagedEditHandler(handler) {
+      if (handler !== null && typeof handler !== "function") {
+        throw new Error("Invalid managed privacy edit handler.");
+      }
+      managedEditHandler = handler;
+    },
   };
 
   function captionText() {
