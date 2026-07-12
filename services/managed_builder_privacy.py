@@ -349,6 +349,11 @@ class AioBuilderMigrationTransaction:
         )
         normalized[BUILDER_STATE_FIELD_ID] = state_result.value
         current = current and _mapping_get(mirrors[0], "schema") == AIO_BUILDER_CURRENT_SCHEMA
+        if (
+            _mapping_get(normalized[BUILDER_STATE_FIELD_ID], "effective_privacy_mode")
+            is not self.effective_privacy_mode
+        ):
+            raise ValueError("AIO builder migration effective mode was not preserved.")
         project_builder_generation(normalized)
         normalized[BUILDER_STATE_FIELD_ID].pop("effective_privacy_mode", None)
         return MigrationVerification(normalized, current, True)

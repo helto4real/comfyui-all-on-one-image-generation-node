@@ -271,6 +271,49 @@ def test_builder_migration_staging_rejects_an_inconsistent_generation():
     assert calls == []
 
 
+def test_builder_migration_readback_rejects_a_lost_effective_floor():
+    state = _builder_state()
+    fields = {
+        field_id: {"value": state["widgets"][widget_name]}
+        for widget_name, field_id in BUILDER_WIDGET_FIELD_IDS.items()
+    }
+    fields[BUILDER_STATE_FIELD_ID] = state
+
+    class Result:
+        def __init__(self, *, envelope=None, value=None):
+            self.envelope = envelope
+            self.value = value
+
+    class Workflow:
+        def protect(self, field_id, value, _authorization):
+            return Result(
+                envelope={
+                    "field": field_id,
+                    "value": value,
+                    "schema": AIO_BUILDER_CURRENT_SCHEMA,
+                }
+            )
+
+        def reveal(self, field_id, envelope, _authorization):
+            value = json.loads(json.dumps(envelope["value"]))
+            if field_id == BUILDER_STATE_FIELD_ID:
+                value["effective_privacy_mode"] = False
+            return Result(value=value)
+
+    transaction = AioBuilderMigrationTransaction(
+        Workflow(),
+        {"widgets": {}, "properties": {}, "workflow": {}},
+        object(),
+        object(),
+        True,
+    )
+    transaction.capture_original()
+    transaction.stage_current(fields)
+    transaction.commit()
+    with pytest.raises(ValueError, match="effective mode was not preserved"):
+        transaction.read_back()
+
+
 def test_mode_mapping_defaults_private_and_krea_cannot_weaken_generate_floor(tmp_path, monkeypatch):
     pack, _token = _installed_pack(tmp_path, monkeypatch)
     mode = pack.mode("prompt-mode")
