@@ -8,10 +8,9 @@ from typing import Any
 try:
     from ..adapters import Flux2Klein9BAdapter, Ideogram4Adapter, Krea2Adapter, ZImageTurboAdapter  # noqa: F401
     from ..services import pipeline, privacy
-    from ..services.managed_prompt_privacy import (
+    from ..services.prompt_resolution import (
         GENERATE_EXECUTION_RESOURCE_ID,
         MASKED_PROMPT_VALUE,
-        dispatch_aio_prompt_execution,
         prompt_input_is_link,
         resolve_prompt_source,
     )
@@ -46,10 +45,9 @@ try:
 except ImportError:  # pragma: no cover - direct test imports
     from adapters import Flux2Klein9BAdapter, Ideogram4Adapter, Krea2Adapter, ZImageTurboAdapter  # noqa: F401
     from services import pipeline, privacy
-    from services.managed_prompt_privacy import (
+    from services.prompt_resolution import (
         GENERATE_EXECUTION_RESOURCE_ID,
         MASKED_PROMPT_VALUE,
-        dispatch_aio_prompt_execution,
         prompt_input_is_link,
         resolve_prompt_source,
     )
@@ -1039,6 +1037,10 @@ class AIOImageGenerate:
     ):
         if private_execution:
             bound_inputs = dict(locals())
+            try:
+                from ..services.managed_prompt_privacy import dispatch_aio_prompt_execution
+            except ImportError:  # pragma: no cover - direct test imports
+                from services.managed_prompt_privacy import dispatch_aio_prompt_execution
             product_inputs = {
                 key: value
                 for key, value in bound_inputs.items()

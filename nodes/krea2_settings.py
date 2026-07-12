@@ -4,9 +4,8 @@ from __future__ import annotations
 
 try:
     from ..services import privacy
-    from ..services.managed_prompt_privacy import (
+    from ..services.prompt_resolution import (
         KREA_EXECUTION_RESOURCE_ID,
-        dispatch_aio_prompt_execution,
         prompt_input_is_link,
     )
     from ..services.performance import (
@@ -17,9 +16,8 @@ try:
     )
 except ImportError:  # pragma: no cover - direct test imports
     from services import privacy
-    from services.managed_prompt_privacy import (
+    from services.prompt_resolution import (
         KREA_EXECUTION_RESOURCE_ID,
-        dispatch_aio_prompt_execution,
         prompt_input_is_link,
     )
     from services.performance import (
@@ -149,6 +147,10 @@ class AIOKrea2Settings:
     ):
         if private_execution:
             bound_inputs = dict(locals())
+            try:
+                from ..services.managed_prompt_privacy import dispatch_aio_prompt_execution
+            except ImportError:  # pragma: no cover - direct test imports
+                from services.managed_prompt_privacy import dispatch_aio_prompt_execution
             product_inputs = {
                 key: value
                 for key, value in bound_inputs.items()

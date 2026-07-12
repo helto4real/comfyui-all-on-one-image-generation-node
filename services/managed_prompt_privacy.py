@@ -32,6 +32,12 @@ from helto_privacy import (
     SemanticExecutionProjection,
 )
 
+from .prompt_resolution import (
+    GENERATE_EXECUTION_RESOURCE_ID,
+    KREA_EXECUTION_RESOURCE_ID,
+    normalize_prompt_text,
+)
+
 
 AIO_PRIVACY_PROFILE_ID = "helto.aio-image-generation"
 AIO_PRIVACY_DISTRIBUTION = "comfyui-all-on-one-image-generation-node"
@@ -43,8 +49,6 @@ KREA_NODE_TYPE = "AIOKrea2Settings"
 PROMPT_MODE_RESOURCE_ID = "prompt-mode"
 GENERATE_WORKFLOW_RESOURCE_ID = "generate-prompts"
 KREA_WORKFLOW_RESOURCE_ID = "krea-inpaint"
-GENERATE_EXECUTION_RESOURCE_ID = "generate-execution"
-KREA_EXECUTION_RESOURCE_ID = "krea-inpaint-execution"
 
 GENERATE_SCOPE_ID = "generate"
 KREA_SCOPE_ID = "krea-inpaint"
@@ -112,10 +116,6 @@ _FIELD_FACTS = {
         "inpaint_positive_prompt",
     ),
 }
-MASKED_PROMPT_VALUE = "Private prompt - hover to reveal"
-_MASKED_PROMPT_VALUES = frozenset(
-    {"[private prompt]", MASKED_PROMPT_VALUE}
-)
 _PROJECTION_FACTS = {
     GENERATE_PROJECTION_ID: AioPromptProjectionFacts(
         field_to_semantic=(
@@ -506,40 +506,6 @@ def dispatch_aio_prompt_execution(
     return result.value
 
 
-def resolve_prompt_source(
-    value: object,
-    *,
-    linked: bool,
-    workflow_value: object = None,
-) -> str:
-    """Preserve ComfyUI's linked-input and unlinked workflow fallback rules."""
-
-    resolved = normalize_prompt_text(value)
-    if linked or resolved.strip():
-        return resolved
-    if workflow_value is None or workflow_value in _MASKED_PROMPT_VALUES:
-        return resolved
-    fallback = normalize_prompt_text(workflow_value)
-    return fallback if fallback.strip() else resolved
-
-
-def prompt_input_is_link(prompt: object, unique_id: object, input_name: str) -> bool:
-    if not isinstance(prompt, Mapping) or unique_id is None:
-        return False
-    node = prompt.get(str(unique_id), prompt.get(unique_id))
-    if not isinstance(node, Mapping):
-        return False
-    inputs = node.get("inputs", {})
-    if not isinstance(inputs, Mapping):
-        return False
-    value = inputs.get(input_name)
-    return (
-        isinstance(value, (list, tuple))
-        and len(value) == 2
-        and isinstance(value[1], int)
-    )
-
-
 def resolve_execution_prompt_semantics(value: object, context: object) -> dict[str, str]:
     """Overlay evaluated linked inputs onto one protected local snapshot."""
 
@@ -569,16 +535,6 @@ def resolve_execution_prompt_semantics(value: object, context: object) -> dict[s
         if semantic_name in facts.stripped_semantics:
             semantic[semantic_name] = semantic[semantic_name].strip()
     return semantic
-
-
-def normalize_prompt_text(value: object) -> str:
-    if isinstance(value, Mapping) and set(value) == {"value"}:
-        value = value["value"]
-    if value is None:
-        return ""
-    if not isinstance(value, str):
-        raise ValueError("AIO prompt text is invalid.")
-    return value
 
 
 def _declaration_id(declaration: object) -> str:

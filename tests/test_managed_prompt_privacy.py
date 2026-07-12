@@ -54,9 +54,9 @@ from services.managed_prompt_privacy import (
     aio_prompt_legacy_binding_id,
     build_aio_prompt_privacy_profile,
     build_aio_prompt_server_adapters,
-    resolve_prompt_source,
     resolve_execution_prompt_semantics,
 )
+from services.prompt_resolution import resolve_prompt_source
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "historical" / "aio_v1_prompt.json"
