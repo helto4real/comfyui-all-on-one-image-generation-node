@@ -33,6 +33,12 @@ During this expand phase:
 - The builder execution projection includes its prompt text, palettes,
   elements, coordinates, dimensions, and output controls. It rejects missing
   fields or a widget value that disagrees with the whole-editor generation.
+  The shared effective mode is written into that projection, so a private
+  downstream Generate floor cannot be weakened by the legacy local boolean.
+- Builder execution results are not stored in the semantic RAM cache because
+  preview images and optional bbox seeds are live execution inputs outside the
+  protected workflow state. Generate/Krea prompt results retain their existing
+  cache policy.
 
 At atomic activation, connect the profile/browser adapters and let the shared
 queue barrier inject the references that the nodes already understand. Only

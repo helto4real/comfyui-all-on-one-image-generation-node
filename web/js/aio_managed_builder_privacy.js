@@ -193,7 +193,12 @@ export function createAioBuilderWorkflowBrowserAdapter({ workflowHandle = null }
     normalize(node, context) {
       const field = fieldFacts(context);
       const state = flushState(node);
-      if (field.state) return state;
+      if (field.state) {
+        if (["private", "public"].includes(context?.effectiveMode)) {
+          state.widgets.privacy_mode = context.effectiveMode === "private";
+        }
+        return state;
+      }
       if (!(field.widget in state.widgets) || typeof state.widgets[field.widget] !== "string") fail();
       return { value: state.widgets[field.widget] };
     },

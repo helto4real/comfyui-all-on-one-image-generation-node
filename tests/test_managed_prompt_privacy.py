@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 import helto_privacy.execution as shared_execution
 import helto_privacy.envelope as shared_envelope
@@ -124,6 +125,31 @@ def _write_historical_key(path: Path) -> None:
     )
 
 
+def _aio_v1_envelope(state: object, nonce_label: str) -> dict[str, object]:
+    """Reproduce the pinned AIO v1 writer with synthetic deterministic inputs."""
+
+    key = hashlib.sha256(b"helto-aio-v1-historical-fixture-key").digest()
+    encode = lambda value: base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+    key_id = encode(hashlib.sha256(key).digest()[:12])
+    nonce = hashlib.sha256(f"aio-builder-{nonce_label}".encode()).digest()[:12]
+    aad = f"helto.aio-image-generate|1|AES-256-GCM|{key_id}".encode()
+    plaintext = json.dumps(
+        state,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return {
+        "version": 1,
+        "schema": "helto.aio-image-generate",
+        "encrypted": True,
+        "algorithm": "AES-256-GCM",
+        "keyId": key_id,
+        "nonce": encode(nonce),
+        "ciphertext": encode(AESGCM(key).encrypt(nonce, plaintext, aad)),
+    }
+
+
 def test_profile_declares_generate_krea_fields_floor_execution_and_legacy_units():
     profile = build_aio_prompt_privacy_profile()
     fields = {field.id: field for field in profile.protected_fields}
@@ -219,6 +245,27 @@ def test_builder_projection_requires_one_consistent_complete_generation():
     del fields[BUILDER_WIDGET_FIELD_IDS["background"]]
     with pytest.raises(ValueError, match="incomplete"):
         projection.project(fields, declaration)
+
+
+def test_builder_migration_staging_rejects_an_inconsistent_generation():
+    state = _builder_state()
+    fields = {
+        field_id: {"value": state["widgets"][widget_name]}
+        for widget_name, field_id in BUILDER_WIDGET_FIELD_IDS.items()
+    }
+    fields[BUILDER_STATE_FIELD_ID] = state
+    fields[BUILDER_WIDGET_FIELD_IDS["background"]] = {"value": "stale mirror"}
+    calls = []
+
+    class Workflow:
+        def protect(self, *args):
+            calls.append(args)
+            raise AssertionError("inconsistent fields must fail before encryption")
+
+    transaction = AioBuilderMigrationTransaction(Workflow(), {}, object(), object())
+    with pytest.raises(ValueError, match="inconsistent"):
+        transaction.stage_current(fields)
+    assert calls == []
 
 
 def test_mode_mapping_defaults_private_and_krea_cannot_weaken_generate_floor(tmp_path, monkeypatch):
@@ -568,8 +615,6 @@ def test_builder_genuine_v1_fields_and_mirrors_rewrite_under_one_receipt(
     monkeypatch,
 ):
     pack, token = _installed_pack(tmp_path, monkeypatch)
-    prompt_fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    builder_fixture = json.loads(BUILDER_FIXTURE.read_text(encoding="utf-8"))
     source = tmp_path / "privacy_key.json"
     _write_historical_key(source)
     pack.migration.import_legacy_key_source(
@@ -580,22 +625,31 @@ def test_builder_genuine_v1_fields_and_mirrors_rewrite_under_one_receipt(
         _authorization(pack, token, "migration.key-import"),
     )
     token = shared_keystore.session_token()
-    expected = {}
+    state = _builder_state("legacy")
+    expected = {
+        field_id: {"value": state["widgets"][widget_name]}
+        for widget_name, field_id in BUILDER_WIDGET_FIELD_IDS.items()
+    }
+    expected[BUILDER_STATE_FIELD_ID] = state
+    legacy = {
+        field_id: _aio_v1_envelope(value, field_id)
+        for field_id, value in expected.items()
+    }
     discovered = []
     for field_id in BUILDER_EXECUTION_FIELD_IDS:
-        fixture = builder_fixture if field_id == BUILDER_STATE_FIELD_ID else prompt_fixture
         result = pack.migration.discover_and_read(
             builder_legacy_binding_id(field_id),
-            fixture["envelope"],
+            legacy[field_id],
             _authorization(pack, token, "migration.read"),
         )
         discovered.append(result)
-        expected[field_id] = fixture["expectedNormalized"]
+        assert result.value == expected[field_id]
 
-    original_state = builder_fixture["envelope"]
+    original_state = legacy[BUILDER_STATE_FIELD_ID]
     store = {
         "widgets": {
-            name: prompt_fixture["envelope"] for name in BUILDER_WIDGET_FIELD_IDS
+            name: legacy[field_id]
+            for name, field_id in BUILDER_WIDGET_FIELD_IDS.items()
         },
         "properties": {BUILDER_STATE_PROPERTY: original_state},
         "workflow": {
@@ -631,6 +685,30 @@ def test_builder_genuine_v1_fields_and_mirrors_rewrite_under_one_receipt(
     assert json.dumps(store).find('"schema": "helto.aio-image-generate"') == -1
 
 
+def test_committed_genuine_builder_fixture_still_uses_the_exact_aio_v1_reader(
+    tmp_path,
+    monkeypatch,
+):
+    pack, token = _installed_pack(tmp_path, monkeypatch)
+    fixture = json.loads(BUILDER_FIXTURE.read_text(encoding="utf-8"))
+    source = tmp_path / "privacy_key.json"
+    _write_historical_key(source)
+    pack.migration.import_legacy_key_source(
+        AIO_V1_JSON_KEY_IMPORT_ID,
+        source,
+        "synthetic AIO prompt password",
+        LegacyKeyFormat.JSON,
+        _authorization(pack, token, "migration.key-import"),
+    )
+    token = shared_keystore.session_token()
+    discovered = pack.migration.discover_and_read(
+        builder_legacy_binding_id(BUILDER_STATE_FIELD_ID),
+        fixture["envelope"],
+        _authorization(pack, token, "migration.read"),
+    )
+    assert discovered.value == fixture["expectedNormalized"]
+
+
 def test_builder_node_dispatches_managed_generation_through_product_builder(
     tmp_path,
     monkeypatch,
@@ -642,7 +720,7 @@ def test_builder_node_dispatches_managed_generation_through_product_builder(
             "high_level_description": "Managed overview",
             "background": "Managed room",
             "style": "none",
-            "privacy_mode": False,
+            "privacy_mode": True,
             "style_palette_data": '["#fab387"]',
             "elements_data": json.dumps(
                 [
@@ -674,7 +752,13 @@ def test_builder_node_dispatches_managed_generation_through_product_builder(
         for widget_name, field_id in BUILDER_WIDGET_FIELD_IDS.items()
     }
     protected[BUILDER_STATE_FIELD_ID] = codec.encrypt_state(state)
-    prepared = pack.execution(BUILDER_EXECUTION_RESOURCE_ID).prepare(
+    execution = pack.execution(BUILDER_EXECUTION_RESOURCE_ID)
+    prepared = execution.prepare(
+        BUILDER_PROJECTION_ID,
+        protected,
+        _authorization(pack, token, "execution.prepare"),
+    )
+    second_prepared = execution.prepare(
         BUILDER_PROJECTION_ID,
         protected,
         _authorization(pack, token, "execution.prepare"),
@@ -682,17 +766,26 @@ def test_builder_node_dispatches_managed_generation_through_product_builder(
     monkeypatch.setattr(
         AIOIdeogram4PromptBuilder,
         "_render_preview",
-        staticmethod(lambda *_args: "preview"),
+        staticmethod(lambda _boxes, _width, _height, image, _brightness: image),
     )
 
     result = AIOIdeogram4PromptBuilder().build_prompt(
         background="untrusted raw background",
+        image="preview-one",
         privacy_mode=False,
         private_execution=json.dumps(prepared.reference),
         **{"max side": 512, "aspect ratio": "1:1", "multiple value": "none"},
     )["result"]
+    second_result = AIOIdeogram4PromptBuilder().build_prompt(
+        background="another untrusted background",
+        image="preview-two",
+        privacy_mode=False,
+        private_execution=json.dumps(second_prepared.reference),
+        **{"max side": 512, "aspect ratio": "1:1", "multiple value": "none"},
+    )["result"]
 
-    assert result[2] == "preview"
+    assert result[2] == "preview-one"
+    assert second_result[2] == "preview-two"
     assert result[4:6] == (1024, 1024)
     assert "Managed overview" in result[1]
     assert "Managed room" in result[1]

@@ -13,6 +13,8 @@ def dispatch_aio_managed_execution(
     reference: object,
     execution_resource_id: str,
     context: Mapping[str, object],
+    *,
+    cache_result: bool = True,
 ) -> object:
     """Resolve one injected reference and retain its result only in shared RAM."""
 
@@ -29,5 +31,6 @@ def dispatch_aio_managed_execution(
         execution_resource_id
     )
     result = execution.dispatch(reference, context)
-    execution.cache_store(result.cache_identity, result.value)
+    if cache_result:
+        execution.cache_store(result.cache_identity, result.value)
     return result.value

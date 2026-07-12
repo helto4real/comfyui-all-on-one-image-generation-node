@@ -243,31 +243,7 @@ class AioBuilderExecutionProjectionAdapter:
     def project(self, fields: Mapping[str, object], declaration: object) -> dict[str, object]:
         if getattr(declaration, "id", None) != BUILDER_PROJECTION_ID:
             raise ValueError("Unknown AIO builder projection.")
-        if set(fields) != set(BUILDER_EXECUTION_FIELD_IDS):
-            raise ValueError("AIO builder snapshot is incomplete.")
-        state = normalize_builder_state(fields[BUILDER_STATE_FIELD_ID])
-        widgets = state.get("widgets")
-        if not isinstance(widgets, dict):
-            raise ValueError("AIO builder state widgets are unavailable.")
-        if any(name not in widgets for name in BUILDER_CONTROL_WIDGETS):
-            raise ValueError("AIO builder semantic controls are incomplete.")
-        inputs = copy.deepcopy(widgets)
-        for widget_name, field_id in BUILDER_WIDGET_FIELD_IDS.items():
-            value = normalize_builder_text(fields[field_id])
-            if widget_name not in widgets or normalize_builder_text(widgets[widget_name]) != value:
-                raise ValueError("AIO builder field mirrors are inconsistent.")
-            inputs[widget_name] = value
-        if _json_list(inputs["style_palette_data"], "style_palette") != state.get(
-            "style_palette", []
-        ):
-            raise ValueError("AIO builder palette mirrors are inconsistent.")
-        if _builder_elements(inputs["elements_data"]) != state.get("elements", []):
-            raise ValueError("AIO builder element mirrors are inconsistent.")
-        for name in ("bg_brightness", "output_format", "coord_mode", "bbox_order"):
-            if state.get(name) != inputs[name]:
-                raise ValueError("AIO builder control mirrors are inconsistent.")
-        state["widgets"] = inputs
-        return state
+        return project_builder_generation(fields)
 
 
 class AioBuilderExecutionDispatchAdapter:
@@ -309,6 +285,7 @@ class AioBuilderMigrationTransaction:
     def stage_current(self, normalized: object) -> None:
         if not isinstance(normalized, Mapping) or set(normalized) != set(BUILDER_EXECUTION_FIELD_IDS):
             raise ValueError("AIO builder migration set is incomplete.")
+        project_builder_generation(normalized)
         self.staged = {
             field_id: self.workflow.protect(
                 field_id,
@@ -363,6 +340,7 @@ class AioBuilderMigrationTransaction:
         )
         normalized[BUILDER_STATE_FIELD_ID] = state_result.value
         current = current and _mapping_get(mirrors[0], "schema") == AIO_BUILDER_CURRENT_SCHEMA
+        project_builder_generation(normalized)
         return MigrationVerification(normalized, current, True)
 
     def rollback(self, original: object) -> None:
@@ -405,6 +383,36 @@ def normalize_builder_state(value: object) -> dict[str, object]:
     return normalized
 
 
+def project_builder_generation(fields: Mapping[str, object]) -> dict[str, object]:
+    """Validate and project one coherent widget plus whole-editor generation."""
+
+    if set(fields) != set(BUILDER_EXECUTION_FIELD_IDS):
+        raise ValueError("AIO builder snapshot is incomplete.")
+    state = normalize_builder_state(fields[BUILDER_STATE_FIELD_ID])
+    widgets = state.get("widgets")
+    if not isinstance(widgets, dict):
+        raise ValueError("AIO builder state widgets are unavailable.")
+    if any(name not in widgets for name in BUILDER_CONTROL_WIDGETS):
+        raise ValueError("AIO builder semantic controls are incomplete.")
+    inputs = copy.deepcopy(widgets)
+    for widget_name, field_id in BUILDER_WIDGET_FIELD_IDS.items():
+        value = normalize_builder_text(fields[field_id])
+        if widget_name not in widgets or normalize_builder_text(widgets[widget_name]) != value:
+            raise ValueError("AIO builder field mirrors are inconsistent.")
+        inputs[widget_name] = value
+    if _json_list(inputs["style_palette_data"], "style_palette") != state.get(
+        "style_palette", []
+    ):
+        raise ValueError("AIO builder palette mirrors are inconsistent.")
+    if _builder_elements(inputs["elements_data"]) != state.get("elements", []):
+        raise ValueError("AIO builder element mirrors are inconsistent.")
+    for name in ("bg_brightness", "output_format", "coord_mode", "bbox_order"):
+        if state.get(name) != inputs[name]:
+            raise ValueError("AIO builder control mirrors are inconsistent.")
+    state["widgets"] = inputs
+    return state
+
+
 def _json_list(value: object, label: str) -> list[object]:
     if value is None or value == "":
         return []
@@ -444,6 +452,7 @@ def dispatch_aio_builder_execution(reference: object, context: Mapping[str, obje
         reference,
         BUILDER_EXECUTION_RESOURCE_ID,
         context,
+        cache_result=False,
     )
 
 

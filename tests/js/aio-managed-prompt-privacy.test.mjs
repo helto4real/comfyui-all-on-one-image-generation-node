@@ -213,6 +213,18 @@ test("builder mode facts carry every connected Generate private floor", () => {
   });
   generate.widgets[0].value = false;
   assert.equal(adapter.readModeFacts(builder).upstream[0].mode, "public");
+
+  const workflow = createAioBuilderWorkflowBrowserAdapter();
+  builder.widgets.find((item) => item.name === "privacy_mode").value = false;
+  builder.edit("privacy_mode", false);
+  assert.equal(workflow.normalize(builder, {
+    fieldId: AIO_BUILDER_STATE_FIELD_ID,
+    effectiveMode: "private",
+  }).widgets.privacy_mode, true);
+  assert.equal(workflow.normalize(builder, {
+    fieldId: AIO_BUILDER_STATE_FIELD_ID,
+    effectiveMode: "public",
+  }).widgets.privacy_mode, false);
 });
 
 
