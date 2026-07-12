@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 try:
     from ..adapters import Flux2Klein9BAdapter, Ideogram4Adapter, Krea2Adapter, ZImageTurboAdapter  # noqa: F401
     from ..services import pipeline, privacy
+    from ..services.managed_prompt_privacy import (
+        GENERATE_EXECUTION_RESOURCE_ID,
+        MASKED_PROMPT_VALUE,
+        dispatch_aio_prompt_execution,
+        prompt_input_is_link,
+        resolve_prompt_source,
+    )
     from ..services.dimensions import (
         ASPECT_RATIOS,
         MULTIPLE_VALUES,
@@ -38,6 +46,13 @@ try:
 except ImportError:  # pragma: no cover - direct test imports
     from adapters import Flux2Klein9BAdapter, Ideogram4Adapter, Krea2Adapter, ZImageTurboAdapter  # noqa: F401
     from services import pipeline, privacy
+    from services.managed_prompt_privacy import (
+        GENERATE_EXECUTION_RESOURCE_ID,
+        MASKED_PROMPT_VALUE,
+        dispatch_aio_prompt_execution,
+        prompt_input_is_link,
+        resolve_prompt_source,
+    )
     from services.dimensions import (
         ASPECT_RATIOS,
         MULTIPLE_VALUES,
@@ -95,7 +110,6 @@ AIO_GENERATE_SERIALIZED_WIDGET_NAMES = (
     "second_pass_upscale_ratio",
     "second_pass_upscale_method",
 )
-MASKED_PROMPT_VALUE = "Private prompt - hover to reveal"
 KREA_INPAINT_PROMPT_SOURCE = "krea2_inpaint_settings"
 
 
@@ -172,17 +186,7 @@ def _validate_batch_count(value: Any) -> int:
 
 
 def _prompt_input_is_link(prompt: Any, unique_id: str | None, input_name: str) -> bool:
-    if not isinstance(prompt, dict) or unique_id is None:
-        return False
-    node = prompt.get(str(unique_id))
-    if not isinstance(node, dict):
-        node = prompt.get(unique_id)
-    if not isinstance(node, dict):
-        return False
-    inputs = node.get("inputs", {})
-    if not isinstance(inputs, dict):
-        return False
-    return _is_link(inputs.get(input_name))
+    return prompt_input_is_link(prompt, unique_id, input_name)
 
 
 def _workflow_node(extra_pnginfo: Any, unique_id: str | None) -> dict[str, Any] | None:
@@ -368,13 +372,20 @@ def _resolve_prompt_text(
     unique_id: str | None,
 ) -> str:
     resolved = privacy.decrypt_text_if_encrypted(value)
-    if resolved.strip() or _prompt_input_is_link(prompt, unique_id, input_name):
-        return resolved
+    linked = _prompt_input_is_link(prompt, unique_id, input_name)
+    if linked or resolved.strip():
+        return resolve_prompt_source(resolved, linked=linked)
     fallback = _workflow_widget_value(extra_pnginfo, unique_id, input_name)
-    if fallback in (None, MASKED_PROMPT_VALUE):
-        return resolved
-    fallback_text = privacy.decrypt_text_if_encrypted(fallback)
-    return fallback_text if fallback_text.strip() else resolved
+    fallback_text = (
+        fallback
+        if fallback in (None, MASKED_PROMPT_VALUE)
+        else privacy.decrypt_text_if_encrypted(fallback)
+    )
+    return resolve_prompt_source(
+        resolved,
+        linked=False,
+        workflow_value=fallback_text,
+    )
 
 
 def _positive_prompt_override_applies(
@@ -946,6 +957,15 @@ class AIOImageGenerate:
                 ),
             },
             "optional": {
+                "private_execution": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "socketless": True,
+                        "hidden": True,
+                        "tooltip": "Managed private prompt execution reference injected by the shared privacy barrier.",
+                    },
+                ),
                 "model_settings": (
                     "AIO_MODEL_SETTINGS",
                     {"tooltip": "Optional settings object from a matching AIO model settings node."},
@@ -1013,9 +1033,53 @@ class AIOImageGenerate:
         unique_id: str | None = None,
         prompt: Any = None,
         extra_pnginfo: Any = None,
+        private_execution: str = "",
         weight_format: str | None = None,
         **reference_values: Any,
     ):
+        if private_execution:
+            bound_inputs = dict(locals())
+            product_inputs = {
+                key: value
+                for key, value in bound_inputs.items()
+                if key not in {
+                    "self",
+                    "bound_inputs",
+                    "private_execution",
+                    "reference_values",
+                }
+            }
+            product_inputs.update(reference_values)
+
+            def run_pipeline(semantic: Mapping[str, object]):
+                resolved_inputs = dict(product_inputs)
+                resolved_inputs["positive_prompt"] = semantic["positive_prompt"]
+                resolved_inputs["negative_prompt"] = semantic["negative_prompt"]
+                return self.generate(**resolved_inputs)
+
+            return dispatch_aio_prompt_execution(
+                private_execution,
+                GENERATE_EXECUTION_RESOURCE_ID,
+                {
+                    "linked_inputs": {
+                        "positive_prompt": _prompt_input_is_link(
+                            prompt,
+                            unique_id,
+                            "positive_prompt",
+                        ),
+                        "negative_prompt": _prompt_input_is_link(
+                            prompt,
+                            unique_id,
+                            "negative_prompt",
+                        ),
+                    },
+                    "prompt_inputs": {
+                        "positive_prompt": positive_prompt,
+                        "negative_prompt": negative_prompt,
+                    },
+                    "dispatch": run_pipeline,
+                },
+            )
         del weight_format
         resolved_batch_count = _validate_batch_count(batch_count)
         batch_seeds = pipeline.incrementing_batch_seeds(seed, resolved_batch_count)

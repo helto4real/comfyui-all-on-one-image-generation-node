@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 AIO_PRIVACY = ROOT / "web" / "js" / "aio_privacy.js"
 AIO_RECOVERY = ROOT / "web" / "js" / "aio_privacy_recovery.js"
 LOCAL_PRIVACY_UI = Path(helto_privacy.__file__).resolve().parent / "web" / "privacy_ui.js"
+LOCAL_PRIVACY_WEB = LOCAL_PRIVACY_UI.parent
 
 
 def _write_module_test(tmp_path: Path, body: str, *, shared_source: str | None = None) -> Path:
@@ -17,6 +18,16 @@ def _write_module_test(tmp_path: Path, body: str, *, shared_source: str | None =
         if not LOCAL_PRIVACY_UI.exists():
             pytest.skip("local helto-privacy recovery UI is not available")
         shared_source = LOCAL_PRIVACY_UI.read_text(encoding="utf-8")
+        for dependency in (
+            "privacy_client.js",
+            "privacy_records.js",
+            "privacy_artifacts.js",
+        ):
+            source = LOCAL_PRIVACY_WEB / dependency
+            if not source.exists():
+                pytest.skip(f"local helto-privacy {dependency} is not available")
+            (tmp_path / dependency).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        (tmp_path / "package.json").write_text('{"type":"module"}', encoding="utf-8")
 
     shared_path = tmp_path / "shared_privacy.mjs"
     shared_path.write_text(shared_source, encoding="utf-8")

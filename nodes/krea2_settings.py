@@ -4,6 +4,11 @@ from __future__ import annotations
 
 try:
     from ..services import privacy
+    from ..services.managed_prompt_privacy import (
+        KREA_EXECUTION_RESOURCE_ID,
+        dispatch_aio_prompt_execution,
+        prompt_input_is_link,
+    )
     from ..services.performance import (
         ATTENTION_MODES,
         PERFORMANCE_APPLY_TIMINGS,
@@ -12,6 +17,11 @@ try:
     )
 except ImportError:  # pragma: no cover - direct test imports
     from services import privacy
+    from services.managed_prompt_privacy import (
+        KREA_EXECUTION_RESOURCE_ID,
+        dispatch_aio_prompt_execution,
+        prompt_input_is_link,
+    )
     from services.performance import (
         ATTENTION_MODES,
         PERFORMANCE_APPLY_TIMINGS,
@@ -98,12 +108,25 @@ class AIOKrea2Settings:
                 ),
             },
             "optional": {
+                "private_execution": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "socketless": True,
+                        "hidden": True,
+                        "tooltip": "Managed private Krea prompt execution reference injected by the shared privacy barrier.",
+                    },
+                ),
                 "prompt_builder": (
                     "AIO_IDEOGRAM4_PROMPT",
                     {
                         "tooltip": "Optional structured prompt and dimensions from the AIO Ideogram 4 Prompt Builder.",
                     },
                 ),
+            },
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
+                "prompt": "PROMPT",
             },
         }
 
@@ -120,7 +143,49 @@ class AIOKrea2Settings:
         inpaint_positive_prompt: str = "",
         max_length: int = KREA2_DEFAULT_MAX_LENGTH,
         prompt_builder=None,
+        private_execution: str = "",
+        unique_id: str | None = None,
+        prompt=None,
     ):
+        if private_execution:
+            bound_inputs = dict(locals())
+            product_inputs = {
+                key: value
+                for key, value in bound_inputs.items()
+                if key
+                not in {
+                    "self",
+                    "bound_inputs",
+                    "private_execution",
+                    "unique_id",
+                    "prompt",
+                }
+            }
+
+            def build_resolved_settings(semantic):
+                resolved_inputs = dict(product_inputs)
+                resolved_inputs["inpaint_positive_prompt"] = semantic[
+                    "positive_prompt_override"
+                ]
+                return self.build_settings(**resolved_inputs)
+
+            return dispatch_aio_prompt_execution(
+                private_execution,
+                KREA_EXECUTION_RESOURCE_ID,
+                {
+                    "linked_inputs": {
+                        "inpaint_positive_prompt": prompt_input_is_link(
+                            prompt,
+                            unique_id,
+                            "inpaint_positive_prompt",
+                        ),
+                    },
+                    "prompt_inputs": {
+                        "inpaint_positive_prompt": inpaint_positive_prompt,
+                    },
+                    "dispatch": build_resolved_settings,
+                },
+            )
         settings = {
             "family": "krea2",
             "enhancer_enabled": bool(enhancer_enabled),
