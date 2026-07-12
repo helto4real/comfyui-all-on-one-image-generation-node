@@ -37,7 +37,7 @@ from helto_privacy.guard import authorize_privacy_request
 from nodes.aio_generate import AIOImageGenerate
 from nodes.ideogram4_prompt_builder import AIOIdeogram4PromptBuilder
 from nodes.krea2_settings import AIOKrea2Settings
-from services import pipeline
+from services import pipeline, privacy
 from services.managed_prompt_privacy import (
     AIO_CURRENT_PROMPT_SCHEMA,
     GENERATE_EXECUTION_RESOURCE_ID,
@@ -197,6 +197,7 @@ def _builder_state(text: str = "synthetic builder") -> dict[str, object]:
     return {
         "version": 1,
         "widgets": widgets,
+        "effective_privacy_mode": bool(widgets["privacy_mode"]),
         "elements": [],
         "style_palette": [],
         "bg_brightness": 25,
@@ -626,6 +627,7 @@ def test_builder_genuine_v1_fields_and_mirrors_rewrite_under_one_receipt(
     )
     token = shared_keystore.session_token()
     state = _builder_state("legacy")
+    state.pop("effective_privacy_mode")  # AIO v1 predates the derived execution fact.
     expected = {
         field_id: {"value": state["widgets"][widget_name]}
         for widget_name, field_id in BUILDER_WIDGET_FIELD_IDS.items()
@@ -720,7 +722,7 @@ def test_builder_node_dispatches_managed_generation_through_product_builder(
             "high_level_description": "Managed overview",
             "background": "Managed room",
             "style": "none",
-            "privacy_mode": True,
+            "privacy_mode": False,
             "style_palette_data": '["#fab387"]',
             "elements_data": json.dumps(
                 [
@@ -738,6 +740,7 @@ def test_builder_node_dispatches_managed_generation_through_product_builder(
             "bbox_order": "xy",
         }
     )
+    state["effective_privacy_mode"] = True
     state.update(
         {
             "style_palette": ["#fab387"],
@@ -786,6 +789,8 @@ def test_builder_node_dispatches_managed_generation_through_product_builder(
 
     assert result[2] == "preview-one"
     assert second_result[2] == "preview-two"
+    assert result[0]["privacy_mode"] is True
+    assert privacy.is_encrypted_payload(result[0]["prompt"])
     assert result[4:6] == (1024, 1024)
     assert "Managed overview" in result[1]
     assert "Managed room" in result[1]

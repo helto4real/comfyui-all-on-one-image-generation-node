@@ -394,6 +394,12 @@ def project_builder_generation(fields: Mapping[str, object]) -> dict[str, object
         raise ValueError("AIO builder state widgets are unavailable.")
     if any(name not in widgets for name in BUILDER_CONTROL_WIDGETS):
         raise ValueError("AIO builder semantic controls are incomplete.")
+    if not isinstance(widgets["privacy_mode"], bool):
+        raise ValueError("AIO builder privacy declaration is invalid.")
+    effective_mode = state.get("effective_privacy_mode", widgets["privacy_mode"])
+    if not isinstance(effective_mode, bool):
+        raise ValueError("AIO builder effective privacy mode is invalid.")
+    state["effective_privacy_mode"] = effective_mode
     inputs = copy.deepcopy(widgets)
     for widget_name, field_id in BUILDER_WIDGET_FIELD_IDS.items():
         value = normalize_builder_text(fields[field_id])

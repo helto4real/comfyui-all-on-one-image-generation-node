@@ -269,6 +269,10 @@ class AIOIdeogram4PromptBuilder:
                     raise ValueError("AIO builder execution state is invalid.")
                 resolved_inputs = dict(product_inputs)
                 resolved_inputs.update(semantic["widgets"])
+                effective_mode = semantic.get("effective_privacy_mode")
+                if not isinstance(effective_mode, bool):
+                    raise ValueError("AIO builder effective privacy mode is invalid.")
+                resolved_inputs["privacy_mode"] = effective_mode
                 return self.build_prompt(**resolved_inputs)
 
             return dispatch_aio_builder_execution(

@@ -131,6 +131,7 @@ test("Krea field uses its own widget location", () => {
 function builderState() {
   return {
     version: 1,
+    effective_privacy_mode: true,
     widgets: {
       "max side": 1024,
       "aspect ratio": "1:1",
@@ -217,14 +218,18 @@ test("builder mode facts carry every connected Generate private floor", () => {
   const workflow = createAioBuilderWorkflowBrowserAdapter();
   builder.widgets.find((item) => item.name === "privacy_mode").value = false;
   builder.edit("privacy_mode", false);
-  assert.equal(workflow.normalize(builder, {
+  const privateState = workflow.normalize(builder, {
     fieldId: AIO_BUILDER_STATE_FIELD_ID,
     effectiveMode: "private",
-  }).widgets.privacy_mode, true);
-  assert.equal(workflow.normalize(builder, {
+  });
+  assert.equal(privateState.widgets.privacy_mode, false);
+  assert.equal(privateState.effective_privacy_mode, true);
+  const publicState = workflow.normalize(builder, {
     fieldId: AIO_BUILDER_STATE_FIELD_ID,
     effectiveMode: "public",
-  }).widgets.privacy_mode, false);
+  });
+  assert.equal(publicState.widgets.privacy_mode, false);
+  assert.equal(publicState.effective_privacy_mode, false);
 });
 
 
