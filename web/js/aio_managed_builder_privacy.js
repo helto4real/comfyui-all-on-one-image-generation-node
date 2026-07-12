@@ -1,5 +1,10 @@
 // Browser ownership for the inactive managed Ideogram prompt-builder slice.
 
+import {
+  aioManagedNodeType,
+  aioManagedOutgoingTargets,
+} from "./aio_managed_privacy_graph.js";
+
 export const AIO_BUILDER_STATE_FIELD_ID = "ideogram-builder-state";
 export const AIO_BUILDER_STATE_PROPERTY = "aio_ideogram4_prompt_builder_state";
 export const AIO_BUILDER_WORKFLOW_STATE_KEY = "aio_ideogram4_prompt_builder";
@@ -43,47 +48,18 @@ function equal(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function nodeType(node) {
-  return node?.comfyClass ?? node?.type;
-}
-
-function graphNodes(node) {
-  const graph = node?.graph;
-  if (Array.isArray(graph?._nodes)) return graph._nodes;
-  if (Array.isArray(graph?.nodes)) return graph.nodes;
-  return [];
-}
-
-function graphLink(node, linkId) {
-  const links = node?.graph?.links;
-  if (links instanceof Map) return links.get(linkId);
-  return links?.[linkId] ?? links?.[String(linkId)];
-}
-
-function outgoingTargets(node) {
-  const targets = [];
-  for (const linkId of node?.outputs?.flatMap((output) => output?.links || []) || []) {
-    const link = graphLink(node, linkId);
-    const target = graphNodes(node).find(
-      (candidate) => String(candidate?.id) === String(link?.target_id),
-    );
-    if (target) targets.push(target);
-  }
-  return targets;
-}
-
 function connectedGenerateNodes(builder) {
-  if (nodeType(builder) !== BUILDER_NODE) return [];
+  if (aioManagedNodeType(builder) !== BUILDER_NODE) return [];
   const found = [];
   const visited = new Set([builder]);
   const queue = [builder];
   while (queue.length) {
-    for (const target of outgoingTargets(queue.shift())) {
+    for (const target of aioManagedOutgoingTargets(queue.shift())) {
       if (visited.has(target)) continue;
       visited.add(target);
-      if (nodeType(target) === GENERATE_NODE) {
+      if (aioManagedNodeType(target) === GENERATE_NODE) {
         found.push(target);
-      } else if (SETTINGS_NODES.has(nodeType(target))) {
+      } else if (SETTINGS_NODES.has(aioManagedNodeType(target))) {
         queue.push(target);
       }
     }
@@ -180,11 +156,11 @@ function evidence(node) {
 export function createAioBuilderModeBrowserAdapter() {
   return {
     readDeclaredMode(node) {
-      if (nodeType(node) !== BUILDER_NODE) fail();
+      if (aioManagedNodeType(node) !== BUILDER_NODE) fail();
       return declaredMode(node);
     },
     readModeFacts(node) {
-      if (nodeType(node) !== BUILDER_NODE) fail();
+      if (aioManagedNodeType(node) !== BUILDER_NODE) fail();
       return {
         upstream: connectedGenerateNodes(node).map((candidate) => ({
           sourceId: evidence(candidate),
@@ -193,11 +169,11 @@ export function createAioBuilderModeBrowserAdapter() {
       };
     },
     writeDeclaredMode(node, mode) {
-      if (nodeType(node) !== BUILDER_NODE || !["inherit", "private", "public"].includes(mode)) fail();
+      if (aioManagedNodeType(node) !== BUILDER_NODE || !["inherit", "private", "public"].includes(mode)) fail();
       widget(node, "privacy_mode").value = mode === "inherit" ? undefined : mode === "private";
     },
     reconcileNode(node) {
-      if (nodeType(node) !== BUILDER_NODE) fail();
+      if (aioManagedNodeType(node) !== BUILDER_NODE) fail();
     },
     reconcileNodeDefinition() {},
     onPrivacySessionChange() {},
@@ -262,7 +238,7 @@ export function createAioBuilderWorkflowBrowserAdapter({ workflowHandle = null }
       applyRuntimeState(node, state);
     },
     reconcileNode(node) {
-      if (nodeType(node) !== BUILDER_NODE) fail();
+      if (aioManagedNodeType(node) !== BUILDER_NODE) fail();
       editorApi(node).setManagedEditHandler(() => markGenerationEdited(node));
       if (locked) {
         editorApi(node).clearManagedState();

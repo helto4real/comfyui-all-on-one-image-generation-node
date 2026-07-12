@@ -1,5 +1,11 @@
 // Browser-owned field locations for the inactive managed Generate/Krea slice.
 
+import {
+  aioManagedGraphLink,
+  aioManagedGraphNodes,
+  aioManagedNodeType,
+} from "./aio_managed_privacy_graph.js";
+
 export const AIO_GENERATE_POSITIVE_FIELD_ID = "generate-positive-prompt";
 export const AIO_GENERATE_NEGATIVE_FIELD_ID = "generate-negative-prompt";
 export const AIO_KREA_INPAINT_FIELD_ID = "krea-inpaint-positive-prompt";
@@ -27,33 +33,16 @@ function fail() {
   throw new Error("PRIVACY_AIO_PROMPT_STATE_INVALID");
 }
 
-function nodeType(node) {
-  return node?.comfyClass ?? node?.type;
-}
-
-function graphNodes(node) {
-  const graph = node?.graph;
-  if (Array.isArray(graph?._nodes)) return graph._nodes;
-  if (Array.isArray(graph?.nodes)) return graph.nodes;
-  return [];
-}
-
-function graphLink(node, linkId) {
-  const links = node?.graph?.links;
-  if (links instanceof Map) return links.get(linkId);
-  return links?.[linkId] ?? links?.[String(linkId)];
-}
-
 function connectedGenerateNodes(kreaNode) {
-  if (nodeType(kreaNode) !== KREA_NODE) return [];
+  if (aioManagedNodeType(kreaNode) !== KREA_NODE) return [];
   const targets = [];
   for (const linkId of kreaNode?.outputs?.flatMap((output) => output?.links || []) || []) {
-    const link = graphLink(kreaNode, linkId);
-    const target = graphNodes(kreaNode).find(
+    const link = aioManagedGraphLink(kreaNode, linkId);
+    const target = aioManagedGraphNodes(kreaNode).find(
       (candidate) => String(candidate?.id) === String(link?.target_id),
     );
     const inputName = target?.inputs?.[link?.target_slot]?.name;
-    if (nodeType(target) !== GENERATE_NODE || inputName !== "model_settings") continue;
+    if (aioManagedNodeType(target) !== GENERATE_NODE || inputName !== "model_settings") continue;
     if (!targets.includes(target)) targets.push(target);
   }
   return targets;
@@ -81,7 +70,7 @@ function facts(context) {
 
 function widget(node, context) {
   const field = facts(context);
-  if (nodeType(node) !== field.nodeType) fail();
+  if (aioManagedNodeType(node) !== field.nodeType) fail();
   const found = node?.widgets?.find((item) => item?.name === field.widget);
   if (!found) fail();
   return found;
@@ -142,17 +131,17 @@ function liveText(node, context) {
 export function createAioPromptModeBrowserAdapter() {
   return {
     readDeclaredMode(node) {
-      if (nodeType(node) === KREA_NODE) {
+      if (aioManagedNodeType(node) === KREA_NODE) {
         const upstream = connectedGenerateNodes(node);
         return upstream.length && upstream.every(
           (candidate) => generateDeclaredMode(candidate) === "public",
         ) ? "public" : "inherit";
       }
-      if (nodeType(node) !== GENERATE_NODE) fail();
+      if (aioManagedNodeType(node) !== GENERATE_NODE) fail();
       return generateDeclaredMode(node);
     },
     readModeFacts(node) {
-      if (nodeType(node) !== KREA_NODE) return {};
+      if (aioManagedNodeType(node) !== KREA_NODE) return {};
       return {
         upstream: connectedGenerateNodes(node).map((candidate) => ({
           sourceId: modeEvidenceSource(candidate),
@@ -161,13 +150,13 @@ export function createAioPromptModeBrowserAdapter() {
       };
     },
     writeDeclaredMode(node, mode) {
-      if (nodeType(node) !== GENERATE_NODE || !["inherit", "private", "public"].includes(mode)) fail();
+      if (aioManagedNodeType(node) !== GENERATE_NODE || !["inherit", "private", "public"].includes(mode)) fail();
       const target = node.widgets?.find((item) => item?.name === "privacy_mode");
       if (!target) fail();
       target.value = mode === "inherit" ? undefined : mode === "private";
     },
     reconcileNode(node) {
-      if (![GENERATE_NODE, KREA_NODE].includes(nodeType(node))) fail();
+      if (![GENERATE_NODE, KREA_NODE].includes(aioManagedNodeType(node))) fail();
     },
     reconcileNodeDefinition() {},
     onPrivacySessionChange() {},
@@ -250,13 +239,13 @@ export function createAioPromptWorkflowBrowserAdapter({ workflowHandle = null } 
       setDomText(target, "");
     },
     reconcileNode(node) {
-      if (!Object.values(FIELD_FACTS).some((field) => field.nodeType === nodeType(node))) fail();
+      if (!Object.values(FIELD_FACTS).some((field) => field.nodeType === aioManagedNodeType(node))) fail();
       for (const [fieldId, field] of Object.entries(FIELD_FACTS)) {
-        if (field.nodeType === nodeType(node)) bindEdits(node, fieldId);
+        if (field.nodeType === aioManagedNodeType(node)) bindEdits(node, fieldId);
       }
       if (!locked) return;
       for (const [fieldId, field] of Object.entries(FIELD_FACTS)) {
-        if (field.nodeType !== nodeType(node)) continue;
+        if (field.nodeType !== aioManagedNodeType(node)) continue;
         plaintextValues(node)[fieldId] = "";
         setDomText(widget(node, { fieldId }), "");
       }
