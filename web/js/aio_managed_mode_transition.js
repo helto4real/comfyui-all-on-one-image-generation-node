@@ -339,6 +339,7 @@ export function createAioExternalWorkflowTransition({
 
   return Object.freeze({
     isFrozen: frozen,
+    isInternalMutation: () => internalMutationDepth > 0,
     requireMutable,
     synchronizeOwner,
     withInternalMutation,

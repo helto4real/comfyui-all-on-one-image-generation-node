@@ -212,6 +212,7 @@ export function createAioBuilderWorkflowBrowserAdapter({
 
   function markGenerationEdited(node) {
     transition.requireMutable();
+    if (transition.isInternalMutation()) return;
     if (typeof workflowHandle?.markEdited !== "function") fail();
     flushState(node);
     for (const fieldId of ALL_FIELD_IDS) workflowHandle.markEdited(node, fieldId);
@@ -236,7 +237,7 @@ export function createAioBuilderWorkflowBrowserAdapter({
   function applyValue(node, value, context) {
     const field = fieldFacts(context);
     if (field.state) {
-      applyRuntimeState(node, value);
+      transition.withInternalMutation(() => applyRuntimeState(node, value));
       return;
     }
     const state = flushState(node);
@@ -244,19 +245,21 @@ export function createAioBuilderWorkflowBrowserAdapter({
       ? value.value : value;
     if (typeof plaintext !== "string") fail();
     state.widgets[field.widget] = plaintext;
-    applyRuntimeState(node, state);
+    transition.withInternalMutation(() => applyRuntimeState(node, state));
   }
 
   function clearValue(node, context) {
     const field = fieldFacts(context);
     if (field.state) {
-      editorApi(node).clearManagedState();
-      restoreProtectedWidgetLocations(node);
+      transition.withInternalMutation(() => {
+        editorApi(node).clearManagedState();
+        restoreProtectedWidgetLocations(node);
+      });
       return;
     }
     const state = flushState(node);
     state.widgets[field.widget] = "";
-    applyRuntimeState(node, state);
+    transition.withInternalMutation(() => applyRuntimeState(node, state));
   }
 
   function reconcileOwner(node) {
@@ -364,7 +367,9 @@ export function createAioBuilderWorkflowBrowserAdapter({
         return;
       }
       protectedValues(node)[field.fieldId] = clone(protectedValue);
-      widget(node, field.widget).value = clone(protectedValue);
+      transition.withInternalMutation(() => {
+        widget(node, field.widget).value = clone(protectedValue);
+      });
     },
     writePublic(node, context) {
       if (locked) fail();
@@ -378,7 +383,9 @@ export function createAioBuilderWorkflowBrowserAdapter({
       const plaintext = state.widgets[field.widget];
       if (typeof plaintext !== "string") fail();
       protectedValues(node)[field.fieldId] = plaintext;
-      widget(node, field.widget).value = plaintext;
+      transition.withInternalMutation(() => {
+        widget(node, field.widget).value = plaintext;
+      });
       return plaintext;
     },
     writeWorkflowProjection(node, serializedNode, protectedValue, context) {

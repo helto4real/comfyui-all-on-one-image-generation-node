@@ -83,6 +83,20 @@ function textElement(value = "") {
 }
 
 
+function callbackOnAssignmentWidget(name, initialValue) {
+  let value = initialValue;
+  return {
+    name,
+    callback: null,
+    get value() { return value; },
+    set value(next) {
+      value = next;
+      this.callback?.(next);
+    },
+  };
+}
+
+
 test("managed prompt library delegates every private operation to the typed record handle", async () => {
   const id = `hp-rec-${"A".repeat(32)}`;
   const calls = [];
@@ -188,6 +202,31 @@ test("workflow adapter separates protected snapshot from revealed prompt memory"
   assert.equal(node.widgets[1].value, "CURRENT_POSITIVE");
   assert.equal(node.widgets[2].value, "CURRENT_NEGATIVE");
   assert.equal(adapter.readProtected(node, positive), "CURRENT_POSITIVE");
+});
+
+
+test("programmatic DOM widget assignments do not become user prompt edits", () => {
+  const node = generateNode(true);
+  node.widgets[1] = callbackOnAssignmentWidget("positive_prompt", "positive");
+  const edits = [];
+  const adapter = createAioPromptWorkflowBrowserAdapter({
+    workflowHandle: {
+      markEdited: (owner, fieldId) => edits.push([owner, fieldId]),
+    },
+  });
+  const positive = {
+    fieldId: AIO_GENERATE_POSITIVE_FIELD_ID,
+    location: { name: "positive_prompt" },
+  };
+
+  adapter.reconcileNode(node);
+  adapter.apply(node, { value: "revealed positive" }, positive);
+  adapter.writeProtected(node, "CURRENT_POSITIVE", positive);
+
+  assert.deepEqual(edits, []);
+  assert.equal(node.widgets[1].value, "CURRENT_POSITIVE");
+  node.widgets[1].callback("user edit");
+  assert.deepEqual(edits, [[node, AIO_GENERATE_POSITIVE_FIELD_ID]]);
 });
 
 

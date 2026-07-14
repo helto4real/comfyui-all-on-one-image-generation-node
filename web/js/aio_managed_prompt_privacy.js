@@ -340,7 +340,11 @@ export function createAioPromptWorkflowBrowserAdapter({
     const plaintext = normalize(candidate === undefined ? liveText(node, context) : candidate);
     plaintextValues(node)[fieldId] = plaintext;
     const protectedValue = protectedValues(node)[fieldId];
-    if (typeof protectedValue === "string") target.value = protectedValue;
+    if (typeof protectedValue === "string") {
+      transition.withInternalMutation(() => {
+        target.value = protectedValue;
+      });
+    }
     setDomText(target, plaintext);
     if (typeof workflowHandle?.markEdited !== "function") fail();
     return workflowHandle.markEdited(node, fieldId);
@@ -354,6 +358,7 @@ export function createAioPromptWorkflowBrowserAdapter({
       target.callback = function aioManagedPromptEdited(value) {
         transition.requireMutable();
         const result = original?.apply(this, arguments);
+        if (transition.isInternalMutation()) return result;
         recordEdit(node, fieldId, value);
         return result;
       };
@@ -381,7 +386,11 @@ export function createAioPromptWorkflowBrowserAdapter({
     const target = widget(node, context);
     const plaintext = normalize(value);
     plaintextValues(node)[field.fieldId] = plaintext;
-    if (!(field.fieldId in protectedValues(node))) target.value = plaintext;
+    if (!(field.fieldId in protectedValues(node))) {
+      transition.withInternalMutation(() => {
+        target.value = plaintext;
+      });
+    }
     setDomText(target, plaintext);
     updatePrivacyPresentation(node);
   }
@@ -390,7 +399,11 @@ export function createAioPromptWorkflowBrowserAdapter({
     const field = facts(context);
     plaintextValues(node)[field.fieldId] = "";
     const target = widget(node, context);
-    if (!(field.fieldId in protectedValues(node))) target.value = "";
+    if (!(field.fieldId in protectedValues(node))) {
+      transition.withInternalMutation(() => {
+        target.value = "";
+      });
+    }
     setDomText(target, "");
     updatePrivacyPresentation(node);
   }
