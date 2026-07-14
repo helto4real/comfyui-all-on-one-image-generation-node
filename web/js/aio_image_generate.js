@@ -49,9 +49,9 @@ const MAX_SIDE_MIN = 256;
 const MAX_SIDE_MAX = 4096;
 const SEED_MAX = Number.MAX_SAFE_INTEGER;
 const SEED_CONTROL_MODES = ["fixed", "increment", "decrement", "randomize"];
-const AIO_SEED_QUEUE_WRAPPER_KEY = "__aioGenerateSeedQueuePromptWrapper";
-const AIO_SEED_QUEUE_INSTALL_KEY = "__aioGenerateSeedQueuePromptInstallScheduled";
-const AIO_SEED_QUEUE_INSTALL_ATTEMPT_LIMIT = 80;
+const AIO_SEED_QUEUE_LIFECYCLE_KEY = "__aioGenerateSeedQueueLifecycle";
+const AIO_SEED_QUEUE_ACTIVE_KEY = "__aioGenerateActiveQueuedSeed";
+const AIO_SEED_QUEUE_MAX_AGE_MS = 10000;
 const AIO_PROGRESS_TEXT_CLEANUP_KEY = "__aioGenerateProgressTextCleanupInstalled";
 const AIO_RUNTIME_PHASE_BRIDGE_KEY = "__aioGenerateRuntimePhaseBridgeInstalled";
 const AIO_WIDGET_THEME_BRIDGE_KEY = "__aioHeltoLiteGraphWidgetThemeBridgeInstalled";
@@ -664,112 +664,40 @@ function installAioGenerateProgressTextCleanup() {
   api.addEventListener?.("execution_interrupted", scheduleAioGenerateProgressTextCleanup);
 }
 
-function suspendSeedControlCallbacks(controlWidget) {
-  if (!controlWidget) {
-    return null;
-  }
-  const beforeQueued = controlWidget.beforeQueued;
-  const afterQueued = controlWidget.afterQueued;
-  const beforeQueuedNoop = () => {};
-  const afterQueuedNoop = () => {};
-  controlWidget.beforeQueued = beforeQueuedNoop;
-  controlWidget.afterQueued = afterQueuedNoop;
-  return {
-    controlWidget,
-    beforeQueued,
-    afterQueued,
-    beforeQueuedNoop,
-    afterQueuedNoop,
-  };
-}
+function installAioSeedQueueLifecycle(node) {
+  if (!isAioGenerateNode(node)) return false;
+  const seedWidget = widgetByName(node, "seed");
+  const controlWidget = seedControlWidget(node, seedWidget);
+  const target = controlWidget;
+  if (!seedWidget || !target || target[AIO_SEED_QUEUE_LIFECYCLE_KEY]) return Boolean(target);
 
-function restoreSeedControlCallbacks(suspended) {
-  for (const item of suspended) {
-    if (item.controlWidget.beforeQueued === item.beforeQueuedNoop) {
-      item.controlWidget.beforeQueued = item.beforeQueued;
+  const originalBeforeQueued = target.beforeQueued;
+  const originalAfterQueued = target.afterQueued;
+  target.beforeQueued = function (...args) {
+    if (liveSeedControlMode(node) !== "randomize") {
+      delete node[AIO_SEED_QUEUE_ACTIVE_KEY];
+      return originalBeforeQueued?.apply(this, args);
     }
-    if (item.controlWidget.afterQueued === item.afterQueuedNoop) {
-      item.controlWidget.afterQueued = item.afterQueued;
-    }
-  }
-}
-
-function randomizeAioSeedsBeforeQueue() {
-  const queuedSeeds = [];
-  for (const node of graphNodes()) {
-    if (!isAioGenerateNode(node) || liveSeedControlMode(node) !== "randomize") {
-      continue;
-    }
-    const seedWidget = widgetByName(node, "seed");
-    const controlWidget = seedControlWidget(node, seedWidget);
     const seed = randomFixedSeed();
     if (!writeAioSeedValue(node, seed)) {
-      continue;
+      return originalBeforeQueued?.apply(this, args);
     }
-    node._aioGenerateQueuedSeed = { seed, at: Date.now() };
-    queuedSeeds.push({
-      node,
-      seed,
-      suspended: suspendSeedControlCallbacks(controlWidget),
-    });
-  }
-  return queuedSeeds;
-}
-
-function restoreQueuedAioSeeds(queuedSeeds) {
-  restoreSeedControlCallbacks(queuedSeeds.map((item) => item.suspended).filter(Boolean));
-  for (const { node, seed } of queuedSeeds) {
-    const queuedSeed = node?._aioGenerateQueuedSeed;
-    if (!queuedSeed || queuedSeed.seed !== seed || Date.now() - queuedSeed.at > 10000) {
-      continue;
-    }
-    if (Number(widgetByName(node, "seed")?.value) !== Number(seed)) {
-      writeAioSeedValue(node, seed);
-    }
-  }
-}
-
-function installAioSeedQueuePatch(source = "install") {
-  if (typeof app.queuePrompt !== "function") {
-    return false;
-  }
-  if (app.queuePrompt[AIO_SEED_QUEUE_WRAPPER_KEY]) {
-    return true;
-  }
-
-  const originalQueuePrompt = app.queuePrompt;
-  const wrappedQueuePrompt = async function (...args) {
-    const queuedSeeds = randomizeAioSeedsBeforeQueue();
-    try {
-      return await originalQueuePrompt.apply(this, args);
-    } finally {
-      restoreQueuedAioSeeds(queuedSeeds);
-    }
+    node[AIO_SEED_QUEUE_ACTIVE_KEY] = { seed, at: Date.now() };
+    return undefined;
   };
-  Object.defineProperty(wrappedQueuePrompt, AIO_SEED_QUEUE_WRAPPER_KEY, {
-    value: true,
-    configurable: true,
-  });
-  app.queuePrompt = wrappedQueuePrompt;
-  return true;
-}
-
-function scheduleAioSeedQueuePatch(source = "top-level") {
-  if (globalThis[AIO_SEED_QUEUE_INSTALL_KEY]) {
-    installAioSeedQueuePatch(`${source}:resync`);
-    return;
-  }
-  globalThis[AIO_SEED_QUEUE_INSTALL_KEY] = true;
-
-  let attempts = 0;
-  function attempt() {
-    attempts += 1;
-    installAioSeedQueuePatch(`${source}:${attempts}`);
-    if (attempts < AIO_SEED_QUEUE_INSTALL_ATTEMPT_LIMIT) {
-      setTimeout(attempt, 250);
+  target.afterQueued = function (...args) {
+    const queued = node[AIO_SEED_QUEUE_ACTIVE_KEY];
+    delete node[AIO_SEED_QUEUE_ACTIVE_KEY];
+    if (!queued || Date.now() - queued.at > AIO_SEED_QUEUE_MAX_AGE_MS) {
+      return originalAfterQueued?.apply(this, args);
     }
-  }
-  attempt();
+    if (Number(seedWidget?.value) !== Number(queued.seed)) {
+      writeAioSeedValue(node, queued.seed);
+    }
+    return undefined;
+  };
+  Object.defineProperty(target, AIO_SEED_QUEUE_LIFECYCLE_KEY, { value: true });
+  return true;
 }
 
 function widgetSerializesToWorkflow(widget) {
@@ -2590,13 +2518,10 @@ function patchAioGenerateNodeType(nodeType) {
   };
 }
 
-scheduleAioSeedQueuePatch();
-
 app.registerExtension({
   name: "aio.image.generate",
   setup() {
     installAioWidgetThemeBridge();
-    scheduleAioSeedQueuePatch("setup");
     installAioGenerateProgressTextCleanup();
     installAioGenerateRuntimePhaseBridge();
     requestAnimationFrame(() => {
@@ -2605,6 +2530,7 @@ app.registerExtension({
         ensureLoraUi(node);
         ensureAioGenerateSizingUi(node);
         ensureAioGenerateSeedButton(node);
+        installAioSeedQueueLifecycle(node);
         ensureAioGenerateRuntimePhaseUi(node);
       }
     });
@@ -2637,6 +2563,7 @@ app.registerExtension({
     ensureLoraUi(node);
     ensureAioGenerateSizingUi(node);
     ensureAioGenerateSeedButton(node);
+    installAioSeedQueueLifecycle(node);
     ensureAioGenerateRuntimePhaseUi(node);
   },
   loadedGraphNode(node) {
@@ -2644,6 +2571,7 @@ app.registerExtension({
     ensureLoraUi(node);
     ensureAioGenerateSizingUi(node);
     ensureAioGenerateSeedButton(node);
+    installAioSeedQueueLifecycle(node);
     ensureAioGenerateRuntimePhaseUi(node);
   },
 });

@@ -14,7 +14,7 @@ import helto_privacy.runtime as runtime
 from services import managed_prompt_privacy as managed
 
 
-DECLARED_SHARED_PRIVACY_REVISION = "4015b8307df29a6b6d69ab3c60c4347ef190b719"
+DECLARED_SHARED_PRIVACY_REVISION = "b48a67b86fecaa1728fee282b371758756e732ed"
 DECLARED_SHARED_PRIVACY_REQUIREMENT = (
     "helto-privacy @ git+https://github.com/helto4real/"
     f"helto-privacy.git@{DECLARED_SHARED_PRIVACY_REVISION}"
