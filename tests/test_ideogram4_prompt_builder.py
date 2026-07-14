@@ -11,6 +11,13 @@ from services import ideogram4_prompt_builder as builder
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_prompt_library_save_does_not_redeclare_item_id_parameter():
+    source = (ROOT / "web/js/aio_ideogram4_prompt_builder.js").read_text(encoding="utf-8")
+
+    assert "const itemId = linkedId || saved.recordId" not in source
+    assert "const savedItemId = linkedId || saved.recordId" in source
+
+
 def test_compact_json_matches_kj_key_order_and_formatting():
     caption, boxes, boxes_seeded, used_import = builder.build_caption(
         background="Room",

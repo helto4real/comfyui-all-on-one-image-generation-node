@@ -1,5 +1,5 @@
 [project]
-name = "comfyui-helto-image-gen-all-in-one"
+name = "comfyui-all-on-one-image-generation-node"
 version = "0.1.0"
 description = "Helto all-in-one ComfyUI image generation nodes with managed privacy."
 readme = "README.md"

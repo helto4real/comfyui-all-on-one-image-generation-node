@@ -113,6 +113,7 @@ def test_distribution_metadata_is_aligned_and_packages_browser_entrypoint():
         if line.strip() and not line.lstrip().startswith("#")
     )
 
+    assert project["project"]["name"] == root.name
     assert project["project"]["dependencies"] == [DECLARED_SHARED_PRIVACY_REQUIREMENT]
     assert requirements == (DECLARED_SHARED_PRIVACY_REQUIREMENT,)
     assert project["project"]["version"] == "0.1.0"

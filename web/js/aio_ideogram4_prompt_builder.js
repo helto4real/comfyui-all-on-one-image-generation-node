@@ -1113,9 +1113,9 @@ function createEditor(node) {
     const saved = linkedId
       ? await library.replace(linkedId, body.payload, body)
       : await library.create(body.payload, body);
-    const itemId = linkedId || saved.recordId;
-    const item = await library.details(itemId);
-    if (itemId) setLibraryItemId(itemId);
+    const savedItemId = linkedId || saved.recordId;
+    const item = await library.details(savedItemId);
+    if (savedItemId) setLibraryItemId(savedItemId);
     statusCallback(linkedId ? "Updated saved prompt." : "Saved prompt.");
     app.graph?.setDirtyCanvas?.(true, true);
     return item;
