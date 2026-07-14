@@ -5,7 +5,7 @@ description = "Helto all-in-one ComfyUI image generation nodes with managed priv
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "helto-privacy @ git+https://github.com/helto4real/helto-privacy.git@294b43b12280bfb60d6112eb8ba6579a406bb83b",
+    "helto-privacy @ git+https://github.com/helto4real/helto-privacy.git@4015b8307df29a6b6d69ab3c60c4347ef190b719",
 ]
 license = "GPL-3.0-only"
 
