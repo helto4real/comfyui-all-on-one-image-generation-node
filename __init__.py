@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import logging
 import sys
+from pathlib import Path
 
 try:
     from .services import lora_info as _lora_info  # noqa: F401
-    from .routes.ideogram4_prompt_library import register_ideogram4_prompt_library_routes
-    from .routes.privacy import register_privacy_routes
+    from .services.managed_prompt_privacy import install_aio_privacy
     from .nodes import (
         AIOFlux2Klein9BSettings,
         AIOIdeogram4PromptBuilder,
@@ -25,8 +25,7 @@ try:
     )
 except ImportError:  # pragma: no cover - direct pytest/importlib collection
     import services.lora_info as _lora_info  # noqa: F401
-    from routes.ideogram4_prompt_library import register_ideogram4_prompt_library_routes
-    from routes.privacy import register_privacy_routes
+    from services.managed_prompt_privacy import install_aio_privacy
     from nodes import (
         AIOFlux2Klein9BSettings,
         AIOIdeogram4PromptBuilder,
@@ -43,6 +42,7 @@ except ImportError:  # pragma: no cover - direct pytest/importlib collection
     )
 
 WEB_DIRECTORY = "./web"
+_PACKAGE_ROOT = Path(__file__).resolve().parent
 
 NODE_CLASS_MAPPINGS = {
     "AIOImageGenerate": AIOImageGenerate,
@@ -87,13 +87,14 @@ def _register_shared_privacy_ui() -> None:
 
     server_module = sys.modules.get("server")
     prompt_server = getattr(getattr(server_module, "PromptServer", None), "instance", None)
-    if prompt_server is not None:
-        register_helto_privacy_ui(prompt_server=prompt_server)
+    register_helto_privacy_ui(
+        legacy_key_dir=_PACKAGE_ROOT / "config",
+        prompt_server=prompt_server,
+    )
 
 
 _register_safely("LoRA information routes", _lora_info.register_routes)
-_register_safely("privacy routes", register_privacy_routes)
-_register_safely("Ideogram prompt-library routes", register_ideogram4_prompt_library_routes)
-_register_safely("shared privacy UI routes", _register_shared_privacy_ui)
+_register_shared_privacy_ui()
+install_aio_privacy(_PACKAGE_ROOT)
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]

@@ -1,4 +1,4 @@
-"""Inactive shared projection for AIO run-info and private diagnostics."""
+"""Shared projection for AIO run-info and private diagnostics."""
 
 from __future__ import annotations
 
@@ -96,20 +96,34 @@ class AioRunInfoProjectionAdapter:
         return {"performance": projected}
 
 
-def project_managed_run_info(pack: object, run_info: object):
+def project_managed_run_info(
+    pack: object,
+    run_info: object,
+    *,
+    subject_mode: object,
+):
     """Project a built product value through server-resolved shared mode."""
 
     operations = getattr(pack, "operations", None)
     if not callable(operations):
         raise ValueError("Managed run-info privacy is unavailable.")
-    return operations(RUN_INFO_RESOURCE_ID).project(RUN_INFO_OPERATION_ID, run_info)
+    return operations(RUN_INFO_RESOURCE_ID).project(
+        RUN_INFO_OPERATION_ID,
+        run_info,
+        subject_mode=subject_mode,
+    )
 
 
-def build_managed_run_info_json(pack: object, **facts: object) -> str:
+def build_managed_run_info_json(
+    pack: object,
+    *,
+    subject_mode: object,
+    **facts: object,
+) -> str:
     """Build the normal product schema, then apply the shared projection."""
 
     candidate = build_run_info_candidate(**facts)
-    projected = project_managed_run_info(pack, candidate)
+    projected = project_managed_run_info(pack, candidate, subject_mode=subject_mode)
     return json.dumps(projected.value, indent=2, sort_keys=True)
 
 

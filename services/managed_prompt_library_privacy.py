@@ -8,16 +8,19 @@ the responsibility of :mod:`helto_privacy`.
 from __future__ import annotations
 
 import copy
+import fcntl
 import json
 import os
 import secrets
 from collections.abc import Mapping, MutableMapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
-from helto_privacy import MigrationVerification, RecordProjectionResult
+from helto_privacy import MigrationVerification, RecordProjectionResult, RecordSnapshot
 
 
 PROMPT_LIBRARY_RESOURCE_ID = "ideogram-prompts"
@@ -135,35 +138,88 @@ class AioPromptLibraryStoreAdapter:
 
     def __init__(self, base_dir: str | os.PathLike[str] | None = None) -> None:
         self._base_dir = base_dir
+        self._thread_lock = RLock()
 
     def list_ids(self) -> tuple[str, ...]:
-        return tuple(record["id"] for record in self._read_document()["records"])
+        with self._managed_lock():
+            return tuple(
+                record["id"]
+                for record in self._read_document()["records"]
+                if record["protected"] is not None
+            )
+
+    def read_record(self, record_id: str) -> RecordSnapshot:
+        with self._managed_lock():
+            record = self._find_optional(self._read_document(), record_id)
+            if record is None:
+                return RecordSnapshot(0)
+            return RecordSnapshot(record["revision"], record["protected"])
+
+    def compare_and_swap_record(
+        self,
+        record_id: str,
+        expected: RecordSnapshot,
+        replacement: RecordSnapshot,
+    ) -> bool:
+        _require_record_snapshot(expected)
+        _require_record_snapshot(replacement)
+        if replacement.revision != expected.revision + 1:
+            raise AioPromptLibraryDataError("Prompt record revision is invalid.")
+        with self._managed_lock():
+            document = self._read_document()
+            record = self._find_optional(document, record_id)
+            current = (
+                RecordSnapshot(0)
+                if record is None
+                else RecordSnapshot(record["revision"], record["protected"])
+            )
+            if not _record_snapshot_equal(current, expected):
+                return False
+            stored = {
+                "id": str(record_id),
+                "revision": replacement.revision,
+                "protected": copy.deepcopy(replacement.protected),
+            }
+            if record is None:
+                document["records"].append(stored)
+            else:
+                document["records"][document["records"].index(record)] = stored
+            self._write_document(document)
+            return True
 
     def read_protected(self, record_id: str) -> object:
-        return copy.deepcopy(
-            self._find(self._read_document(), record_id)["protected"]
-        )
+        snapshot = self.read_record(record_id)
+        if snapshot.protected is None:
+            raise AioPromptLibraryDataError("Prompt record was not found.")
+        return copy.deepcopy(snapshot.protected)
 
     def write_protected(self, record_id: str, protected: object) -> None:
-        document = self._read_document()
-        replacement = {"id": str(record_id), "protected": copy.deepcopy(protected)}
-        for index, record in enumerate(document["records"]):
-            if record["id"] == record_id:
-                document["records"][index] = replacement
-                self._write_document(document)
-                return
-        document["records"].append(replacement)
-        self._write_document(document)
+        with self._managed_lock():
+            document = self._read_document()
+            existing = self._find_optional(document, record_id)
+            replacement = {
+                "id": str(record_id),
+                "revision": 1 if existing is None else existing["revision"] + 1,
+                "protected": copy.deepcopy(protected),
+            }
+            if existing is None:
+                document["records"].append(replacement)
+            else:
+                document["records"][document["records"].index(existing)] = replacement
+            self._write_document(document)
 
     def delete(self, record_id: str) -> None:
-        document = self._read_document()
-        original_count = len(document["records"])
-        document["records"] = [
-            record for record in document["records"] if record["id"] != record_id
-        ]
-        if len(document["records"]) == original_count:
-            raise AioPromptLibraryDataError("Prompt record was not found.")
-        self._write_document(document)
+        with self._managed_lock():
+            document = self._read_document()
+            existing = self._find_optional(document, record_id)
+            if existing is None or existing["protected"] is None:
+                raise AioPromptLibraryDataError("Prompt record was not found.")
+            document["records"][document["records"].index(existing)] = {
+                "id": str(record_id),
+                "revision": existing["revision"] + 1,
+                "protected": None,
+            }
+            self._write_document(document)
 
     def mutate(
         self,
@@ -261,7 +317,7 @@ class AioPromptLibraryStoreAdapter:
         for item in value["records"]:
             if (
                 not isinstance(item, dict)
-                or set(item) != {"id", "protected"}
+                or set(item) not in ({"id", "protected"}, {"id", "revision", "protected"})
                 or not isinstance(item["id"], str)
                 or not item["id"]
                 or item["id"] in seen
@@ -270,8 +326,46 @@ class AioPromptLibraryStoreAdapter:
                     "Managed prompt library record is invalid."
                 )
             seen.add(item["id"])
-            records.append(copy.deepcopy(item))
+            revision = item.get("revision", 1)
+            if type(revision) is not int or revision < 1:
+                raise AioPromptLibraryDataError(
+                    "Managed prompt library record is invalid."
+                )
+            records.append(
+                {
+                    "id": item["id"],
+                    "revision": revision,
+                    "protected": copy.deepcopy(item["protected"]),
+                }
+            )
         return {**_empty_document(), "records": records}
+
+    @contextmanager
+    def _managed_lock(self):
+        path = managed_library_path(self._base_dir)
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(path.parent, 0o700)
+        lock_path = path.with_name(f".{path.name}.lock")
+        with self._thread_lock:
+            descriptor = os.open(
+                lock_path,
+                os.O_RDWR
+                | os.O_CREAT
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+            )
+            try:
+                with os.fdopen(descriptor, "a+b") as handle:
+                    descriptor = -1
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                    try:
+                        yield
+                    finally:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
 
     def _write_document(self, document: Mapping[str, object]) -> None:
         path = managed_library_path(self._base_dir)
@@ -310,12 +404,22 @@ class AioPromptLibraryStoreAdapter:
 
     @staticmethod
     def _find(document: Mapping[str, object], record_id: str) -> Mapping[str, object]:
+        record = AioPromptLibraryStoreAdapter._find_optional(document, record_id)
+        if record is not None and record.get("protected") is not None:
+            return record
+        raise AioPromptLibraryDataError("Prompt record was not found.")
+
+    @staticmethod
+    def _find_optional(
+        document: Mapping[str, object],
+        record_id: str,
+    ) -> MutableMapping[str, object] | None:
         records = document.get("records")
         if isinstance(records, list):
             for record in records:
-                if isinstance(record, Mapping) and record.get("id") == record_id:
+                if isinstance(record, MutableMapping) and record.get("id") == record_id:
                     return record
-        raise AioPromptLibraryDataError("Prompt record was not found.")
+        return None
 
 
 @dataclass(slots=True)
@@ -500,6 +604,18 @@ def _metadata(value: object) -> dict[str, object]:
     if "tags" in metadata:
         result["tags"] = _tags(metadata["tags"])
     return result
+
+
+def _require_record_snapshot(value: object) -> None:
+    if not isinstance(value, RecordSnapshot):
+        raise AioPromptLibraryDataError("Prompt record snapshot is invalid.")
+
+
+def _record_snapshot_equal(left: RecordSnapshot, right: RecordSnapshot) -> bool:
+    return (
+        left.revision == right.revision
+        and left.protected == right.protected
+    )
 
 
 def _empty_document() -> dict[str, object]:

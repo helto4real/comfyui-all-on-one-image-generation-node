@@ -99,14 +99,26 @@ def test_custom_node_package_registers_all_routes_with_prompt_server():
             def delete(self, path):
                 return self._register("DELETE", path)
 
+        class App:
+            pre_frozen = False
+            frozen = False
+
+            def __init__(self):
+                self.middlewares = []
+
         server = ModuleType("server")
-        server.PromptServer = SimpleNamespace(instance=SimpleNamespace(routes=Routes()))
+        server.PromptServer = SimpleNamespace(
+            instance=SimpleNamespace(routes=Routes(), app=App())
+        )
         folder_paths = ModuleType("folder_paths")
         folder_paths.get_folder_paths = lambda _category: []
         folder_paths.get_full_path = lambda _category, _file: None
         folder_paths.get_filename_list = lambda _category: []
+        aiohttp = ModuleType("aiohttp")
+        aiohttp.web = SimpleNamespace()
         sys.modules["server"] = server
         sys.modules["folder_paths"] = folder_paths
+        sys.modules["aiohttp"] = aiohttp
 
         root = {str(root)!r}
         spec = importlib.util.spec_from_file_location(
@@ -137,20 +149,16 @@ def test_custom_node_package_registers_all_routes_with_prompt_server():
         ("GET", "/aio-image-gen/api/loras/info/refresh"),
         ("POST", "/aio-image-gen/api/loras/info"),
         ("GET", "/aio-image-gen/api/loras/img"),
-        ("GET", "/aio_image_generate/privacy/status"),
-        ("POST", "/aio_image_generate/privacy/encrypt"),
-        ("POST", "/aio_image_generate/privacy/decrypt"),
-        ("GET", "/aio_image_generate/ideogram4_prompt_library/items"),
-        ("POST", "/aio_image_generate/ideogram4_prompt_library/prompts"),
-        ("PUT", "/aio_image_generate/ideogram4_prompt_library/prompts/{item_id}"),
-        ("PATCH", "/aio_image_generate/ideogram4_prompt_library/prompts/{item_id}"),
-        ("POST", "/aio_image_generate/ideogram4_prompt_library/prompts/{item_id}/duplicate"),
-        ("DELETE", "/aio_image_generate/ideogram4_prompt_library/prompts/{item_id}"),
-        ("POST", "/aio_image_generate/ideogram4_prompt_library/prompts/{item_id}/use"),
         ("GET", "/helto_privacy/status"),
+        ("GET", "/helto_privacy/profiles/{pack_id}"),
         ("POST", "/helto_privacy/unlock"),
         ("POST", "/helto_privacy/lock"),
         ("POST", "/helto_privacy/keystore/init"),
         ("POST", "/helto_privacy/keystore/change_password"),
         ("GET", "/helto_privacy/ui/privacy.js"),
     }.issubset(routes)
+    assert not any(path.startswith("/aio_image_generate/privacy") for _, path in routes)
+    assert not any(
+        path.startswith("/aio_image_generate/ideogram4_prompt_library")
+        for _, path in routes
+    )

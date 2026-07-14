@@ -35,6 +35,54 @@ function generateNode(mode = undefined) {
 }
 
 
+function externalField(id, nodeType, location) {
+  return Object.freeze({
+    id,
+    nodeTypes: [nodeType],
+    location,
+    externalTransitionPolicy: Object.freeze({
+      maxOwners: 1024,
+      maxOriginalBytesPerOwner: 1024 * 1024,
+      maxTargetBytesPerOwner: 1024 * 1024,
+      maxTotalBytes: 32 * 1024 * 1024,
+      leaseSeconds: 300,
+    }),
+  });
+}
+
+
+function serializedNode(node) {
+  return {
+    id: node.id,
+    type: node.comfyClass,
+    widgets_values: node.widgets
+      .filter((item) => item.serialize !== false && item.options?.serialize !== false)
+      .map((item) => structuredClone(item.value)),
+    properties: structuredClone(node.properties || {}),
+    [AIO_BUILDER_WORKFLOW_STATE_KEY]: structuredClone(
+      node._aioIdeogram4PendingWorkflowInfo?.[AIO_BUILDER_WORKFLOW_STATE_KEY],
+    ),
+    [AIO_BUILDER_LEGACY_WORKFLOW_STATE_KEY]: structuredClone(
+      node._aioIdeogram4PendingWorkflowInfo?.[AIO_BUILDER_LEGACY_WORKFLOW_STATE_KEY],
+    ),
+  };
+}
+
+function textElement(value = "") {
+  const classes = new Set();
+  return {
+    value,
+    classList: {
+      add: (...names) => names.forEach((name) => classes.add(name)),
+      toggle: (name, enabled) => enabled ? classes.add(name) : classes.delete(name),
+      contains: (name) => classes.has(name),
+    },
+    setAttribute(name, item) { this[name] = item; },
+    addEventListener() {},
+  };
+}
+
+
 test("managed prompt library delegates every private operation to the typed record handle", async () => {
   const id = `hp-rec-${"A".repeat(32)}`;
   const calls = [];
@@ -143,6 +191,97 @@ test("workflow adapter separates protected snapshot from revealed prompt memory"
 });
 
 
+test("private Generate prompts auto-mask and managed transport widgets stay hidden", async () => {
+  const node = generateNode(false);
+  const positiveElement = textElement("SYNTHETIC_PRIVATE_PROMPT");
+  const negativeElement = textElement("SYNTHETIC_PRIVATE_NEGATIVE");
+  node.widgets[1].inputEl = positiveElement;
+  node.widgets[2].inputEl = negativeElement;
+  const drawValues = [];
+  node.widgets[1].draw = function () { drawValues.push(this.value); };
+  node.widgets.push(
+    { name: "privacy_mode_reference", value: "" },
+    { name: "private_execution", value: "" },
+  );
+  let notifications = 0;
+  const adapter = createAioPromptWorkflowBrowserAdapter({
+    workflowHandle: {
+      markEdited() {},
+      notifyModeChange: async () => { notifications += 1; },
+    },
+  });
+  adapter.onPrivacySessionChange({ state: "unlocked" });
+  adapter.reconcileNode(node);
+
+  const privacy = node.widgets.find((item) => item.name === "privacy_mode");
+  privacy.value = true;
+  privacy.callback(true);
+  await node.__aioManagedPrivacyModeSettlement;
+
+  assert.equal(notifications, 1);
+  assert.equal(node.__aioManagedPrivacyMasked, true);
+  assert.equal(positiveElement.classList.contains("aio-managed-private-field"), true);
+  assert.equal(negativeElement.classList.contains("aio-managed-private-field"), true);
+  assert.equal(positiveElement["data-aio-private"], "true");
+  for (const name of ["privacy_mode_reference", "private_execution"]) {
+    const hidden = node.widgets.find((item) => item.name === name);
+    assert.equal(hidden.hidden, true);
+    assert.equal(hidden.type, "hidden");
+    assert.deepEqual(hidden.computeSize(), [0, -4]);
+  }
+
+  node.widgets[1].draw();
+  assert.deepEqual(drawValues, ["••••••••"]);
+  assert.equal(node.widgets[1].value, "positive");
+});
+
+
+test("private workflow storage remains protected while plaintext stays only in live memory", () => {
+  const node = generateNode(true);
+  const adapter = createAioPromptWorkflowBrowserAdapter();
+  const positive = { fieldId: AIO_GENERATE_POSITIVE_FIELD_ID, location: { name: "positive_prompt" } };
+  const secret = "SYNTHETIC_PRIVATE_WORKFLOW_SECRET";
+  const envelope = JSON.stringify({
+    version: 1,
+    schema: "helto.aio-image-generate.v2",
+    encrypted: true,
+    algorithm: "AES-256-GCM",
+    keyId: "synthetic-key",
+    nonce: "synthetic-nonce",
+    ciphertext: "synthetic-ciphertext",
+  });
+
+  adapter.onPrivacySessionChange({ state: "unlocked" });
+  adapter.apply(node, { value: secret }, positive);
+  adapter.writeProtected(node, envelope, positive);
+  const output = serializedNode(node);
+
+  assert.equal(node.widgets.find((item) => item.name === "positive_prompt").value, envelope);
+  assert.equal(JSON.stringify(output).includes(secret), false);
+  assert.equal(output.widgets_values[1], envelope);
+  assert.deepEqual(adapter.normalize(node, positive), { value: secret });
+});
+
+
+test("workflow projections skip non-serialized product widgets", () => {
+  const node = generateNode(true);
+  node.widgets.splice(1, 0, { name: "product_button", value: "not serialized", serialize: false });
+  const adapter = createAioPromptWorkflowBrowserAdapter();
+  const output = {
+    widgets_values: node.widgets.filter((item) => item.serialize !== false).map((item) => item.value),
+  };
+  adapter.writeWorkflowProjection(
+    node,
+    output,
+    "CURRENT_POSITIVE",
+    { fieldId: AIO_GENERATE_POSITIVE_FIELD_ID, location: { name: "positive_prompt" } },
+  );
+
+  assert.equal(output.widgets_values[1], "CURRENT_POSITIVE");
+  assert.equal(output.widgets_values.length, 3);
+});
+
+
 test("Krea declaration and facts follow connected Generate nodes", () => {
   const first = generateNode(false);
   first.id = 1;
@@ -180,6 +319,38 @@ test("Krea declaration and facts follow connected Generate nodes", () => {
 });
 
 
+test("connected Krea inpaint prompt inherits the Generate mask and hides transport widgets", () => {
+  const generate = generateNode(true);
+  generate.id = 1;
+  generate.inputs = [{ name: "model_settings" }];
+  const element = textElement("SYNTHETIC_KREA_PRIVATE_PROMPT");
+  const krea = {
+    id: 2,
+    comfyClass: "AIOKrea2Settings",
+    widgets: [
+      { name: "inpaint_positive_prompt", value: "krea", inputEl: element },
+      { name: "privacy_mode_reference", value: "" },
+      { name: "private_execution", value: "" },
+    ],
+    outputs: [{ links: [11] }],
+  };
+  const graph = {
+    _nodes: [generate, krea],
+    links: { 11: { target_id: 1, target_slot: 0 } },
+  };
+  generate.graph = graph;
+  krea.graph = graph;
+  const adapter = createAioPromptWorkflowBrowserAdapter();
+  adapter.onPrivacySessionChange({ state: "unlocked" });
+  adapter.reconcileNode(krea);
+
+  assert.equal(krea.__aioManagedPrivacyMasked, true);
+  assert.equal(element.classList.contains("aio-managed-private-field"), true);
+  assert.equal(krea.widgets[1].hidden, true);
+  assert.equal(krea.widgets[2].hidden, true);
+});
+
+
 test("Krea field uses its own widget location", () => {
   const node = {
     comfyClass: "AIOKrea2Settings",
@@ -193,6 +364,80 @@ test("Krea field uses its own widget location", () => {
   assert.deepEqual(adapter.normalize(node, context), { value: "local inpaint" });
   adapter.clear(node, context);
   assert.equal(node.widgets[0].value, "");
+});
+
+
+test("prompt workflow transition freezes edits and proves exact detached readback", async () => {
+  const node = generateNode(true);
+  node.id = 41;
+  const graph = {
+    _nodes: [node],
+    serialize: () => ({ nodes: [serializedNode(node)] }),
+  };
+  node.graph = graph;
+  const edits = [];
+  const adapter = createAioPromptWorkflowBrowserAdapter({
+    app: { graph },
+    workflowHandle: { markEdited: (...args) => edits.push(args) },
+  });
+  const field = externalField(
+    AIO_GENERATE_POSITIVE_FIELD_ID,
+    "AIOImageGenerate",
+    { kind: "widget", name: "positive_prompt" },
+  );
+  const context = { field };
+  const privateExact = JSON.stringify({
+    version: 1,
+    schema: "helto.aio-image-generate.v2",
+    encrypted: true,
+    algorithm: "AES-256-GCM",
+    keyId: "synthetic-key",
+    nonce: "synthetic-nonce",
+    ciphertext: "synthetic-ciphertext",
+  });
+  adapter.writeProtected(node, privateExact, { fieldId: field.id });
+  adapter.reconcileNode(node);
+
+  const settlement = adapter.settleModeTransition(context);
+  assert.deepEqual(await settlement.settled, { offlineRepresentationCount: 0 });
+  assert.equal(node.__aioManagedPrivacyTransitionFrozen, true);
+  assert.throws(
+    () => node.widgets.find((item) => item.name === "positive_prompt").callback("blocked"),
+    /PRIVACY_AIO_PROMPT_STATE_INVALID/,
+  );
+  assert.deepEqual(edits, []);
+
+  const [inventory] = await adapter.inventoryModeTransitionOwners(context);
+  assert.deepEqual(
+    { rootGraphId: inventory.rootGraphId, graphId: inventory.graphId, nodeId: inventory.nodeId },
+    { rootGraphId: "root", graphId: "root", nodeId: "41" },
+  );
+  assert.equal(
+    Buffer.from(await adapter.readModeTransitionOwnerExact(inventory.owner, context)).toString(),
+    privateExact,
+  );
+
+  const publicExact = new TextEncoder().encode('{"value":"public exact prompt"}');
+  await adapter.applyModeTransitionOwnerExact(inventory.owner, publicExact, context);
+  assert.deepEqual(
+    await adapter.readModeTransitionOwnerExact(inventory.owner, context),
+    publicExact,
+  );
+  assert.deepEqual(
+    await adapter.extractDetachedModeTransitionOwnerExact(
+      inventory.owner,
+      graph.serialize(),
+      context,
+    ),
+    publicExact,
+  );
+  await adapter.reloadModeTransitionRuntime(inventory.owner, context);
+  assert.deepEqual(adapter.normalize(node, { fieldId: field.id }), {
+    value: "public exact prompt",
+  });
+  await adapter.reconcileModeTransitionRuntime(inventory.owner, context);
+  await settlement.release();
+  assert.equal(node.__aioManagedPrivacyTransitionFrozen, false);
 });
 
 
@@ -257,6 +502,26 @@ function builderNode() {
     },
   };
 }
+
+
+test("builder workflow projection skips non-serialized product widgets", () => {
+  const node = builderNode();
+  node.widgets.splice(1, 0, { name: "product_button", value: "not serialized", serialize: false });
+  const adapter = createAioBuilderWorkflowBrowserAdapter();
+  const fieldId = AIO_BUILDER_WIDGET_FIELD_IDS.high_level_description;
+  const output = {
+    widgets_values: node.widgets.filter((item) => item.serialize !== false).map((item) => item.value),
+  };
+  adapter.writeWorkflowProjection(
+    node,
+    output,
+    "CURRENT_DESCRIPTION",
+    { fieldId, location: { name: "high_level_description" } },
+  );
+
+  assert.equal(output.widgets_values[1], "CURRENT_DESCRIPTION");
+  assert.equal(output.widgets_values.length, node.widgets.length - 1);
+});
 
 
 test("builder mode facts carry every connected Generate private floor", () => {
@@ -338,7 +603,15 @@ test("builder adapter flushes edits and preserves every locked serialized byte",
   );
 
   const output = { widgets_values: node.widgets.map((item) => item.value), properties: {} };
-  adapter.serializeForWorkflow(node, output);
+  for (const [name, fieldId] of Object.entries(AIO_BUILDER_WIDGET_FIELD_IDS)) {
+    adapter.writeWorkflowProjection(
+      node,
+      output,
+      `CURRENT_${name}`,
+      { fieldId, location: { name } },
+    );
+  }
+  adapter.writeWorkflowProjection(node, output, stateCiphertext, stateContext);
   assert.equal(output.properties[AIO_BUILDER_STATE_PROPERTY], stateCiphertext);
   assert.equal(output[AIO_BUILDER_WORKFLOW_STATE_KEY], stateCiphertext);
   assert.equal(output[AIO_BUILDER_LEGACY_WORKFLOW_STATE_KEY], stateCiphertext);
@@ -349,15 +622,112 @@ test("builder adapter flushes edits and preserves every locked serialized byte",
 });
 
 
-test("builder serialization blocks when one protected generation is incomplete", () => {
+test("builder workflow projection rejects an incomplete serialized node", () => {
   const node = builderNode();
   const adapter = createAioBuilderWorkflowBrowserAdapter();
-  adapter.writeProtected(node, "CURRENT_WHOLE_STATE", { fieldId: AIO_BUILDER_STATE_FIELD_ID });
   assert.throws(
-    () => adapter.serializeForWorkflow(
+    () => adapter.writeWorkflowProjection(
       node,
-      { widgets_values: node.widgets.map((item) => item.value), properties: {} },
+      { widgets_values: [] },
+      "CURRENT_background",
+      {
+        fieldId: AIO_BUILDER_WIDGET_FIELD_IDS.background,
+        location: { name: "background" },
+      },
     ),
     /PRIVACY_AIO_BUILDER_STATE_INVALID/,
   );
+});
+
+
+test("builder workflow transition handles widget and mirrored state exact bytes", async () => {
+  const node = builderNode();
+  node.id = 52;
+  const graph = {
+    _nodes: [node],
+    serialize: () => ({ nodes: [serializedNode(node)] }),
+  };
+  node.graph = graph;
+  const adapter = createAioBuilderWorkflowBrowserAdapter({
+    app: { graph },
+    workflowHandle: { markEdited() {} },
+  });
+  const widgetField = externalField(
+    AIO_BUILDER_WIDGET_FIELD_IDS.background,
+    "AIOIdeogram4PromptBuilder",
+    { kind: "widget", name: "background" },
+  );
+  const widgetContext = { field: widgetField };
+  const privateExact = JSON.stringify({
+    version: 1,
+    schema: "helto.aio-ideogram4-builder.v2",
+    encrypted: true,
+    algorithm: "AES-256-GCM",
+    keyId: "synthetic-key",
+    nonce: "synthetic-nonce",
+    ciphertext: "synthetic-ciphertext",
+  });
+  adapter.writeProtected(node, privateExact, { fieldId: widgetField.id });
+  adapter.reconcileNode(node);
+
+  const widgetSettlement = adapter.settleModeTransition(widgetContext);
+  assert.deepEqual(await widgetSettlement.settled, { offlineRepresentationCount: 0 });
+  const [widgetOwner] = await adapter.inventoryModeTransitionOwners(widgetContext);
+  const publicWidgetExact = new TextEncoder().encode('{"value":"public background"}');
+  await adapter.applyModeTransitionOwnerExact(
+    widgetOwner.owner,
+    publicWidgetExact,
+    widgetContext,
+  );
+  assert.deepEqual(
+    await adapter.readModeTransitionOwnerExact(widgetOwner.owner, widgetContext),
+    publicWidgetExact,
+  );
+  assert.deepEqual(
+    await adapter.extractDetachedModeTransitionOwnerExact(
+      widgetOwner.owner,
+      graph.serialize(),
+      widgetContext,
+    ),
+    publicWidgetExact,
+  );
+  await adapter.reloadModeTransitionRuntime(widgetOwner.owner, widgetContext);
+  await adapter.reconcileModeTransitionRuntime(widgetOwner.owner, widgetContext);
+  assert.equal(node.runtime().widgets.background, "public background");
+  await widgetSettlement.release();
+
+  const stateField = externalField(
+    AIO_BUILDER_STATE_FIELD_ID,
+    "AIOIdeogram4PromptBuilder",
+    { kind: "property", name: AIO_BUILDER_STATE_PROPERTY },
+  );
+  const stateContext = { field: stateField };
+  adapter.writeProtected(node, privateExact, { fieldId: stateField.id });
+  const stateSettlement = adapter.settleModeTransition(stateContext);
+  assert.deepEqual(await stateSettlement.settled, { offlineRepresentationCount: 0 });
+  const [stateOwner] = await adapter.inventoryModeTransitionOwners(stateContext);
+  const publicState = builderState();
+  publicState.effective_privacy_mode = false;
+  const publicStateExact = new TextEncoder().encode(JSON.stringify(publicState));
+  await adapter.applyModeTransitionOwnerExact(
+    stateOwner.owner,
+    publicStateExact,
+    stateContext,
+  );
+  assert.deepEqual(
+    await adapter.readModeTransitionOwnerExact(stateOwner.owner, stateContext),
+    publicStateExact,
+  );
+  assert.deepEqual(
+    await adapter.extractDetachedModeTransitionOwnerExact(
+      stateOwner.owner,
+      graph.serialize(),
+      stateContext,
+    ),
+    publicStateExact,
+  );
+  await adapter.reloadModeTransitionRuntime(stateOwner.owner, stateContext);
+  await adapter.reconcileModeTransitionRuntime(stateOwner.owner, stateContext);
+  assert.equal(node.runtime().effective_privacy_mode, false);
+  await stateSettlement.release();
 });

@@ -7,7 +7,16 @@ from typing import Any
 
 try:
     from ..adapters import Flux2Klein9BAdapter, Ideogram4Adapter, Krea2Adapter, ZImageTurboAdapter  # noqa: F401
-    from ..services import pipeline, privacy
+    from ..services import pipeline
+    from ..services.managed_privacy_execution import (
+        aio_subject_requires_private_execution,
+        consume_aio_subject_mode,
+    )
+    from ..services.managed_prompt_privacy import (
+        GENERATE_SUBJECT_MODE_BINDING_ID,
+        aio_privacy_pack,
+    )
+    from ..services.managed_run_info_privacy import project_managed_run_info
     from ..services.prompt_resolution import (
         GENERATE_EXECUTION_RESOURCE_ID,
         MASKED_PROMPT_VALUE,
@@ -37,14 +46,23 @@ try:
         REFERENCE_IMAGE_INPUT_NAMES,
         normalize_reference_inputs,
     )
-    from ..services.run_info import build_run_info, to_json
+    from ..services.run_info import build_run_info, build_run_info_candidate, to_json
     from ..services.validation import (
         validate_model_type,
         validate_settings_family,
     )
 except ImportError:  # pragma: no cover - direct test imports
     from adapters import Flux2Klein9BAdapter, Ideogram4Adapter, Krea2Adapter, ZImageTurboAdapter  # noqa: F401
-    from services import pipeline, privacy
+    from services import pipeline
+    from services.managed_privacy_execution import (
+        aio_subject_requires_private_execution,
+        consume_aio_subject_mode,
+    )
+    from services.managed_prompt_privacy import (
+        GENERATE_SUBJECT_MODE_BINDING_ID,
+        aio_privacy_pack,
+    )
+    from services.managed_run_info_privacy import project_managed_run_info
     from services.prompt_resolution import (
         GENERATE_EXECUTION_RESOURCE_ID,
         MASKED_PROMPT_VALUE,
@@ -74,7 +92,7 @@ except ImportError:  # pragma: no cover - direct test imports
         REFERENCE_IMAGE_INPUT_NAMES,
         normalize_reference_inputs,
     )
-    from services.run_info import build_run_info, to_json
+    from services.run_info import build_run_info, build_run_info_candidate, to_json
     from services.validation import (
         validate_model_type,
         validate_settings_family,
@@ -109,10 +127,16 @@ AIO_GENERATE_SERIALIZED_WIDGET_NAMES = (
     "second_pass_upscale_method",
 )
 KREA_INPAINT_PROMPT_SOURCE = "krea2_inpaint_settings"
+_MANAGED_EXECUTION_CAPABILITY = object()
 
 
 def _external_cache_providers_registered() -> bool:
-    return privacy.external_cache_providers_registered()
+    try:
+        from comfy_execution.cache_provider import _has_cache_providers  # type: ignore
+
+        return bool(_has_cache_providers())
+    except Exception:
+        return False
 
 
 def _truthy_privacy_flag(value: Any) -> bool:
@@ -369,16 +393,12 @@ def _resolve_prompt_text(
     extra_pnginfo: Any,
     unique_id: str | None,
 ) -> str:
-    resolved = privacy.decrypt_text_if_encrypted(value)
+    resolved = "" if value is None else str(value)
     linked = _prompt_input_is_link(prompt, unique_id, input_name)
     if linked or resolved.strip():
         return resolve_prompt_source(resolved, linked=linked)
     fallback = _workflow_widget_value(extra_pnginfo, unique_id, input_name)
-    fallback_text = (
-        fallback
-        if fallback in (None, MASKED_PROMPT_VALUE)
-        else privacy.decrypt_text_if_encrypted(fallback)
-    )
+    fallback_text = fallback if fallback in (None, MASKED_PROMPT_VALUE) else str(fallback)
     return resolve_prompt_source(
         resolved,
         linked=False,
@@ -955,6 +975,15 @@ class AIOImageGenerate:
                 ),
             },
             "optional": {
+                "privacy_mode_reference": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "socketless": True,
+                        "hidden": True,
+                        "tooltip": "Managed subject privacy-mode reference injected by the shared privacy barrier.",
+                    },
+                ),
                 "private_execution": (
                     "STRING",
                     {
@@ -1031,10 +1060,57 @@ class AIOImageGenerate:
         unique_id: str | None = None,
         prompt: Any = None,
         extra_pnginfo: Any = None,
+        privacy_mode_reference: str = "",
         private_execution: str = "",
         weight_format: str | None = None,
+        _subject_mode_lease: object = None,
+        _managed_execution_capability: object = None,
         **reference_values: Any,
     ):
+        if _subject_mode_lease is None and privacy_mode_reference:
+            bound_inputs = dict(locals())
+            product_inputs = {
+                key: value
+                for key, value in bound_inputs.items()
+                if key
+                not in {
+                    "self",
+                    "bound_inputs",
+                    "product_inputs",
+                    "reference_values",
+                    "_subject_mode_lease",
+                    "_managed_execution_capability",
+                }
+            }
+            product_inputs.update(reference_values)
+            with consume_aio_subject_mode(
+                privacy_mode_reference,
+                GENERATE_SUBJECT_MODE_BINDING_ID,
+                unique_id,
+            ) as lease:
+                product_inputs["_subject_mode_lease"] = lease
+                return self.generate(**product_inputs)
+        if (
+            _subject_mode_lease is not None
+            and aio_subject_requires_private_execution(
+                _subject_mode_lease,
+                GENERATE_SUBJECT_MODE_BINDING_ID,
+            )
+            and not private_execution
+            and _managed_execution_capability is not _MANAGED_EXECUTION_CAPABILITY
+        ):
+            raise ValueError(
+                "Private generation requires a managed execution reference."
+            )
+        if _subject_mode_lease is None and (
+            private_execution
+            or unique_id is not None
+            or _truthy_privacy_flag(privacy_mode)
+            or _settings_request_privacy(model_settings)
+        ):
+            raise ValueError(
+                "Generation requires managed references for subject-mode and execution."
+            )
         if private_execution:
             bound_inputs = dict(locals())
             try:
@@ -1049,6 +1125,9 @@ class AIOImageGenerate:
                     "bound_inputs",
                     "private_execution",
                     "reference_values",
+                    "privacy_mode_reference",
+                    "_subject_mode_lease",
+                    "_managed_execution_capability",
                 }
             }
             product_inputs.update(reference_values)
@@ -1057,6 +1136,10 @@ class AIOImageGenerate:
                 resolved_inputs = dict(product_inputs)
                 resolved_inputs["positive_prompt"] = semantic["positive_prompt"]
                 resolved_inputs["negative_prompt"] = semantic["negative_prompt"]
+                resolved_inputs["_subject_mode_lease"] = _subject_mode_lease
+                resolved_inputs["_managed_execution_capability"] = (
+                    _MANAGED_EXECUTION_CAPABILITY
+                )
                 return self.generate(**resolved_inputs)
 
             return dispatch_aio_prompt_execution(
@@ -1081,6 +1164,7 @@ class AIOImageGenerate:
                     },
                     "dispatch": run_pipeline,
                 },
+                subject_id=unique_id,
             )
         del weight_format
         resolved_batch_count = _validate_batch_count(batch_count)
@@ -1335,7 +1419,7 @@ class AIOImageGenerate:
             inpaint_config=normalized_inpaint_config,
         )
         effective_positive_prompt = (
-            privacy.decrypt_text_if_encrypted(positive_prompt_override)
+            str(positive_prompt_override)
             if positive_prompt_override_applies
             else resolved_positive_prompt
         )
@@ -1553,7 +1637,7 @@ class AIOImageGenerate:
         debug_info["pid"]["capture_available"] = pid_capture is not None
         debug_info["second_pass"] = _debug_value(second_pass_info)
 
-        run_info = build_run_info(
+        run_info_facts = dict(
             model_type=model_type,
             display_name=profile.display_name,
             diffusion_model=diffusion_model,
@@ -1578,10 +1662,24 @@ class AIOImageGenerate:
             warnings=warnings,
             adapter_version=adapter.version,
             loras=lora_summary,
-            privacy_mode=run_info_privacy_mode,
-            debug=None if run_info_privacy_mode else debug_info,
             second_pass=second_pass_info,
         )
+        if _subject_mode_lease is not None:
+            run_info = build_run_info_candidate(
+                **run_info_facts,
+                debug=debug_info,
+            )
+            run_info = project_managed_run_info(
+                aio_privacy_pack(),
+                run_info,
+                subject_mode=_subject_mode_lease,
+            ).value
+        else:
+            run_info = build_run_info(
+                **run_info_facts,
+                privacy_mode=run_info_privacy_mode,
+                debug=None if run_info_privacy_mode else debug_info,
+            )
         model_info = {
             "model": generation.model if model_return_requested else None,
             "clip": generation.clip if clip_return_requested else None,

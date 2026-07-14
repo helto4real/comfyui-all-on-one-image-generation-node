@@ -1,9 +1,9 @@
 import json
 import math
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-from helto_privacy import initialize_keystore
 
 from nodes.aio_generate import (
     AIOImageGenerate,
@@ -16,11 +16,28 @@ from nodes.aio_generate import (
 )
 from nodes.info import AIOInpaintInfo, AIOModelInfo, AIOPIDInfo
 from nodes.inpaint import AIOInpaint
-from services import pipeline, privacy
+from services import pipeline
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PASSWORD = "correct horse battery"
+PUBLIC_SUBJECT_MODE_LEASE = object()
+
+
+@pytest.fixture(autouse=True)
+def public_subject_mode_projection(monkeypatch):
+    from nodes import aio_generate
+
+    monkeypatch.setattr(aio_generate, "aio_privacy_pack", lambda: object())
+    monkeypatch.setattr(
+        aio_generate,
+        "aio_subject_requires_private_execution",
+        lambda _lease, _binding_id: False,
+    )
+    monkeypatch.setattr(
+        aio_generate,
+        "project_managed_run_info",
+        lambda _pack, candidate, *, subject_mode: SimpleNamespace(value=candidate),
+    )
 
 
 class FakeImage:
@@ -227,77 +244,30 @@ def test_aio_seed_frontend_randomizes_live_seed_before_queue():
     assert "AIOSeedProbe" not in source
 
 
-def test_aio_frontend_reuses_private_prompt_envelope_for_unchanged_plaintext():
+def test_aio_frontend_uses_shared_workflow_privacy_without_local_crypto():
     source = (ROOT / "web/js/aio_image_generate.js").read_text(encoding="utf-8")
+    managed = (ROOT / "web/js/aio_managed_prompt_privacy.js").read_text(encoding="utf-8")
 
-    assert 'const PRIVACY_ENVELOPE_MEMO_KEY = "__aioPrivacyEnvelopeMemo";' in source
-    assert "function rememberPrivacyEnvelope(widget, plaintext, envelope)" in source
-    assert "function rememberedPrivacyEnvelope(widget, plaintext)" in source
-
-    decrypt_start = source.index("async function decryptPromptWidget")
-    decrypt_end = source.index("function setPromptWidgetText", decrypt_start)
-    decrypt_block = source[decrypt_start:decrypt_end]
-    assert "const envelope = privacyEnvelopeString(widget.value);" in decrypt_block
-    assert "const plaintext = await decryptValue(widget.value);" in decrypt_block
-    assert "rememberPrivacyEnvelope(widget, plaintext, envelope);" in decrypt_block
-
-    serialize_start = source.index("function encryptedOrEncryptPromptValue")
-    serialize_end = source.index("function sanitizeGenerateWorkflowSerialization", serialize_start)
-    serialize_block = source[serialize_start:serialize_end]
-    assert "const currentEnvelope = privacyEnvelopeString(value);" in serialize_block
-    assert "return currentEnvelope;" in serialize_block
-    assert "const rememberedEnvelope = rememberedPrivacyEnvelope(widget, value);" in serialize_block
-    assert "return rememberedEnvelope;" in serialize_block
-    assert 'const encrypted = encryptValueSync(value ?? "");' in serialize_block
-    assert 'rememberPrivacyEnvelope(widget, value ?? "", encrypted);' in serialize_block
-    assert serialize_block.index("rememberedPrivacyEnvelope(widget, value)") < serialize_block.index("encryptValueSync")
-
-    krea_start = source.index("function sanitizeKreaSettingsWorkflowSerialization")
-    krea_end = source.index("function promptWidgetDomElements", krea_start)
-    krea_block = source[krea_start:krea_end]
-    assert "encryptedOrEncryptPromptValue(node, widget)" in krea_block
+    assert 'import "./aio_managed_privacy.js";' in source
+    assert "encryptValueSync" not in source
+    assert "decryptValue" not in source
+    assert "serializeValue = function" not in source
+    assert "writeProtected(node, protectedValue, context)" in managed
+    assert "writeWorkflowProjection(node, serializedNode, protectedValue, context)" in managed
+    assert "workflowHandle.markEdited(node, fieldId)" in managed
 
 
-def test_aio_frontend_stabilizes_private_prompt_output_after_graph_to_prompt():
+def test_aio_frontend_leaves_prompt_submission_to_shared_barrier():
     source = (ROOT / "web/js/aio_image_generate.js").read_text(encoding="utf-8")
+    activation = (ROOT / "web/js/aio_managed_privacy.js").read_text(encoding="utf-8")
 
-    assert 'const AIO_PRIVACY_GRAPH_TO_PROMPT_WRAPPER_KEY = "__aioGeneratePrivacyGraphToPromptWrapper";' in source
-    assert "function stableWorkflowPromptEnvelope(prompt, node, widget)" in source
-    assert "function stabilizeAioPrivatePromptOutput(prompt, graph)" in source
-    assert "function installAioPrivacyGraphToPromptPatch" in source
-    assert "app.graphToPrompt = wrappedGraphToPrompt" in source
-    assert "scheduleAioPrivacyGraphToPromptPatch(\"setup\")" in source
-
-    workflow_start = source.index("function stableWorkflowPromptEnvelope")
-    workflow_end = source.index("function stabilizeAioPrivatePromptNodeOutput", workflow_start)
-    workflow_block = source[workflow_start:workflow_end]
-    assert "const workflowNode = promptWorkflowNodeById(prompt, node?.id);" in workflow_block
-    assert "const values = workflowNode?.widgets_values;" in workflow_block
-    assert "return privacyEnvelopeString(values[index]);" in workflow_block
-
-    output_start = source.index("function stabilizeAioPrivatePromptNodeOutput")
-    output_end = source.index("function stabilizeAioPrivatePromptOutput", output_start)
-    output_block = source[output_start:output_end]
-    assert "isAioGenerateNode(node)" in output_block
-    assert "isAioKrea2SettingsNode(node)" in output_block
-    assert "privacyPromptWidgetNames(node)" in output_block
-    assert "Array.isArray(inputs[name])" in output_block
-    assert "inputs[name] = envelope;" in output_block
-    assert "rememberPrivacyEnvelope(widget, currentValue ?? \"\", envelope);" in output_block
-
-    wrapper_start = source.index("function installAioPrivacyGraphToPromptPatch")
-    wrapper_end = source.index("function scheduleAioPrivacyGraphToPromptPatch", wrapper_start)
-    wrapper_block = source[wrapper_start:wrapper_end]
-    assert "const originalGraphToPrompt = app.graphToPrompt;" in wrapper_block
-    assert "const prompt = await originalGraphToPrompt.apply(this, args);" in wrapper_block
-    assert "return stabilizeAioPrivatePromptOutput(prompt, args[0] || this?.graph || app.graph);" in wrapper_block
-    assert wrapper_block.index("await originalGraphToPrompt.apply") < wrapper_block.index("stabilizeAioPrivatePromptOutput")
-
-    names_start = source.index("function privacyPromptWidgetNames")
-    names_end = source.index("function graphNodeList", names_start)
-    names_block = source[names_start:names_end]
-    assert "KREA_INPAINT_PROMPT_WIDGET_NAME" in names_block
-    assert "PROMPT_WIDGET_NAMES" in names_block
+    assert "graphToPrompt" not in source
+    assert "stabilizeAioPrivatePrompt" not in source
+    assert 'fetch("/helto_privacy/status"' in activation
+    assert "/helto_privacy/ui/privacy_profile/${suiteManifestDigest}.js" in activation
+    assert "runtime.connectPrivacyPack" in activation
+    assert '"generate-workflow-browser"' in activation
+    assert '"krea-workflow-browser"' in activation
 
 
 def test_aio_frontend_clears_standard_progress_text_after_execution():
@@ -377,39 +347,17 @@ def test_aio_frontend_scopes_helto_widget_theme_to_aio_nodes():
     assert "applyAioNodeTheme(this)" in patch_block
 
 
-def test_aio_frontend_themes_prompt_dom_fields_without_weakening_privacy_mask():
+def test_aio_frontend_has_no_hover_based_privacy_authority():
     source = (ROOT / "web/js/aio_image_generate.js").read_text(encoding="utf-8")
+    managed = (ROOT / "web/js/aio_managed_prompt_privacy.js").read_text(encoding="utf-8")
 
-    assert 'const PROMPT_FIELD_CLASS = "aio-generate-prompt-field";' in source
-    assert 'const PRIVATE_FIELD_CLASS = "aio-generate-private-field";' in source
-    assert "function promptWidgetTextElements(widget)" in source
-
-    style_start = source.index("function installGeneratePrivacyStyles")
-    style_end = source.index("function directPromptWidgetValue", style_start)
-    style_block = source[style_start:style_end]
-    assert "ensureHeltoTokens();" in style_block
-    assert ".${PROMPT_FIELD_CLASS}" in style_block
-    assert "background: var(--helto-surface-2) !important;" in style_block
-    assert "border: 1px solid var(--helto-border-strong) !important;" in style_block
-    assert "color: var(--helto-text) !important;" in style_block
-    assert "border-color: var(--helto-focus) !important;" in style_block
-    assert ".${PRIVATE_FIELD_CLASS}" in style_block
-    assert "color: transparent !important;" in style_block
-    assert "caret-color: transparent !important;" in style_block
-
-    text_elements_start = source.index("function promptWidgetTextElements")
-    text_elements_end = source.index("function updatePromptPrivacyReveal", text_elements_start)
-    text_elements_block = source[text_elements_start:text_elements_end]
-    assert "element instanceof HTMLTextAreaElement" in text_elements_block
-    assert "element instanceof HTMLInputElement" in text_elements_block
-    assert "element.isContentEditable" in text_elements_block
-
-    dom_start = source.index("function updatePromptDomPrivacy")
-    dom_end = source.index("function promptPrivacyMasked", dom_start)
-    dom_block = source[dom_start:dom_end]
-    assert "promptWidgetTextElements(widget)" in dom_block
-    assert "element.classList.add(PROMPT_FIELD_CLASS)" in dom_block
-    assert "element.classList.toggle(PRIVATE_FIELD_CLASS, masked)" in dom_block
+    assert "hover to reveal" not in source
+    assert "setPrivacyRevealSource" not in source
+    assert "onMouseEnter" not in source
+    assert "onMouseLeave" not in source
+    assert "onPrivacySessionChange(snapshot)" in managed
+    assert 'locked = snapshot?.state !== "ready" && snapshot?.state !== "unlocked"' in managed
+    assert 'setDomText(target, locked ? "" : plaintext)' in managed
 
 
 def test_aio_fixed_seed_button_sets_control_back_to_fixed():
@@ -712,6 +660,7 @@ def test_main_node_drops_unrequested_model_info_model_and_clip(monkeypatch):
         sampler="auto",
         scheduler="auto",
         unique_id="1",
+        _subject_mode_lease=PUBLIC_SUBJECT_MODE_LEASE,
         prompt=prompt,
     )
 
@@ -794,6 +743,7 @@ def test_main_node_keeps_requested_model_info_model_or_clip(
         sampler="auto",
         scheduler="auto",
         unique_id="1",
+        _subject_mode_lease=PUBLIC_SUBJECT_MODE_LEASE,
         prompt=prompt,
     )
 
@@ -861,6 +811,7 @@ def test_main_node_keeps_model_info_for_unknown_direct_bundle_consumer(monkeypat
         sampler="auto",
         scheduler="auto",
         unique_id="1",
+        _subject_mode_lease=PUBLIC_SUBJECT_MODE_LEASE,
         prompt=prompt,
     )
 
@@ -1064,6 +1015,7 @@ def test_main_node_returns_original_image_output_when_second_pass_is_disabled(mo
         sampler="auto",
         scheduler="auto",
         unique_id="1",
+        _subject_mode_lease=PUBLIC_SUBJECT_MODE_LEASE,
         prompt=prompt,
     )
 
@@ -1218,6 +1170,7 @@ def test_main_node_returns_connected_inpaint_debug_previews(monkeypatch):
             "unconditional_model": "unconditional.safetensors",
         },
         unique_id="1",
+        _subject_mode_lease=PUBLIC_SUBJECT_MODE_LEASE,
         prompt=prompt,
     )
 
@@ -1301,6 +1254,7 @@ def test_main_node_requests_all_inpaint_previews_when_workflow_field_links_are_u
             "unconditional_model": "unconditional.safetensors",
         },
         unique_id="1",
+        _subject_mode_lease=PUBLIC_SUBJECT_MODE_LEASE,
         prompt={"1": {"class_type": "AIOImageGenerate", "inputs": {}}},
         extra_pnginfo=extra_pnginfo,
     )
@@ -1387,60 +1341,71 @@ def test_main_node_rejects_inpaint_for_unsupported_profile(monkeypatch):
         )
 
 
-def test_main_node_decrypts_private_prompt_widgets(monkeypatch, tmp_path):
+def test_main_node_rejects_private_generation_before_product_dispatch(monkeypatch):
     from nodes import aio_generate
-    from services import privacy
 
-    monkeypatch.setattr(aio_generate.privacy, "config_dir", lambda: tmp_path)
-    initialize_keystore(PASSWORD)
-    captured = {}
+    called = False
 
-    class FakeAdapter:
-        version = "test"
+    def unexpected_adapter(_model_type):
+        nonlocal called
+        called = True
+        raise AssertionError("private product adapter must not be reached")
 
-        def resolve_settings(self, **kwargs):
-            return {
-                "width": kwargs["width"],
-                "height": kwargs["height"],
-                "steps": 8,
-                "cfg": 1.0,
-                "sampler": "auto",
-                "scheduler": "auto",
-            }
+    monkeypatch.setattr(aio_generate, "get_adapter", unexpected_adapter)
 
-        def validate_inputs(self, **kwargs):
-            captured["validated"] = kwargs
-            return []
+    with pytest.raises(ValueError, match="requires managed references"):
+        AIOImageGenerate().generate(
+            model_type="z_image_turbo",
+            diffusion_model="model.safetensors",
+            text_encoder="text.safetensors",
+            vae="vae.safetensors",
+            positive_prompt="SYNTHETIC_PRIVATE_BYPASS",
+            negative_prompt="SYNTHETIC_PRIVATE_NEGATIVE",
+            privacy_mode=True,
+            width=1024,
+            height=1024,
+            seed=0,
+            steps=8,
+            cfg=1.0,
+            sampler="auto",
+            scheduler="auto",
+        )
 
-        def generate(self, **kwargs):
-            captured["generated"] = kwargs
-            return "image", {"samples": "latent"}, "positive", "negative", "vae"
+    assert called is False
 
-    positive = json.dumps(privacy.encrypt_state({"value": "private positive"}))
-    negative = json.dumps(privacy.encrypt_state({"value": "private negative"}))
-    monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
 
-    AIOImageGenerate().generate(
-        model_type="z_image_turbo",
-        diffusion_model="model.safetensors",
-        text_encoder="text.safetensors",
-        vae="vae.safetensors",
-        positive_prompt=positive,
-        negative_prompt=negative,
-        privacy_mode=True,
-        width=1024,
-        height=1024,
-        seed=0,
-        steps=0,
-        cfg=0.0,
-        sampler="auto",
-        scheduler="auto",
-    )
+def test_main_node_rejects_comfy_execution_without_subject_reference(monkeypatch):
+    from nodes import aio_generate
 
-    assert captured["validated"]["positive_prompt"] == "private positive"
-    assert captured["validated"]["negative_prompt"] == "private negative"
-    assert captured["generated"]["positive_prompt"] == "private positive"
-    assert captured["generated"]["negative_prompt"] == "private negative"
+    called = False
+
+    def unexpected_adapter(_model_type):
+        nonlocal called
+        called = True
+        raise AssertionError("product adapter must not be reached")
+
+    monkeypatch.setattr(aio_generate, "get_adapter", unexpected_adapter)
+
+    with pytest.raises(ValueError, match="requires managed references"):
+        AIOImageGenerate().generate(
+            model_type="z_image_turbo",
+            diffusion_model="model.safetensors",
+            text_encoder="text.safetensors",
+            vae="vae.safetensors",
+            positive_prompt="synthetic public prompt",
+            negative_prompt="",
+            privacy_mode=False,
+            unique_id="synthetic-node-1",
+            width=1024,
+            height=1024,
+            seed=0,
+            steps=8,
+            cfg=1.0,
+            sampler="auto",
+            scheduler="auto",
+        )
+
+    assert called is False
 
 
 def _workflow_node_with_prompt_widget(prompt_value):
@@ -1498,6 +1463,7 @@ def test_main_node_recovers_unlinked_prompt_from_workflow_widget_values(monkeypa
         sampler="auto",
         scheduler="auto",
         unique_id="221",
+        _subject_mode_lease=PUBLIC_SUBJECT_MODE_LEASE,
         prompt={"221": {"inputs": {"positive_prompt": ""}}},
         extra_pnginfo={"workflow": {"nodes": [_workflow_node_with_prompt_widget("visible prompt")]}},
     )
@@ -1549,6 +1515,7 @@ def test_main_node_does_not_recover_prompt_when_input_is_linked(monkeypatch):
         sampler="auto",
         scheduler="auto",
         unique_id="221",
+        _subject_mode_lease=PUBLIC_SUBJECT_MODE_LEASE,
         prompt={"221": {"inputs": {"positive_prompt": ["17", 0]}}},
         extra_pnginfo={"workflow": {"nodes": [_workflow_node_with_prompt_widget("visible prompt")]}},
     )
@@ -1841,85 +1808,6 @@ def test_krea2_inpaint_settings_prompt_is_ignored_without_inpaint(monkeypatch):
     assert parsed["debug"]["prompts"]["positive_prompt_source"] == "node"
 
 
-@pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
-def test_ideogram_prompt_builder_privacy_marker_omits_debug_prompt(monkeypatch, tmp_path):
-    monkeypatch.setattr(privacy, "config_dir", lambda: tmp_path)
-    initialize_keystore(PASSWORD)
-
-    captured = {}
-
-    class FakeProfile:
-        display_name = "Ideogram 4"
-
-    class FakeAdapter:
-        version = "0.1.0"
-
-        def profile(self):
-            return FakeProfile()
-
-        def resolve_settings(self, **kwargs):
-            resolved = dict(kwargs["model_settings"])
-            resolved.update(
-                {
-                    "width": kwargs["width"],
-                    "height": kwargs["height"],
-                    "steps": 20,
-                    "cfg": 7.0,
-                    "sampler": "euler",
-                    "scheduler": "ideogram4",
-                }
-            )
-            return resolved
-
-        def validate_inputs(self, **kwargs):
-            captured["validated"] = kwargs
-            return []
-
-        def generate(self, **kwargs):
-            captured["generated"] = kwargs
-            return "image", {"samples": "latent"}, "positive", "negative", "vae"
-
-    from nodes import aio_generate
-
-    monkeypatch.setattr(aio_generate, "get_adapter", lambda model_type: FakeAdapter())
-    encrypted_prompt = privacy.encrypt_state({"value": '{"secret":"private room"}'})
-
-    _, _, run_info, *_ = AIOImageGenerate().generate(
-        model_type="ideogram4",
-        diffusion_model="model.safetensors",
-        text_encoder="text.safetensors",
-        vae="vae.safetensors",
-        positive_prompt="",
-        negative_prompt="",
-        seed=0,
-        steps=0,
-        cfg=0.0,
-        sampler="auto",
-        scheduler="auto",
-        privacy_mode=False,
-        model_settings={
-            "family": "ideogram4",
-            "positive_prompt_override": encrypted_prompt,
-            "positive_prompt_source": "ideogram4_prompt_builder",
-            "prompt_builder_privacy_mode": True,
-        },
-        **{
-            "size mode": "use aspect ratio",
-            "max side": 512,
-            "aspect ratio": "1:1",
-            "multiple value": "16",
-        },
-    )
-
-    assert captured["generated"]["positive_prompt"] == '{"secret":"private room"}'
-    parsed = json.loads(run_info)
-    encrypted = parsed["settings"]["positive_prompt_override"]
-    assert privacy.is_encrypted_payload(encrypted)
-    assert privacy.decrypt_text_if_encrypted(encrypted) == '{"secret":"private room"}'
-    assert "debug" not in parsed
-    assert "private room" not in run_info
-
-
 def test_main_node_skips_image_decode_for_latent_only_prompt(monkeypatch):
     from nodes import aio_generate
 
@@ -1967,6 +1855,7 @@ def test_main_node_skips_image_decode_for_latent_only_prompt(monkeypatch):
         sampler="auto",
         scheduler="auto",
         unique_id="1",
+        _subject_mode_lease=PUBLIC_SUBJECT_MODE_LEASE,
         prompt=prompt,
     )
 
@@ -2096,6 +1985,7 @@ def test_main_node_connected_pid_latent_output_captures_step(monkeypatch):
         sampler="auto",
         scheduler="auto",
         unique_id="1",
+        _subject_mode_lease=PUBLIC_SUBJECT_MODE_LEASE,
         prompt=prompt,
         pid_capture_step=6,
     )
@@ -2172,6 +2062,7 @@ def test_main_node_connected_pid_sigma_output_auto_selects_capture_step(monkeypa
         sampler="auto",
         scheduler="auto",
         unique_id="1",
+        _subject_mode_lease=PUBLIC_SUBJECT_MODE_LEASE,
         prompt=prompt,
         pid_capture_step=0,
     )
@@ -2241,6 +2132,7 @@ def test_main_node_returns_vae_for_valid_latent_only_vae_prompt(monkeypatch):
         sampler="auto",
         scheduler="auto",
         unique_id="1",
+        _subject_mode_lease=PUBLIC_SUBJECT_MODE_LEASE,
         prompt=prompt,
     )
 
@@ -2311,6 +2203,7 @@ def test_main_node_returns_vae_when_image_and_latent_are_connected(monkeypatch):
         sampler="auto",
         scheduler="auto",
         unique_id="1",
+        _subject_mode_lease=PUBLIC_SUBJECT_MODE_LEASE,
         prompt=prompt,
     )
 
@@ -2414,6 +2307,7 @@ def test_main_node_uses_workflow_links_for_image_and_vae_outputs(monkeypatch):
         sampler="auto",
         scheduler="auto",
         unique_id="83",
+        _subject_mode_lease=PUBLIC_SUBJECT_MODE_LEASE,
         prompt=prompt,
         extra_pnginfo=extra_pnginfo,
     )
@@ -2482,6 +2376,7 @@ def test_main_node_returns_vae_when_latent_is_not_connected(monkeypatch):
         sampler="auto",
         scheduler="auto",
         unique_id="1",
+        _subject_mode_lease=PUBLIC_SUBJECT_MODE_LEASE,
         prompt=prompt,
     )
 

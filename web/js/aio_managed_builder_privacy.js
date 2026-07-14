@@ -4,6 +4,11 @@ import {
   aioManagedNodeType,
   aioManagedOutgoingTargets,
 } from "./aio_managed_privacy_graph.js";
+import {
+  createAioExternalWorkflowTransition,
+  isAioCurrentModeEnvelope,
+  parseAioModeTransitionStorage,
+} from "./aio_managed_mode_transition.js";
 
 export const AIO_BUILDER_STATE_FIELD_ID = "ideogram-builder-state";
 export const AIO_BUILDER_STATE_PROPERTY = "aio_ideogram4_prompt_builder_state";
@@ -25,6 +30,7 @@ export const AIO_BUILDER_WIDGET_FIELD_IDS = Object.freeze({
 
 const BUILDER_NODE = "AIOIdeogram4PromptBuilder";
 const GENERATE_NODE = "AIOImageGenerate";
+const AIO_BUILDER_SCHEMA = "helto.aio-ideogram4-builder.v2";
 const SETTINGS_NODES = new Set(["AIOIdeogram4Settings", "AIOKrea2Settings"]);
 const PROTECTED_VALUES = "__aioManagedBuilderProtectedValues";
 const FIELD_BY_ID = Object.freeze(Object.fromEntries(
@@ -33,6 +39,10 @@ const FIELD_BY_ID = Object.freeze(Object.fromEntries(
 const ALL_FIELD_IDS = Object.freeze([
   ...Object.values(AIO_BUILDER_WIDGET_FIELD_IDS),
   AIO_BUILDER_STATE_FIELD_ID,
+]);
+const IMPLEMENTATION_WIDGET_NAMES = Object.freeze([
+  "privacy_mode_reference",
+  "private_execution",
 ]);
 
 function fail() {
@@ -73,12 +83,25 @@ function widget(node, name) {
   return result;
 }
 
+function serializedWidgetIndex(node, target) {
+  let index = 0;
+  for (const candidate of node?.widgets || []) {
+    const serialized = candidate?.serialize !== false
+      && candidate?.options?.serialize !== false;
+    if (candidate === target) return serialized ? index : -1;
+    if (serialized) index += 1;
+  }
+  return -1;
+}
+
 function fieldFacts(context) {
-  const fieldId = context?.fieldId ?? context?.id;
+  const declared = context?.field;
+  const fieldId = declared?.id ?? context?.fieldId ?? context?.id;
   if (fieldId === AIO_BUILDER_STATE_FIELD_ID) return { fieldId, state: true };
   const facts = FIELD_BY_ID[fieldId];
   if (!facts) fail();
-  if (context?.location?.name !== undefined && context.location.name !== facts.widget) fail();
+  const location = declared?.location ?? context?.location;
+  if (location?.name !== undefined && location.name !== facts.widget) fail();
   return { ...facts, fieldId, state: false };
 }
 
@@ -180,14 +203,139 @@ export function createAioBuilderModeBrowserAdapter() {
   };
 }
 
-export function createAioBuilderWorkflowBrowserAdapter({ workflowHandle = null } = {}) {
-  let locked = false;
+export function createAioBuilderWorkflowBrowserAdapter({
+  workflowHandle = null,
+  app = null,
+} = {}) {
+  let locked = true;
+  const owners = new Set();
 
   function markGenerationEdited(node) {
+    transition.requireMutable();
     if (typeof workflowHandle?.markEdited !== "function") fail();
     flushState(node);
     for (const fieldId of ALL_FIELD_IDS) workflowHandle.markEdited(node, fieldId);
   }
+
+  function notifyModeChange(node) {
+    if (typeof workflowHandle?.notifyModeChange !== "function") return;
+    let settlement;
+    try {
+      settlement = workflowHandle.notifyModeChange();
+    } catch (error) {
+      node.__aioManagedPrivacyError = String(error?.code || error?.message || "PRIVACY_MODE_STATE_UNAVAILABLE");
+      throw error;
+    }
+    node.__aioManagedPrivacyModeSettlement = Promise.resolve(settlement).then(() => {
+      node.__aioManagedPrivacyError = "";
+    }).catch((error) => {
+      node.__aioManagedPrivacyError = String(error?.code || error?.message || "PRIVACY_MODE_STATE_UNAVAILABLE");
+    });
+  }
+
+  function applyValue(node, value, context) {
+    const field = fieldFacts(context);
+    if (field.state) {
+      applyRuntimeState(node, value);
+      return;
+    }
+    const state = flushState(node);
+    const plaintext = value && typeof value === "object" && Object.keys(value).length === 1
+      ? value.value : value;
+    if (typeof plaintext !== "string") fail();
+    state.widgets[field.widget] = plaintext;
+    applyRuntimeState(node, state);
+  }
+
+  function clearValue(node, context) {
+    const field = fieldFacts(context);
+    if (field.state) {
+      editorApi(node).clearManagedState();
+      restoreProtectedWidgetLocations(node);
+      return;
+    }
+    const state = flushState(node);
+    state.widgets[field.widget] = "";
+    applyRuntimeState(node, state);
+  }
+
+  function reconcileOwner(node) {
+    if (aioManagedNodeType(node) !== BUILDER_NODE) fail();
+    owners.add(node);
+    transition.synchronizeOwner(node);
+    node.__aioManagedPrivacyLocked = locked;
+    for (const name of IMPLEMENTATION_WIDGET_NAMES) {
+      const target = node.widgets?.find((item) => item?.name === name);
+      if (!target) continue;
+      target.hidden = true;
+      target.type = "hidden";
+      target.computeSize = () => [0, -4];
+    }
+    node.__aioManagedBuilderDeclaredMode = declaredMode(node);
+    editorApi(node).setManagedEditHandler(() => {
+      const currentMode = declaredMode(node);
+      if (currentMode !== node.__aioManagedBuilderDeclaredMode) {
+        node.__aioManagedBuilderDeclaredMode = currentMode;
+        notifyModeChange(node);
+      }
+      markGenerationEdited(node);
+    });
+    if (locked) clearValue(node, { fieldId: AIO_BUILDER_STATE_FIELD_ID });
+  }
+
+  const transition = createAioExternalWorkflowTransition({
+    app,
+    owners,
+    registerNode: reconcileOwner,
+    readStorage(node, context) {
+      const field = fieldFacts(context);
+      if (field.state) return readStateProtected(node);
+      const remembered = protectedValues(node)[field.fieldId];
+      const value = remembered === undefined ? widget(node, field.widget).value : remembered;
+      if (typeof value !== "string") fail();
+      return value;
+    },
+    writeStorage(node, value, context) {
+      const field = fieldFacts(context);
+      if (field.state) {
+        writeStateProtected(node, value);
+        return;
+      }
+      protectedValues(node)[field.fieldId] = value;
+      widget(node, field.widget).value = value;
+    },
+    readDetachedStorage(node, serializedNode, context) {
+      const field = fieldFacts(context);
+      if (field.state) {
+        const values = [
+          serializedNode?.properties?.[AIO_BUILDER_STATE_PROPERTY],
+          serializedNode?.[AIO_BUILDER_WORKFLOW_STATE_KEY],
+          serializedNode?.[AIO_BUILDER_LEGACY_WORKFLOW_STATE_KEY],
+        ];
+        if (values.some((value) => typeof value !== "string" || value !== values[0])) fail();
+        return values[0];
+      }
+      if (!Array.isArray(serializedNode?.widgets_values)) fail();
+      const target = widget(node, field.widget);
+      const index = serializedWidgetIndex(node, target);
+      if (!Number.isInteger(index) || index < 0 || index >= serializedNode.widgets_values.length) fail();
+      const value = serializedNode.widgets_values[index];
+      if (typeof value !== "string") fail();
+      return value;
+    },
+    settleOwner(node) {
+      flushState(node);
+    },
+    reloadRuntime(node, value, context) {
+      const payload = parseAioModeTransitionStorage(value, fail);
+      if (isAioCurrentModeEnvelope(payload, AIO_BUILDER_SCHEMA)) clearValue(node, context);
+      else applyValue(node, payload, context);
+    },
+    reconcileRuntime(node) {
+      node.__aioManagedPrivacyLocked = locked;
+    },
+    fail,
+  });
 
   return {
     normalize(node, context) {
@@ -209,7 +357,7 @@ export function createAioBuilderWorkflowBrowserAdapter({ workflowHandle = null }
       return clone(remembered === undefined ? widget(node, field.widget).value : remembered);
     },
     writeProtected(node, protectedValue, context) {
-      if (protectedValue === undefined || protectedValue === null) fail();
+      if (typeof protectedValue !== "string") fail();
       const field = fieldFacts(context);
       if (field.state) {
         writeStateProtected(node, protectedValue);
@@ -218,55 +366,51 @@ export function createAioBuilderWorkflowBrowserAdapter({ workflowHandle = null }
       protectedValues(node)[field.fieldId] = clone(protectedValue);
       widget(node, field.widget).value = clone(protectedValue);
     },
-    apply(node, value, context) {
+    writePublic(node, context) {
+      if (locked) fail();
+      const field = fieldFacts(context);
+      const state = flushState(node);
+      if (field.state) {
+        const plaintext = JSON.stringify(state);
+        writeStateProtected(node, plaintext);
+        return plaintext;
+      }
+      const plaintext = state.widgets[field.widget];
+      if (typeof plaintext !== "string") fail();
+      protectedValues(node)[field.fieldId] = plaintext;
+      widget(node, field.widget).value = plaintext;
+      return plaintext;
+    },
+    writeWorkflowProjection(node, serializedNode, protectedValue, context) {
+      if (!serializedNode || typeof serializedNode !== "object") fail();
       const field = fieldFacts(context);
       if (field.state) {
-        applyRuntimeState(node, value);
+        serializedNode.properties ||= {};
+        serializedNode.properties[AIO_BUILDER_STATE_PROPERTY] = clone(protectedValue);
+        serializedNode[AIO_BUILDER_WORKFLOW_STATE_KEY] = clone(protectedValue);
+        serializedNode[AIO_BUILDER_LEGACY_WORKFLOW_STATE_KEY] = clone(protectedValue);
         return;
       }
-      const state = flushState(node);
-      const plaintext = value && typeof value === "object" && Object.keys(value).length === 1
-        ? value.value : value;
-      if (typeof plaintext !== "string") fail();
-      state.widgets[field.widget] = plaintext;
-      applyRuntimeState(node, state);
+      if (!Array.isArray(serializedNode.widgets_values)) fail();
+      const target = widget(node, field.widget);
+      const index = serializedWidgetIndex(node, target);
+      if (!Number.isInteger(index) || index < 0 || index >= serializedNode.widgets_values.length) fail();
+      serializedNode.widgets_values[index] = clone(protectedValue);
+    },
+    apply(node, value, context) {
+      applyValue(node, value, context);
     },
     clear(node, context) {
-      const field = fieldFacts(context);
-      if (field.state) {
-        editorApi(node).clearManagedState();
-        restoreProtectedWidgetLocations(node);
-        return;
-      }
-      const state = flushState(node);
-      state.widgets[field.widget] = "";
-      applyRuntimeState(node, state);
+      clearValue(node, context);
     },
     reconcileNode(node) {
-      if (aioManagedNodeType(node) !== BUILDER_NODE) fail();
-      editorApi(node).setManagedEditHandler(() => markGenerationEdited(node));
-      if (locked) {
-        editorApi(node).clearManagedState();
-        restoreProtectedWidgetLocations(node);
-      }
+      reconcileOwner(node);
     },
-    serializeForWorkflow(node, output) {
-      if (!output || typeof output !== "object" || !Array.isArray(output.widgets_values)) fail();
-      const values = protectedValues(node);
-      for (const [widgetName, fieldId] of Object.entries(AIO_BUILDER_WIDGET_FIELD_IDS)) {
-        if (!(fieldId in values)) fail();
-        const index = node.widgets?.indexOf(widget(node, widgetName));
-        if (!Number.isInteger(index) || index < 0 || index >= output.widgets_values.length) fail();
-        output.widgets_values[index] = clone(values[fieldId]);
-      }
-      const state = readStateProtected(node);
-      output.properties ||= {};
-      output.properties[AIO_BUILDER_STATE_PROPERTY] = clone(state);
-      output[AIO_BUILDER_WORKFLOW_STATE_KEY] = clone(state);
-      output[AIO_BUILDER_LEGACY_WORKFLOW_STATE_KEY] = clone(state);
-    },
+    reconcileNodeDefinition() {},
     onPrivacySessionChange(event) {
-      locked = event?.state === "locked" || event?.locked === true;
+      locked = event?.state !== "ready" && event?.state !== "unlocked";
+      for (const owner of owners) owner.__aioManagedPrivacyLocked = locked;
     },
+    ...transition,
   };
 }

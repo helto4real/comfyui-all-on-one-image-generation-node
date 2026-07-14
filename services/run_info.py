@@ -5,9 +5,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from . import privacy
-
-
 PERFORMANCE_KEYS = (
     "attention_mode",
     "resolved_attention_mode",
@@ -32,15 +29,11 @@ SENSITIVE_SETTINGS_KEYS = (
 
 
 def settings_info_from_settings(settings: dict[str, Any], privacy_mode: bool = False) -> dict[str, Any]:
-    info = dict(settings)
-    if not privacy_mode:
-        return info
-    for key in SENSITIVE_SETTINGS_KEYS:
-        value = info.get(key)
-        if value in (None, "") or privacy.is_encrypted_payload(value):
-            continue
-        info[key] = privacy.encrypt_state({"value": str(value)})
-    return info
+    if privacy_mode:
+        raise RuntimeError(
+            "Private run-info requires the shared subject-mode projection."
+        )
+    return dict(settings)
 
 
 def performance_info_from_settings(settings: dict[str, Any]) -> dict[str, Any]:

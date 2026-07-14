@@ -12,12 +12,19 @@ from helto_privacy import (
     AIO_V1_READER_ID,
     FieldLocation,
     FieldLocationKind,
+    ExternalTransitionPolicy,
     LegacyKeyFormat,
     LegacyKeyImportBinding,
     LegacyLocationKind,
     LegacyReaderBinding,
     MigrationVerification,
     ProtectedField,
+    ProtectedStateAuthority,
+)
+
+from .managed_mode_transition import (
+    ExternalWorkflowTransitionCodec,
+    RevisionedModeSourceAdapter,
 )
 
 
@@ -27,6 +34,7 @@ BUILDER_SCOPE_ID = "ideogram-builder"
 BUILDER_WORKFLOW_RESOURCE_ID = "ideogram-builder-workflow"
 BUILDER_EXECUTION_RESOURCE_ID = "ideogram-builder-execution"
 BUILDER_PROJECTION_ID = "ideogram-builder"
+BUILDER_SUBJECT_MODE_BINDING_ID = "ideogram-builder-mode"
 
 BUILDER_MODE_ADAPTER_ID = "ideogram-builder-mode-state"
 BUILDER_MODE_BROWSER_ADAPTER_ID = "ideogram-builder-mode-browser"
@@ -97,6 +105,11 @@ def builder_protected_fields() -> tuple[ProtectedField, ...]:
             FieldLocation(FieldLocationKind.WIDGET, widget_name),
             AIO_BUILDER_CURRENT_SCHEMA,
             field_id,
+            ProtectedStateAuthority.EXTERNAL_BROWSER_WORKFLOW,
+            ExternalTransitionPolicy(
+                max_original_bytes_per_owner=1024 * 1024,
+                max_target_bytes_per_owner=1024 * 1024,
+            ),
             legacy_reader_ids=(AIO_V1_READER_ID,),
             execution=True,
         )
@@ -114,6 +127,11 @@ def builder_protected_fields() -> tuple[ProtectedField, ...]:
             FieldLocation(FieldLocationKind.PROPERTY, BUILDER_STATE_PROPERTY),
             AIO_BUILDER_CURRENT_SCHEMA,
             BUILDER_STATE_FIELD_ID,
+            ProtectedStateAuthority.EXTERNAL_BROWSER_WORKFLOW,
+            ExternalTransitionPolicy(
+                max_original_bytes_per_owner=1024 * 1024,
+                max_target_bytes_per_owner=1024 * 1024,
+            ),
             legacy_reader_ids=(AIO_V1_READER_ID,),
             execution=True,
             mirror_locations=(
@@ -151,41 +169,18 @@ def builder_legacy_key_imports() -> tuple[LegacyKeyImportBinding, ...]:
     )
 
 
-class AioBuilderModeAdapter:
+class AioBuilderModeAdapter(RevisionedModeSourceAdapter):
     """Map the builder's legacy boolean while missing state inherits private."""
 
     def __init__(self, declarations: Mapping[str, object] | None = None) -> None:
-        self._declarations = dict(declarations or {})
-
-    def read_declared_mode(self, scope_id: str) -> str:
-        if scope_id != BUILDER_SCOPE_ID:
-            raise ValueError("Unknown AIO builder privacy scope.")
-        if scope_id not in self._declarations:
-            return "inherit"
-        value = self._declarations[scope_id]
-        if value in {False, "public"}:
-            return "public"
-        if value in {None, "inherit"}:
-            return "inherit"
-        return "private"
-
-    def write_declared_mode(self, scope_id: str, mode: object) -> None:
-        if scope_id != BUILDER_SCOPE_ID or mode not in {"private", "public", "inherit"}:
-            raise ValueError("Invalid AIO builder privacy declaration.")
-        self._declarations[scope_id] = mode
-
-    def prepare_mode_transition(self, *_args) -> None:
-        return None
-
-    def commit_mode_transition(self, *_args) -> None:
-        return None
-
-    def rollback_mode_transition(self, *_args) -> None:
-        return None
+        super().__init__((BUILDER_SCOPE_ID,), declarations)
 
 
-class AioBuilderWorkflowStateAdapter:
+class AioBuilderWorkflowStateAdapter(ExternalWorkflowTransitionCodec):
     """Normalize builder widgets and its mirrored whole-editor state."""
+
+    def __init__(self) -> None:
+        super().__init__(AIO_BUILDER_CURRENT_SCHEMA)
 
     def capture(self, source: object, declaration: object) -> object:
         field_id = _declaration_id(declaration)
@@ -227,14 +222,10 @@ class AioBuilderWorkflowStateAdapter:
         else:
             _assign(target, _field_widget(field_id), "")
 
-    def prepare_mode_transition(self, *_args) -> None:
-        return None
-
-    def commit_mode_transition(self, *_args) -> None:
-        return None
-
-    def rollback_mode_transition(self, *_args) -> None:
-        return None
+    def _normalize_transition_value(self, value: object) -> Mapping[str, object]:
+        if isinstance(value, Mapping) and set(value) == {"value"}:
+            return {"value": normalize_builder_text(value)}
+        return normalize_builder_state(value)
 
 
 class AioBuilderExecutionProjectionAdapter:
@@ -466,13 +457,19 @@ def _builder_elements(value: object) -> list[object]:
     raise ValueError("AIO builder element state is invalid.")
 
 
-def dispatch_aio_builder_execution(reference: object, context: Mapping[str, object]) -> object:
+def dispatch_aio_builder_execution(
+    reference: object,
+    context: Mapping[str, object],
+    *,
+    subject_id: object,
+) -> object:
     from .managed_privacy_execution import dispatch_aio_managed_execution
 
     return dispatch_aio_managed_execution(
         reference,
         BUILDER_EXECUTION_RESOURCE_ID,
         context,
+        subject_id=subject_id,
         cache_result=False,
     )
 
@@ -529,3 +526,5 @@ def _write_builder_state(target: object, value: object) -> None:
     properties[BUILDER_STATE_PROPERTY] = copy.deepcopy(state)
     workflow[BUILDER_WORKFLOW_STATE_KEY] = copy.deepcopy(state)
     workflow[BUILDER_LEGACY_WORKFLOW_STATE_KEY] = copy.deepcopy(state)
+    def __init__(self) -> None:
+        super().__init__(AIO_BUILDER_CURRENT_SCHEMA)

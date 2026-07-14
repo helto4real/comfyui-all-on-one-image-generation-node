@@ -26,6 +26,8 @@ from helto_privacy import (
     ModeFacts,
     PrivacyEnvelopeCodec,
     PrivacyAuthorizationError,
+    ProtectedStateAuthority,
+    RecordSnapshot,
     SnapshotError,
     aio_v1_reader_unit,
     install,
@@ -40,15 +42,18 @@ from helto_privacy.guard import authorize_privacy_request
 from nodes.aio_generate import AIOImageGenerate
 from nodes.ideogram4_prompt_builder import AIOIdeogram4PromptBuilder
 from nodes.krea2_settings import AIOKrea2Settings
-from services import pipeline, privacy
+from services import pipeline
 from services.managed_prompt_privacy import (
     AIO_CURRENT_PROMPT_SCHEMA,
+    AIO_PRIVACY_PROFILE_FINGERPRINT,
     GENERATE_EXECUTION_RESOURCE_ID,
     GENERATE_PROJECTION_ID,
     GENERATE_SCOPE_ID,
+    GENERATE_SUBJECT_MODE_BINDING_ID,
     GENERATE_WORKFLOW_RESOURCE_ID,
     KREA_INPAINT_PROMPT_FIELD_ID,
     KREA_SCOPE_ID,
+    KREA_SUBJECT_MODE_BINDING_ID,
     KREA_WORKFLOW_RESOURCE_ID,
     NEGATIVE_PROMPT_FIELD_ID,
     POSITIVE_PROMPT_FIELD_ID,
@@ -74,6 +79,7 @@ from services.managed_builder_privacy import (
     BUILDER_LEGACY_WORKFLOW_STATE_KEY,
     BUILDER_PROJECTION_ID,
     BUILDER_SCOPE_ID,
+    BUILDER_SUBJECT_MODE_BINDING_ID,
     BUILDER_STATE_FIELD_ID,
     BUILDER_STATE_PROPERTY,
     BUILDER_WIDGET_FIELD_IDS,
@@ -82,6 +88,7 @@ from services.managed_builder_privacy import (
     AioBuilderExecutionProjectionAdapter,
     AioBuilderMigrationTransaction,
     AioBuilderModeAdapter,
+    AioBuilderWorkflowStateAdapter,
     builder_legacy_binding_id,
 )
 from services.managed_prompt_library_privacy import (
@@ -149,6 +156,15 @@ def _write_historical_key(path: Path) -> None:
             }
         ),
         encoding="utf-8",
+    )
+
+
+def _prepared_subject(pack, token: str, binding_id: str, subject_id: str, declaration=True):
+    return pack.subject_modes(binding_id).prepare(
+        subject_id,
+        declaration,
+        ModeFacts(),
+        _authorization(pack, token, "subject-mode.prepare"),
     )
 
 
@@ -222,6 +238,23 @@ def test_profile_declares_generate_krea_fields_floor_execution_and_legacy_units(
     assert profile.server_adapter_contracts[RUN_INFO_ADAPTER_ID] == (
         "project",
     )
+    assert profile.fingerprint == AIO_PRIVACY_PROFILE_FINGERPRINT
+    assert {
+        binding.id: binding.input_name for binding in profile.subject_mode_bindings
+    } == {
+        GENERATE_SUBJECT_MODE_BINDING_ID: "privacy_mode_reference",
+        KREA_SUBJECT_MODE_BINDING_ID: "privacy_mode_reference",
+        BUILDER_SUBJECT_MODE_BINDING_ID: "privacy_mode_reference",
+    }
+    projections = {item.id: item for item in profile.execution_projections}
+    assert projections[GENERATE_PROJECTION_ID].subject_mode_binding_id == (
+        GENERATE_SUBJECT_MODE_BINDING_ID
+    )
+    assert projections["inpaint"].subject_mode_binding_id == KREA_SUBJECT_MODE_BINDING_ID
+    assert projections[BUILDER_PROJECTION_ID].subject_mode_binding_id == (
+        BUILDER_SUBJECT_MODE_BINDING_ID
+    )
+    assert run_info.subject_mode_binding_id == GENERATE_SUBJECT_MODE_BINDING_ID
 
 
 def _library_payload(prompt: str = "synthetic prompt") -> dict[str, object]:
@@ -292,7 +325,7 @@ def test_private_run_info_releases_only_validated_coarse_performance_facts(
     monkeypatch,
     caplog,
 ):
-    pack, _token = _installed_pack(
+    pack, token = _installed_pack(
         tmp_path,
         monkeypatch,
         declarations={GENERATE_SCOPE_ID: True},
@@ -303,7 +336,21 @@ def test_private_run_info_releases_only_validated_coarse_performance_facts(
         "SYNTHETIC_PRIVATE_PROMPT"
     )
 
-    dumped = build_managed_run_info_json(pack, **facts)
+    subject = _prepared_subject(
+        pack,
+        token,
+        GENERATE_SUBJECT_MODE_BINDING_ID,
+        "run-info-private-1",
+    )
+    with pack.subject_modes(GENERATE_SUBJECT_MODE_BINDING_ID).consume(
+        subject.reference,
+        "run-info-private-1",
+    ) as lease:
+        dumped = build_managed_run_info_json(
+            pack,
+            subject_mode=lease,
+            **facts,
+        )
     projected = json.loads(dumped)
 
     assert projected == {
@@ -331,7 +378,7 @@ def test_private_run_info_rejects_unsafe_coarse_diagnostic_type(
 ):
     from helto_privacy import ProtectedOperationError
 
-    pack, _token = _installed_pack(
+    pack, token = _installed_pack(
         tmp_path,
         monkeypatch,
         declarations={GENERATE_SCOPE_ID: True},
@@ -339,11 +386,22 @@ def test_private_run_info_rejects_unsafe_coarse_diagnostic_type(
     candidate = build_run_info_candidate(**_run_info_facts())
     candidate["performance"]["configured"] = "SYNTHETIC_PRIVATE_BOOLEAN"
 
-    with pytest.raises(ProtectedOperationError) as failed:
-        pack.operations(GENERATE_WORKFLOW_RESOURCE_ID).project(
-            RUN_INFO_OPERATION_ID,
-            candidate,
-        )
+    subject = _prepared_subject(
+        pack,
+        token,
+        GENERATE_SUBJECT_MODE_BINDING_ID,
+        "run-info-invalid-1",
+    )
+    with pack.subject_modes(GENERATE_SUBJECT_MODE_BINDING_ID).consume(
+        subject.reference,
+        "run-info-invalid-1",
+    ) as lease:
+        with pytest.raises(ProtectedOperationError) as failed:
+            pack.operations(GENERATE_WORKFLOW_RESOURCE_ID).project(
+                RUN_INFO_OPERATION_ID,
+                candidate,
+                subject_mode=lease,
+            )
 
     assert failed.value.code == "PRIVACY_PROTECTED_OPERATION_PROJECTION_INVALID"
     assert "SYNTHETIC" not in str(failed.value)
@@ -354,7 +412,7 @@ def test_public_run_info_preserves_the_existing_product_schema(
     tmp_path,
     monkeypatch,
 ):
-    pack, _token = _installed_pack(
+    pack, token = _installed_pack(
         tmp_path,
         monkeypatch,
         declarations={GENERATE_SCOPE_ID: False},
@@ -363,9 +421,20 @@ def test_public_run_info_preserves_the_existing_product_schema(
     facts["settings"]["privacy_mode"] = True
     candidate = build_run_info_candidate(**facts)
 
-    assert json.loads(build_managed_run_info_json(pack, **facts)) == json.loads(
-        to_json(candidate)
+    subject = _prepared_subject(
+        pack,
+        token,
+        GENERATE_SUBJECT_MODE_BINDING_ID,
+        "run-info-public-1",
+        False,
     )
+    with pack.subject_modes(GENERATE_SUBJECT_MODE_BINDING_ID).consume(
+        subject.reference,
+        "run-info-public-1",
+    ) as lease:
+        assert json.loads(
+            build_managed_run_info_json(pack, subject_mode=lease, **facts)
+        ) == json.loads(to_json(candidate))
 
 
 def test_prompt_library_shared_crud_locked_shell_delete_and_no_metadata_leak(
@@ -530,6 +599,9 @@ def test_prompt_library_genuine_v1_record_gets_verified_current_receipt(
         "name": "legacy synthetic name",
         "description": "legacy synthetic description",
         "tags": ["legacy-synthetic-tag"],
+        "created_at": "2026-01-02T03:04:05Z",
+        "updated_at": "2026-02-03T04:05:06Z",
+        "last_used_at": "2026-03-04T05:06:07Z",
     }
     legacy_envelope = _aio_v1_envelope(legacy, "prompt-library")
     current_container_envelope = PrivacyEnvelopeCodec(
@@ -568,42 +640,19 @@ def test_prompt_library_genuine_v1_record_gets_verified_current_receipt(
     assert sources[1].current_format is True
     assert "prompt_legacy_synthetic" not in repr(sources[0])
     assert "ciphertext" not in repr(sources[0])
-    discovered = pack.migration.discover_and_read(
-        PROMPT_LIBRARY_LEGACY_BINDING_ID,
-        sources[0].protected,
-        _authorization(pack, token, "migration.read"),
-    )
-    assert discovered.value == legacy
     record_id = generate_private_record_id()
     records = pack.records(PROMPT_LIBRARY_RESOURCE_ID)
     # Store instances are stateless views over the same atomic JSON document.
     adapter = AioPromptLibraryStoreAdapter(tmp_path)
-    transaction = AioPromptLibraryMigrationTransaction(
-        records,
-        adapter,
-        record_id,
-        _authorization(pack, token, "record.protect"),
-        _authorization(pack, token, "record.details"),
-        sources[0].created_at,
-        sources[0].updated_at,
-        sources[0].last_used_at,
-    )
-    receipt = pack.migration.complete(
-        discovered.obligation.id,
-        discovered.value,
-        transaction,
-        _authorization(pack, token, "migration.complete"),
-    )
-
-    assert receipt.disposition == "migrated"
-    protected = adapter.read_protected(record_id)
-    assert protected["schema"] == PROMPT_LIBRARY_CURRENT_SCHEMA
+    adapter.write_protected(record_id, sources[0].protected)
     current = records.reveal(
         PROMPT_RECORD_KIND,
         record_id,
         "details",
         _authorization(pack, token, "record.details"),
     ).value["record"]
+    protected = adapter.read_protected(record_id)
+    assert protected["schema"] == PROMPT_LIBRARY_CURRENT_SCHEMA
     assert current["name"] == "legacy synthetic name"
     assert current["created_at"] == "2026-01-02T03:04:05Z"
     assert current["updated_at"] == "2026-02-03T04:05:06Z"
@@ -661,6 +710,110 @@ def test_builder_profile_declares_widgets_state_mirrors_mode_and_projection():
     assert next(scope for scope in profile.scopes if scope.id == BUILDER_SCOPE_ID).floor_scope_ids == ()
     assert AioBuilderModeAdapter().read_declared_mode(BUILDER_SCOPE_ID) == "inherit"
     assert AioBuilderModeAdapter({BUILDER_SCOPE_ID: False}).read_declared_mode(BUILDER_SCOPE_ID) == "public"
+
+
+def test_profile_declares_every_workflow_field_as_bounded_browser_authority():
+    profile = build_aio_prompt_privacy_profile()
+
+    assert profile.protected_fields
+    for field in profile.protected_fields:
+        assert field.state_authority is ProtectedStateAuthority.EXTERNAL_BROWSER_WORKFLOW
+        assert field.external_transition_policy is not None
+        assert field.external_transition_policy.max_original_bytes_per_owner == 1024 * 1024
+        assert field.external_transition_policy.max_target_bytes_per_owner == 1024 * 1024
+
+
+@pytest.mark.parametrize(
+    ("adapter", "scope_id"),
+    (
+        (AioPromptModeAdapter(), GENERATE_SCOPE_ID),
+        (AioPromptModeAdapter(), KREA_SCOPE_ID),
+        (AioBuilderModeAdapter(), BUILDER_SCOPE_ID),
+    ),
+)
+def test_mode_sources_use_revisioned_cas_and_exact_rollback(adapter, scope_id):
+    prior = adapter.read_mode_source(scope_id)
+    target = adapter.compare_and_set_mode_source(
+        scope_id,
+        prior["revision"],
+        prior["declared"],
+        "public",
+    )
+
+    assert target == {"revision": 1, "declared": "public"}
+    assert adapter.classify_mode_source(scope_id, prior, target) == "target"
+    with pytest.raises(RuntimeError, match="concurrently"):
+        adapter.compare_and_set_mode_source(
+            scope_id,
+            prior["revision"],
+            prior["declared"],
+            "private",
+        )
+    restored = adapter.rollback_mode_source(scope_id, target, prior)
+    assert restored == {"revision": 2, "declared": "inherit"}
+    assert adapter.rollback_mode_source(scope_id, target, prior) == restored
+
+
+def test_workflow_transition_codecs_round_trip_private_and_public_exact_bytes(
+    tmp_path,
+    monkeypatch,
+):
+    _installed_pack(tmp_path, monkeypatch)
+    prompt = AioPromptWorkflowStateAdapter()
+    prompt_value = {"value": "synthetic exact prompt"}
+    prompt_envelope = PrivacyEnvelopeCodec(AIO_CURRENT_PROMPT_SCHEMA).encrypt_state(
+        prompt_value
+    )
+    private_exact = json.dumps(
+        prompt_envelope,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    assert prompt.classify_mode_transition_representation(private_exact, None) == "private"
+    assert prompt.decode_mode_transition_representation(private_exact, None) == prompt_value
+    public_exact = prompt.encode_public_mode_transition(prompt_value, None)
+    assert public_exact == b'{"value":"synthetic exact prompt"}'
+    assert prompt.classify_mode_transition_representation(public_exact, None) == "public"
+
+    builder = AioBuilderWorkflowStateAdapter()
+    state = _builder_state("transition")
+    builder_public = builder.encode_public_mode_transition(state, None)
+    assert builder.classify_mode_transition_representation(builder_public, None) == "public"
+    assert builder.decode_mode_transition_representation(builder_public, None) == state
+    assert builder.normalize_mode_transition_value({"value": "widget"}, None) == {
+        "value": "widget"
+    }
+
+    for invalid in (
+        b"",
+        b"[]",
+        b'{"value":"one","value":"two"}',
+        b'{"schema":"protected-marker","widgets":{}}',
+    ):
+        with pytest.raises(ValueError, match="representation is invalid"):
+            prompt.classify_mode_transition_representation(invalid, None)
+
+
+def test_prompt_library_store_has_durable_revisioned_cas(tmp_path):
+    adapter = AioPromptLibraryStoreAdapter(tmp_path)
+    record_id = generate_private_record_id()
+    missing = RecordSnapshot(0)
+    first = RecordSnapshot(1, {"ciphertext": "first"})
+    second = RecordSnapshot(2, {"ciphertext": "second"})
+
+    assert adapter.read_record(record_id) == missing
+    assert adapter.compare_and_swap_record(record_id, missing, first) is True
+    assert adapter.compare_and_swap_record(record_id, missing, first) is False
+    assert adapter.compare_and_swap_record(record_id, first, second) is True
+    assert adapter.read_record(record_id) == second
+    assert adapter.list_ids() == (record_id,)
+
+    tombstone = RecordSnapshot(3)
+    assert adapter.compare_and_swap_record(record_id, second, tombstone) is True
+    assert adapter.read_record(record_id) == tombstone
+    assert adapter.list_ids() == ()
 
 
 def test_builder_projection_requires_one_consistent_complete_generation():
@@ -831,8 +984,13 @@ def test_shared_execution_has_one_semantic_identity_and_ram_cache(tmp_path, monk
         GENERATE_PROJECTION_ID,
         protected,
         _authorization(pack, token, "execution.prepare"),
+        subject_id="generate-cache-1",
     )
-    first_result = execution.dispatch(first.reference, context)
+    first_result = execution.dispatch(
+        first.reference,
+        context,
+        subject_id="generate-cache-1",
+    )
     execution.cache_store(first_result.cache_identity, first_result.value)
     fresh_protected = {
         POSITIVE_PROMPT_FIELD_ID: codec.encrypt_state({"value": "synthetic positive"}),
@@ -843,8 +1001,13 @@ def test_shared_execution_has_one_semantic_identity_and_ram_cache(tmp_path, monk
         GENERATE_PROJECTION_ID,
         fresh_protected,
         _authorization(pack, token, "execution.prepare"),
+        subject_id="generate-cache-1",
     )
-    second_result = execution.dispatch(second.reference, context)
+    second_result = execution.dispatch(
+        second.reference,
+        context,
+        subject_id="generate-cache-1",
+    )
 
     assert first_result.value == second_result.value == {"image": "unchanged"}
     assert first_result.cache_identity == second_result.cache_identity
@@ -867,16 +1030,25 @@ def test_execution_grant_and_locked_reveal_fail_before_product(tmp_path, monkeyp
         GENERATE_PROJECTION_ID,
         protected,
         _authorization(pack, token, "execution.prepare"),
+        subject_id="generate-locked-1",
     )
     tampered = dict(prepared.reference)
     tampered["grant"] = "invalid-grant"
     with pytest.raises(ExecutionError):
-        execution.dispatch(tampered, {"dispatch": lambda value: calls.append(value)})
+        execution.dispatch(
+            tampered,
+            {"dispatch": lambda value: calls.append(value)},
+            subject_id="generate-locked-1",
+        )
 
     reveal_authorization = _authorization(pack, token, "snapshot.reveal")
     lock_keystore()
     with pytest.raises(ExecutionError):
-        execution.dispatch(prepared.reference, {"dispatch": lambda value: calls.append(value)})
+        execution.dispatch(
+            prepared.reference,
+            {"dispatch": lambda value: calls.append(value)},
+            subject_id="generate-locked-1",
+        )
     with pytest.raises((PrivacyAuthorizationError, SnapshotError)):
         pack.workflow(GENERATE_WORKFLOW_RESOURCE_ID).reveal(
             POSITIVE_PROMPT_FIELD_ID,
@@ -1003,6 +1175,13 @@ def test_generate_node_dispatches_private_reference_through_existing_pipeline(
     from nodes import aio_generate
 
     pack, token = _installed_pack(tmp_path, monkeypatch)
+    subject_id = "generate-node-1"
+    subject = _prepared_subject(
+        pack,
+        token,
+        GENERATE_SUBJECT_MODE_BINDING_ID,
+        subject_id,
+    )
     codec = PrivacyEnvelopeCodec(AIO_CURRENT_PROMPT_SCHEMA)
     prepared = pack.execution(GENERATE_EXECUTION_RESOURCE_ID).prepare(
         GENERATE_PROJECTION_ID,
@@ -1011,6 +1190,7 @@ def test_generate_node_dispatches_private_reference_through_existing_pipeline(
             NEGATIVE_PROMPT_FIELD_ID: codec.encrypt_state({"value": "managed negative"}),
         },
         _authorization(pack, token, "execution.prepare"),
+        subject_id=subject_id,
     )
     captured = {}
 
@@ -1060,6 +1240,8 @@ def test_generate_node_dispatches_private_reference_through_existing_pipeline(
         scheduler="auto",
         model="model",
         clip="clip",
+        unique_id=subject_id,
+        privacy_mode_reference=json.dumps(subject.reference),
         private_execution=json.dumps(prepared.reference),
     )
 
@@ -1070,6 +1252,13 @@ def test_generate_node_dispatches_private_reference_through_existing_pipeline(
 
 def test_krea_node_dispatches_private_reference_into_settings(tmp_path, monkeypatch):
     pack, token = _installed_pack(tmp_path, monkeypatch)
+    subject_id = "krea-node-1"
+    subject = _prepared_subject(
+        pack,
+        token,
+        KREA_SUBJECT_MODE_BINDING_ID,
+        subject_id,
+    )
     codec = PrivacyEnvelopeCodec(AIO_CURRENT_PROMPT_SCHEMA)
     prepared = pack.execution("krea-inpaint-execution").prepare(
         "inpaint",
@@ -1079,6 +1268,7 @@ def test_krea_node_dispatches_private_reference_into_settings(tmp_path, monkeypa
             )
         },
         _authorization(pack, token, "execution.prepare"),
+        subject_id=subject_id,
     )
 
     settings = AIOKrea2Settings().build_settings(
@@ -1086,11 +1276,75 @@ def test_krea_node_dispatches_private_reference_into_settings(tmp_path, monkeypa
         enhancer_strength=1.0,
         precision_policy="auto",
         inpaint_positive_prompt="untrusted raw inpaint",
+        unique_id=subject_id,
+        privacy_mode_reference=json.dumps(subject.reference),
         private_execution=json.dumps(prepared.reference),
     )[0]
 
     assert settings["positive_prompt_override"] == "managed inpaint"
     assert settings["positive_prompt_source"] == "krea2_inpaint_settings"
+
+
+def test_private_subject_leases_reject_missing_execution_pair(tmp_path, monkeypatch):
+    pack, token = _installed_pack(tmp_path, monkeypatch)
+
+    generate_id = "generate-missing-execution"
+    generate_subject = _prepared_subject(
+        pack,
+        token,
+        GENERATE_SUBJECT_MODE_BINDING_ID,
+        generate_id,
+    )
+    with pytest.raises(ValueError, match="managed execution reference"):
+        AIOImageGenerate().generate(
+            model_type="z_image_turbo",
+            diffusion_model="model.safetensors",
+            text_encoder="text.safetensors",
+            vae="vae.safetensors",
+            positive_prompt="untrusted request prompt",
+            negative_prompt="",
+            width=1024,
+            height=1024,
+            seed=0,
+            steps=1,
+            cfg=1.0,
+            sampler="auto",
+            scheduler="auto",
+            unique_id=generate_id,
+            privacy_mode_reference=json.dumps(generate_subject.reference),
+        )
+
+    krea_id = "krea-missing-execution"
+    krea_subject = _prepared_subject(
+        pack,
+        token,
+        KREA_SUBJECT_MODE_BINDING_ID,
+        krea_id,
+    )
+    with pytest.raises(ValueError, match="managed execution reference"):
+        AIOKrea2Settings().build_settings(
+            enhancer_enabled=True,
+            enhancer_strength=1.0,
+            precision_policy="auto",
+            inpaint_positive_prompt="untrusted request prompt",
+            unique_id=krea_id,
+            privacy_mode_reference=json.dumps(krea_subject.reference),
+        )
+
+    builder_id = "builder-missing-execution"
+    builder_subject = _prepared_subject(
+        pack,
+        token,
+        BUILDER_SUBJECT_MODE_BINDING_ID,
+        builder_id,
+    )
+    with pytest.raises(ValueError, match="managed execution reference"):
+        AIOIdeogram4PromptBuilder().build_prompt(
+            background="untrusted request prompt",
+            unique_id=builder_id,
+            privacy_mode_reference=json.dumps(builder_subject.reference),
+            **{"max side": 1024, "aspect ratio": "1:1", "multiple value": "none"},
+        )
 
 
 def test_builder_genuine_v1_fields_and_mirrors_rewrite_under_one_receipt(
@@ -1247,15 +1501,30 @@ def test_builder_node_dispatches_managed_generation_through_product_builder(
     }
     protected[BUILDER_STATE_FIELD_ID] = codec.encrypt_state(state)
     execution = pack.execution(BUILDER_EXECUTION_RESOURCE_ID)
+    subject_id = "builder-node-1"
+    subject = _prepared_subject(
+        pack,
+        token,
+        BUILDER_SUBJECT_MODE_BINDING_ID,
+        subject_id,
+    )
+    second_subject = _prepared_subject(
+        pack,
+        token,
+        BUILDER_SUBJECT_MODE_BINDING_ID,
+        subject_id,
+    )
     prepared = execution.prepare(
         BUILDER_PROJECTION_ID,
         protected,
         _authorization(pack, token, "execution.prepare"),
+        subject_id=subject_id,
     )
     second_prepared = execution.prepare(
         BUILDER_PROJECTION_ID,
         protected,
         _authorization(pack, token, "execution.prepare"),
+        subject_id=subject_id,
     )
     monkeypatch.setattr(
         AIOIdeogram4PromptBuilder,
@@ -1267,6 +1536,8 @@ def test_builder_node_dispatches_managed_generation_through_product_builder(
         background="untrusted raw background",
         image="preview-one",
         privacy_mode=False,
+        unique_id=subject_id,
+        privacy_mode_reference=json.dumps(subject.reference),
         private_execution=json.dumps(prepared.reference),
         **{"max side": 512, "aspect ratio": "1:1", "multiple value": "none"},
     )["result"]
@@ -1274,6 +1545,8 @@ def test_builder_node_dispatches_managed_generation_through_product_builder(
         background="another untrusted background",
         image="preview-two",
         privacy_mode=False,
+        unique_id=subject_id,
+        privacy_mode_reference=json.dumps(second_subject.reference),
         private_execution=json.dumps(second_prepared.reference),
         **{"max side": 512, "aspect ratio": "1:1", "multiple value": "none"},
     )["result"]
@@ -1281,7 +1554,7 @@ def test_builder_node_dispatches_managed_generation_through_product_builder(
     assert result[2] == "preview-one"
     assert second_result[2] == "preview-two"
     assert result[0]["privacy_mode"] is True
-    assert privacy.is_encrypted_payload(result[0]["prompt"])
+    assert result[0]["prompt"] == result[1]
     assert result[4:6] == (1024, 1024)
     assert "Managed overview" in result[1]
     assert "Managed room" in result[1]

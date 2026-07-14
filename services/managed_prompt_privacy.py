@@ -1,23 +1,22 @@
-"""Managed privacy declarations and product adapters for Generate/Krea prompts.
-
-This module is deliberately not installed by the package bootstrap yet.  The
-complete AIO profile is activated only after the remaining AIO privacy slices
-have joined it, so no partial profile can become authoritative in production.
-"""
+"""One complete shared-privacy profile for AIO Image Generate."""
 
 from __future__ import annotations
 
 import copy
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
+from threading import RLock
 from typing import Any
 
 from helto_privacy import (
     AIO_V1_JSON_KEY_IMPORT_ID,
     AIO_V1_READER_ID,
     AdapterSlot,
+    BoundPrivacyPack,
     FieldLocation,
     FieldLocationKind,
+    ExternalTransitionPolicy,
     LegacyKeyFormat,
     LegacyKeyImportBinding,
     LegacyLocationKind,
@@ -26,12 +25,18 @@ from helto_privacy import (
     PrivacyScope,
     ProfileResource,
     ProtectedField,
+    ProtectedStateAuthority,
     ProtectedOperation,
     RecordDeclaration,
     RecordRevealProjection,
     ResourceKind,
     SemanticExecutionProjection,
+    SubjectModeBinding,
+    aio_v1_reader_unit,
+    install,
+    register_legacy_reader_units,
 )
+from helto_privacy.runtime import bound_privacy_pack
 
 from .prompt_resolution import (
     GENERATE_EXECUTION_RESOURCE_ID,
@@ -47,6 +52,7 @@ from .managed_builder_privacy import (
     BUILDER_OPERATION_ADAPTER_ID,
     BUILDER_PROJECTION_ADAPTER_ID,
     BUILDER_PROJECTION_ID,
+    BUILDER_SUBJECT_MODE_BINDING_ID,
     BUILDER_SCOPE_ID,
     BUILDER_WORKFLOW_ADAPTER_ID,
     BUILDER_WORKFLOW_BROWSER_ADAPTER_ID,
@@ -81,11 +87,18 @@ from .managed_privacy_execution import (
     AIO_MANAGED_PRIVACY_PROFILE_ID,
     dispatch_aio_managed_execution,
 )
+from .managed_mode_transition import (
+    ExternalWorkflowTransitionCodec,
+    RevisionedModeSourceAdapter,
+)
 
 
 AIO_PRIVACY_PROFILE_ID = AIO_MANAGED_PRIVACY_PROFILE_ID
 AIO_PRIVACY_DISTRIBUTION = "comfyui-all-on-one-image-generation-node"
 AIO_CURRENT_PROMPT_SCHEMA = "helto.aio-image-generate.v2"
+AIO_PRIVACY_PROFILE_FINGERPRINT = (
+    "f63424f85dfa083277d43069d1a399f500f77e132f001a9355da20dab0f133a1"
+)
 
 GENERATE_NODE_TYPE = "AIOImageGenerate"
 KREA_NODE_TYPE = "AIOKrea2Settings"
@@ -116,6 +129,12 @@ KREA_INPAINT_PROMPT_FIELD_ID = "krea-inpaint-positive-prompt"
 
 GENERATE_PROJECTION_ID = "generate"
 KREA_INPAINT_PROJECTION_ID = "inpaint"
+GENERATE_SUBJECT_MODE_BINDING_ID = "generate-mode"
+KREA_SUBJECT_MODE_BINDING_ID = "krea-inpaint-mode"
+
+_INSTALL_LOCK = RLock()
+_PACK: BoundPrivacyPack | None = None
+_ADAPTERS: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,13 +225,18 @@ def _protected_field(field_id: str, facts: AioPromptFieldFacts) -> ProtectedFiel
         FieldLocation(FieldLocationKind.WIDGET, facts.widget_name),
         AIO_CURRENT_PROMPT_SCHEMA,
         field_id,
+        ProtectedStateAuthority.EXTERNAL_BROWSER_WORKFLOW,
+        ExternalTransitionPolicy(
+            max_original_bytes_per_owner=1024 * 1024,
+            max_target_bytes_per_owner=1024 * 1024,
+        ),
         legacy_reader_ids=(AIO_V1_READER_ID,),
         execution=True,
     )
 
 
 def build_aio_prompt_privacy_profile() -> PrivacyProfile:
-    """Build the inactive A1 profile slice used for contract-level testing."""
+    """Build the complete immutable AIO V3 privacy profile."""
 
     fields = (
         *tuple(_protected_field(field_id, facts) for field_id, facts in _FIELD_FACTS.items()),
@@ -278,7 +302,7 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
             (BUILDER_PROJECTION_ADAPTER_ID, BUILDER_DISPATCH_ADAPTER_ID),
         ),
     )
-    return PrivacyProfile(
+    profile = PrivacyProfile(
         id=AIO_PRIVACY_PROFILE_ID,
         distribution=AIO_PRIVACY_DISTRIBUTION,
         resources=resources,
@@ -409,6 +433,26 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
             ),
         ),
         protected_fields=fields,
+        subject_mode_bindings=(
+            SubjectModeBinding(
+                GENERATE_SUBJECT_MODE_BINDING_ID,
+                GENERATE_SCOPE_ID,
+                "privacy_mode_reference",
+                (GENERATE_NODE_TYPE,),
+            ),
+            SubjectModeBinding(
+                KREA_SUBJECT_MODE_BINDING_ID,
+                KREA_SCOPE_ID,
+                "privacy_mode_reference",
+                (KREA_NODE_TYPE,),
+            ),
+            SubjectModeBinding(
+                BUILDER_SUBJECT_MODE_BINDING_ID,
+                BUILDER_SCOPE_ID,
+                "privacy_mode_reference",
+                (BUILDER_NODE_TYPE,),
+            ),
+        ),
         records=(
             RecordDeclaration(
                 PROMPT_RECORD_KIND,
@@ -432,6 +476,7 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
                 GENERATE_WORKFLOW_RESOURCE_ID,
                 GENERATE_PROJECTION_ADAPTER_ID,
                 GENERATE_DISPATCH_ADAPTER_ID,
+                GENERATE_SUBJECT_MODE_BINDING_ID,
             ),
             SemanticExecutionProjection(
                 KREA_INPAINT_PROJECTION_ID,
@@ -439,6 +484,7 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
                 KREA_WORKFLOW_RESOURCE_ID,
                 KREA_PROJECTION_ADAPTER_ID,
                 KREA_DISPATCH_ADAPTER_ID,
+                KREA_SUBJECT_MODE_BINDING_ID,
             ),
             SemanticExecutionProjection(
                 BUILDER_PROJECTION_ID,
@@ -446,6 +492,7 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
                 BUILDER_WORKFLOW_RESOURCE_ID,
                 BUILDER_PROJECTION_ADAPTER_ID,
                 BUILDER_DISPATCH_ADAPTER_ID,
+                BUILDER_SUBJECT_MODE_BINDING_ID,
             ),
         ),
         protected_operations=(
@@ -463,6 +510,7 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
                 scope_id=GENERATE_SCOPE_ID,
                 sensitive_fields=run_info_sensitive_fields(),
                 safe_projection=run_info_safe_projection(),
+                subject_mode_binding_id=GENERATE_SUBJECT_MODE_BINDING_ID,
             ),
             ProtectedOperation(
                 "inpaint",
@@ -512,45 +560,26 @@ def build_aio_prompt_privacy_profile() -> PrivacyProfile:
             LegacyKeyFormat.JSON,
         )),
     )
+    if profile.fingerprint != AIO_PRIVACY_PROFILE_FINGERPRINT:
+        raise RuntimeError(
+            "AIO privacy profile fingerprint changed unexpectedly: "
+            f"{profile.fingerprint}."
+        )
+    return profile
 
 
-class AioPromptModeAdapter:
+class AioPromptModeAdapter(RevisionedModeSourceAdapter):
     """Map the old Generate boolean while keeping missing state private."""
 
     def __init__(self, declarations: Mapping[str, object] | None = None) -> None:
-        self._declarations = dict(declarations or {})
-
-    def read_declared_mode(self, scope_id: str) -> str:
-        if scope_id == KREA_SCOPE_ID:
-            return "inherit"
-        if scope_id != GENERATE_SCOPE_ID:
-            raise ValueError("Unknown AIO prompt privacy scope.")
-        if scope_id not in self._declarations:
-            return "inherit"
-        value = self._declarations[scope_id]
-        if value in {False, "public"}:
-            return "public"
-        if value in {None, "inherit"}:
-            return "inherit"
-        return "private"
-
-    def write_declared_mode(self, scope_id: str, mode: object) -> None:
-        if scope_id != GENERATE_SCOPE_ID or mode not in {"private", "public", "inherit"}:
-            raise ValueError("Invalid AIO prompt privacy declaration.")
-        self._declarations[scope_id] = mode
-
-    def prepare_mode_transition(self, *_args) -> None:
-        return None
-
-    def commit_mode_transition(self, *_args) -> None:
-        return None
-
-    def rollback_mode_transition(self, *_args) -> None:
-        return None
+        super().__init__((GENERATE_SCOPE_ID, KREA_SCOPE_ID), declarations)
 
 
-class AioPromptWorkflowStateAdapter:
+class AioPromptWorkflowStateAdapter(ExternalWorkflowTransitionCodec):
     """Own prompt locations, fallback recovery, and canonical text semantics."""
+
+    def __init__(self) -> None:
+        super().__init__(AIO_CURRENT_PROMPT_SCHEMA)
 
     def capture(self, source: object, declaration: object) -> object:
         field_id = _declaration_id(declaration)
@@ -580,14 +609,8 @@ class AioPromptWorkflowStateAdapter:
         else:
             setattr(target, widget_name, "")
 
-    def prepare_mode_transition(self, *_args) -> None:
-        return None
-
-    def commit_mode_transition(self, *_args) -> None:
-        return None
-
-    def rollback_mode_transition(self, *_args) -> None:
-        return None
+    def _normalize_transition_value(self, value: object) -> Mapping[str, object]:
+        return {"value": normalize_prompt_text(value)}
 
 
 class AioPromptExecutionProjectionAdapter:
@@ -664,12 +687,56 @@ def build_aio_prompt_server_adapters(
     }
 
 
+def install_aio_privacy(
+    package_root: str | Path,
+    *,
+    operation_dispatcher: Callable[[object, object], object] | None = None,
+) -> BoundPrivacyPack:
+    """Atomically install AIO only after every declared adapter is available."""
+
+    global _ADAPTERS, _PACK
+    with _INSTALL_LOCK:
+        if _PACK is not None:
+            return _PACK
+        register_legacy_reader_units((aio_v1_reader_unit(),))
+        profile = build_aio_prompt_privacy_profile()
+        adapters = build_aio_prompt_server_adapters(
+            operation_dispatcher=operation_dispatcher,
+            prompt_library_base_dir=str(Path(package_root) / "config"),
+        )
+        expected = {slot.id for slot in profile.server_adapters}
+        if set(adapters) != expected:
+            raise RuntimeError("AIO privacy adapter binding is incomplete.")
+        _PACK = install(profile, adapters)
+        _ADAPTERS = adapters
+        return _PACK
+
+
+def aio_privacy_pack() -> BoundPrivacyPack:
+    """Return the installed AIO pack without exposing mutable runtime state."""
+
+    return bound_privacy_pack(AIO_PRIVACY_PROFILE_ID)
+
+
+def aio_privacy_adapter(adapter_id: str) -> object:
+    if _ADAPTERS is None or adapter_id not in _ADAPTERS:
+        raise RuntimeError("AIO privacy adapters are not installed.")
+    return _ADAPTERS[adapter_id]
+
+
 def dispatch_aio_prompt_execution(
     reference: object,
     execution_resource_id: str,
     context: Mapping[str, object],
+    *,
+    subject_id: object,
 ) -> object:
-    return dispatch_aio_managed_execution(reference, execution_resource_id, context)
+    return dispatch_aio_managed_execution(
+        reference,
+        execution_resource_id,
+        context,
+        subject_id=subject_id,
+    )
 
 
 def resolve_execution_prompt_semantics(value: object, context: object) -> dict[str, str]:
@@ -713,3 +780,5 @@ def _field_facts(field_id: object) -> AioPromptFieldFacts:
     if field_id not in _FIELD_FACTS:
         raise ValueError("Unknown AIO prompt field.")
     return _FIELD_FACTS[field_id]  # type: ignore[index]
+    def __init__(self) -> None:
+        super().__init__(AIO_CURRENT_PROMPT_SCHEMA)

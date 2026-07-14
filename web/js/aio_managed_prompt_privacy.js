@@ -5,6 +5,11 @@ import {
   aioManagedGraphNodes,
   aioManagedNodeType,
 } from "./aio_managed_privacy_graph.js";
+import {
+  createAioExternalWorkflowTransition,
+  isAioCurrentModeEnvelope,
+  parseAioModeTransitionStorage,
+} from "./aio_managed_mode_transition.js";
 
 export const AIO_GENERATE_POSITIVE_FIELD_ID = "generate-positive-prompt";
 export const AIO_GENERATE_NEGATIVE_FIELD_ID = "generate-negative-prompt";
@@ -12,8 +17,17 @@ export const AIO_KREA_INPAINT_FIELD_ID = "krea-inpaint-positive-prompt";
 
 const GENERATE_NODE = "AIOImageGenerate";
 const KREA_NODE = "AIOKrea2Settings";
+const AIO_PROMPT_SCHEMA = "helto.aio-image-generate.v2";
 const PROTECTED_VALUES = "__aioManagedPromptProtectedValues";
 const PLAINTEXT_VALUES = "__aioManagedPromptPlaintextValues";
+const PRIVACY_STYLE_ID = "aio-managed-prompt-privacy-style";
+const PROMPT_FIELD_CLASS = "aio-managed-prompt-field";
+const PRIVATE_FIELD_CLASS = "aio-managed-private-field";
+const MASKED_PROMPT_VALUE = "••••••••";
+const IMPLEMENTATION_WIDGET_NAMES = Object.freeze([
+  "privacy_mode_reference",
+  "private_execution",
+]);
 const FIELD_FACTS = Object.freeze({
   [AIO_GENERATE_POSITIVE_FIELD_ID]: Object.freeze({
     nodeType: GENERATE_NODE,
@@ -48,6 +62,13 @@ function connectedGenerateNodes(kreaNode) {
   return targets;
 }
 
+function connectedKreaNodes(generateNode) {
+  if (aioManagedNodeType(generateNode) !== GENERATE_NODE) return [];
+  return aioManagedGraphNodes(generateNode).filter(
+    (candidate) => connectedGenerateNodes(candidate).includes(generateNode),
+  );
+}
+
 function generateDeclaredMode(node) {
   const value = node?.widgets?.find((item) => item?.name === "privacy_mode")?.value;
   if (value === false) return "public";
@@ -61,10 +82,12 @@ function modeEvidenceSource(node) {
 }
 
 function facts(context) {
-  const fieldId = context?.fieldId ?? context?.id;
+  const declared = context?.field;
+  const fieldId = declared?.id ?? context?.fieldId ?? context?.id;
   const value = FIELD_FACTS[fieldId];
   if (!value) fail();
-  if (context?.location?.name !== undefined && context.location.name !== value.widget) fail();
+  const location = declared?.location ?? context?.location;
+  if (location?.name !== undefined && location.name !== value.widget) fail();
   return { ...value, fieldId };
 }
 
@@ -74,6 +97,17 @@ function widget(node, context) {
   const found = node?.widgets?.find((item) => item?.name === field.widget);
   if (!found) fail();
   return found;
+}
+
+function serializedWidgetIndex(node, target) {
+  let index = 0;
+  for (const candidate of node?.widgets || []) {
+    const serialized = candidate?.serialize !== false
+      && candidate?.options?.serialize !== false;
+    if (candidate === target) return serialized ? index : -1;
+    if (serialized) index += 1;
+  }
+  return -1;
 }
 
 function unwrap(value) {
@@ -103,6 +137,101 @@ function widgetTextElements(target) {
     .filter((element) => element && (
       typeof element.value === "string" || element.isContentEditable
     ));
+}
+
+function installPrivacyStyles() {
+  if (typeof document === "undefined" || document.getElementById(PRIVACY_STYLE_ID)) return;
+  const style = document.createElement("style");
+  style.id = PRIVACY_STYLE_ID;
+  style.textContent = `
+    .${PROMPT_FIELD_CLASS} {
+      background: var(--helto-surface-2) !important;
+      border-color: var(--helto-border-strong) !important;
+    }
+    .${PRIVATE_FIELD_CLASS} {
+      background: var(--helto-surface-2) !important;
+      border-color: var(--helto-border-strong) !important;
+      color: transparent !important;
+      -webkit-text-fill-color: transparent !important;
+      caret-color: transparent !important;
+      text-shadow: none !important;
+    }
+    .${PRIVATE_FIELD_CLASS}::placeholder {
+      color: transparent !important;
+      -webkit-text-fill-color: transparent !important;
+    }
+    .${PRIVATE_FIELD_CLASS}:hover,
+    .${PRIVATE_FIELD_CLASS}:focus,
+    .${PRIVATE_FIELD_CLASS}:focus-visible {
+      background: var(--helto-surface-2) !important;
+      border-color: var(--helto-border-strong) !important;
+      color: inherit !important;
+      -webkit-text-fill-color: currentColor !important;
+      caret-color: auto !important;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
+function privatePresentation(node) {
+  if (aioManagedNodeType(node) === GENERATE_NODE) {
+    return generateDeclaredMode(node) !== "public";
+  }
+  if (aioManagedNodeType(node) === KREA_NODE) {
+    return connectedGenerateNodes(node).some(
+      (candidate) => generateDeclaredMode(candidate) !== "public",
+    );
+  }
+  return false;
+}
+
+function nodeFieldIds(node) {
+  return Object.entries(FIELD_FACTS)
+    .filter(([, field]) => field.nodeType === aioManagedNodeType(node))
+    .map(([fieldId]) => fieldId);
+}
+
+function hideImplementationWidgets(node) {
+  for (const name of IMPLEMENTATION_WIDGET_NAMES) {
+    const target = node?.widgets?.find((item) => item?.name === name);
+    if (!target) continue;
+    target.hidden = true;
+    target.type = "hidden";
+    target.computeSize = () => [0, -4];
+  }
+}
+
+function patchPromptDraw(node, target) {
+  if (!target || target.__aioManagedPrivacyDrawPatched) return;
+  const original = target.draw;
+  if (typeof original === "function") {
+    target.draw = function aioManagedPromptDraw() {
+      if (!privatePresentation(node)) return original.apply(this, arguments);
+      const value = this.value;
+      this.value = MASKED_PROMPT_VALUE;
+      try {
+        return original.apply(this, arguments);
+      } finally {
+        this.value = value;
+      }
+    };
+  }
+  target.__aioManagedPrivacyDrawPatched = true;
+}
+
+function updatePrivacyPresentation(node) {
+  const masked = privatePresentation(node);
+  for (const fieldId of nodeFieldIds(node)) {
+    const target = widget(node, { fieldId });
+    patchPromptDraw(node, target);
+    for (const element of widgetTextElements(target)) {
+      element.classList?.add(PROMPT_FIELD_CLASS);
+      element.classList?.toggle(PRIVATE_FIELD_CLASS, masked);
+      element.setAttribute?.("data-aio-private", masked ? "true" : "false");
+    }
+  }
+  node.__aioManagedPrivacyMasked = masked;
+  node.setDirtyCanvas?.(true, true);
 }
 
 function protectedValues(node) {
@@ -163,10 +292,49 @@ export function createAioPromptModeBrowserAdapter() {
   };
 }
 
-export function createAioPromptWorkflowBrowserAdapter({ workflowHandle = null } = {}) {
-  let locked = false;
+export function createAioPromptWorkflowBrowserAdapter({
+  workflowHandle = null,
+  app = null,
+} = {}) {
+  let locked = true;
+  const owners = new Set();
+
+  function notifyModeChange(node) {
+    updatePrivacyPresentation(node);
+    for (const candidate of connectedKreaNodes(node)) updatePrivacyPresentation(candidate);
+    if (typeof workflowHandle?.notifyModeChange !== "function") return;
+    let settlement;
+    try {
+      settlement = workflowHandle.notifyModeChange();
+    } catch (error) {
+      node.__aioManagedPrivacyError = String(error?.code || error?.message || "PRIVACY_MODE_STATE_UNAVAILABLE");
+      throw error;
+    }
+    node.__aioManagedPrivacyModeSettlement = Promise.resolve(settlement).then(() => {
+      node.__aioManagedPrivacyError = "";
+      updatePrivacyPresentation(node);
+      for (const candidate of connectedKreaNodes(node)) updatePrivacyPresentation(candidate);
+    }).catch((error) => {
+      node.__aioManagedPrivacyError = String(error?.code || error?.message || "PRIVACY_MODE_STATE_UNAVAILABLE");
+      node.setDirtyCanvas?.(true, true);
+    });
+  }
+
+  function bindModeChanges(node) {
+    if (aioManagedNodeType(node) !== GENERATE_NODE) return;
+    const target = node.widgets?.find((item) => item?.name === "privacy_mode");
+    if (!target || target.__aioManagedPrivacyModeBound) return;
+    const original = target.callback;
+    target.callback = function aioManagedPrivacyModeChanged() {
+      const result = original?.apply(this, arguments);
+      notifyModeChange(node);
+      return result;
+    };
+    target.__aioManagedPrivacyModeBound = true;
+  }
 
   function recordEdit(node, fieldId, candidate = undefined) {
+    transition.requireMutable();
     const context = { fieldId };
     const target = widget(node, context);
     const plaintext = normalize(candidate === undefined ? liveText(node, context) : candidate);
@@ -184,6 +352,7 @@ export function createAioPromptWorkflowBrowserAdapter({ workflowHandle = null } 
     if (!target.__aioManagedPrivacyEditBindings.has(fieldId)) {
       const original = target.callback;
       target.callback = function aioManagedPromptEdited(value) {
+        transition.requireMutable();
         const result = original?.apply(this, arguments);
         recordEdit(node, fieldId, value);
         return result;
@@ -193,16 +362,95 @@ export function createAioPromptWorkflowBrowserAdapter({ workflowHandle = null } 
     for (const element of widgetTextElements(target)) {
       element.__aioManagedPrivacyEditBindings ||= new Set();
       if (element.__aioManagedPrivacyEditBindings.has(fieldId)) continue;
-      const onEdited = () => recordEdit(
-        node,
-        fieldId,
-        "value" in element ? element.value : element.textContent,
-      );
+      const onEdited = () => {
+        transition.requireMutable();
+        return recordEdit(
+          node,
+          fieldId,
+          "value" in element ? element.value : element.textContent,
+        );
+      };
       element.addEventListener?.("input", onEdited);
       element.addEventListener?.("change", onEdited);
       element.__aioManagedPrivacyEditBindings.add(fieldId);
     }
   }
+
+  function applyValue(node, value, context) {
+    const field = facts(context);
+    const target = widget(node, context);
+    const plaintext = normalize(value);
+    plaintextValues(node)[field.fieldId] = plaintext;
+    if (!(field.fieldId in protectedValues(node))) target.value = plaintext;
+    setDomText(target, plaintext);
+    updatePrivacyPresentation(node);
+  }
+
+  function clearValue(node, context) {
+    const field = facts(context);
+    plaintextValues(node)[field.fieldId] = "";
+    const target = widget(node, context);
+    if (!(field.fieldId in protectedValues(node))) target.value = "";
+    setDomText(target, "");
+    updatePrivacyPresentation(node);
+  }
+
+  function reconcileOwner(node) {
+    if (!Object.values(FIELD_FACTS).some((field) => field.nodeType === aioManagedNodeType(node))) fail();
+    owners.add(node);
+    transition.synchronizeOwner(node);
+    node.__aioManagedPrivacyLocked = locked;
+    installPrivacyStyles();
+    hideImplementationWidgets(node);
+    bindModeChanges(node);
+    for (const [fieldId, field] of Object.entries(FIELD_FACTS)) {
+      if (field.nodeType === aioManagedNodeType(node)) bindEdits(node, fieldId);
+    }
+    updatePrivacyPresentation(node);
+    if (!locked) return;
+    for (const [fieldId, field] of Object.entries(FIELD_FACTS)) {
+      if (field.nodeType !== aioManagedNodeType(node)) continue;
+      plaintextValues(node)[fieldId] = "";
+      setDomText(widget(node, { fieldId }), "");
+    }
+    updatePrivacyPresentation(node);
+  }
+
+  const transition = createAioExternalWorkflowTransition({
+    app,
+    owners,
+    registerNode: reconcileOwner,
+    readStorage(node, context) {
+      const field = facts(context);
+      const remembered = protectedValues(node)[field.fieldId];
+      return typeof remembered === "string"
+        ? remembered
+        : String(widget(node, context).value || "");
+    },
+    writeStorage(node, value, context) {
+      const field = facts(context);
+      protectedValues(node)[field.fieldId] = value;
+      widget(node, context).value = value;
+    },
+    readDetachedStorage(node, serializedNode, context) {
+      if (!Array.isArray(serializedNode?.widgets_values)) fail();
+      const target = widget(node, context);
+      const index = serializedWidgetIndex(node, target);
+      if (!Number.isInteger(index) || index < 0 || index >= serializedNode.widgets_values.length) fail();
+      const value = serializedNode.widgets_values[index];
+      if (typeof value !== "string") fail();
+      return value;
+    },
+    reloadRuntime(node, value, context) {
+      const payload = parseAioModeTransitionStorage(value, fail);
+      if (isAioCurrentModeEnvelope(payload, AIO_PROMPT_SCHEMA)) clearValue(node, context);
+      else applyValue(node, payload, context);
+    },
+    reconcileRuntime(node) {
+      node.__aioManagedPrivacyLocked = locked;
+    },
+    fail,
+  });
 
   return {
     normalize(node, context) {
@@ -220,39 +468,50 @@ export function createAioPromptWorkflowBrowserAdapter({ workflowHandle = null } 
       const plaintext = liveText(node, context);
       plaintextValues(node)[field.fieldId] = plaintext;
       protectedValues(node)[field.fieldId] = protectedValue;
-      target.value = protectedValue;
+      transition.withInternalMutation(() => {
+        target.value = protectedValue;
+      });
       setDomText(target, locked ? "" : plaintext);
+      updatePrivacyPresentation(node);
+    },
+    writePublic(node, context) {
+      if (locked) fail();
+      const field = facts(context);
+      const target = widget(node, context);
+      const plaintext = liveText(node, context);
+      plaintextValues(node)[field.fieldId] = plaintext;
+      protectedValues(node)[field.fieldId] = plaintext;
+      transition.withInternalMutation(() => {
+        target.value = plaintext;
+      });
+      setDomText(target, plaintext);
+      updatePrivacyPresentation(node);
+      return plaintext;
+    },
+    writeWorkflowProjection(node, serializedNode, protectedValue, context) {
+      if (!serializedNode || !Array.isArray(serializedNode.widgets_values)) fail();
+      const target = widget(node, context);
+      const index = serializedWidgetIndex(node, target);
+      if (!Number.isInteger(index) || index < 0 || index >= serializedNode.widgets_values.length) fail();
+      serializedNode.widgets_values[index] = protectedValue;
     },
     apply(node, value, context) {
-      const field = facts(context);
-      const target = widget(node, context);
-      const plaintext = normalize(value);
-      plaintextValues(node)[field.fieldId] = plaintext;
-      if (!(field.fieldId in protectedValues(node))) target.value = plaintext;
-      setDomText(target, plaintext);
+      applyValue(node, value, context);
     },
     clear(node, context) {
-      const field = facts(context);
-      plaintextValues(node)[field.fieldId] = "";
-      const target = widget(node, context);
-      if (!(field.fieldId in protectedValues(node))) target.value = "";
-      setDomText(target, "");
+      clearValue(node, context);
     },
     reconcileNode(node) {
-      if (!Object.values(FIELD_FACTS).some((field) => field.nodeType === aioManagedNodeType(node))) fail();
-      for (const [fieldId, field] of Object.entries(FIELD_FACTS)) {
-        if (field.nodeType === aioManagedNodeType(node)) bindEdits(node, fieldId);
-      }
-      if (!locked) return;
-      for (const [fieldId, field] of Object.entries(FIELD_FACTS)) {
-        if (field.nodeType !== aioManagedNodeType(node)) continue;
-        plaintextValues(node)[fieldId] = "";
-        setDomText(widget(node, { fieldId }), "");
-      }
+      reconcileOwner(node);
     },
     reconcileNodeDefinition() {},
     onPrivacySessionChange(snapshot) {
       locked = snapshot?.state !== "ready" && snapshot?.state !== "unlocked";
+      for (const owner of owners) {
+        owner.__aioManagedPrivacyLocked = locked;
+        updatePrivacyPresentation(owner);
+      }
     },
+    ...transition,
   };
 }
