@@ -29,7 +29,15 @@ const MASKED_PROMPT_VALUE = "••••••••";
 const PRESENTATION_RECONCILE_EPOCH = "__aioManagedPrivacyPresentationEpoch";
 const PRESENTATION_RECONCILE_FRAMES = 240;
 const EDIT_BINDING_RECONCILE_EPOCH = "__aioManagedPrivacyEditBindingEpoch";
+const PRESENTATION_BINDINGS = "__aioManagedPrivacyPresentationBindings";
+const PRESENTATION_POINTER_REVEAL = "__aioManagedPrivacyPointerReveal";
+const PRESENTATION_KEYBOARD_REVEAL = "__aioManagedPrivacyKeyboardReveal";
 const BOOTSTRAPPED_APPS = new WeakSet();
+const TRACKED_PRESENTATION_REFERENCES = new Set();
+const TRACKED_PRESENTATION_REFERENCE_BY_NODE = new WeakMap();
+const TRACKED_PRESENTATION_UNAVAILABLE = new WeakMap();
+let presentationObserver = null;
+let presentationObserverScheduled = false;
 const IMPLEMENTATION_WIDGET_NAMES = Object.freeze([
   "privacy_mode_reference",
   "private_execution",
@@ -141,7 +149,9 @@ function vueWidgetTextElements(node, target) {
   if (!root || typeof root.querySelectorAll !== "function") return [];
   const name = String(target?.name || "");
   const row = [...root.querySelectorAll('[data-testid="node-widget"]')].find(
-    (candidate) => String(candidate?.textContent || "").trim() === name,
+    (candidate) => [...(candidate?.querySelectorAll?.("label") || [])].some(
+      (label) => String(label?.textContent || "").trim() === name,
+    ),
   );
   if (!row || typeof row.querySelectorAll !== "function") return [];
   return [...row.querySelectorAll(
@@ -166,13 +176,175 @@ function hasMountedTextElement(elements) {
   return elements.some((element) => element.isConnected !== false);
 }
 
-function setDomText(node, target, value) {
+function elementText(element) {
+  if (typeof element?.value === "string") return element.value;
+  if (element?.isContentEditable) return String(element.textContent || "");
+  return "";
+}
+
+function writeElementText(element, value) {
   const text = normalize(value);
-  for (const element of widgetTextElements(node, target)) {
-    if (!element) continue;
-    if ("value" in element) element.value = text;
-    else if (element.isContentEditable) element.textContent = text;
+  if (elementText(element) === text) return;
+  if ("value" in element) element.value = text;
+  else if (element.isContentEditable) element.textContent = text;
+}
+
+function isProtectedPromptStorage(value) {
+  if (typeof value !== "string" || !value.trim()) return false;
+  try {
+    return isAioCurrentModeEnvelope(JSON.parse(value), AIO_PROMPT_SCHEMA);
+  } catch {
+    return false;
   }
+}
+
+function presentationPlaintext(node, fieldId, target, elements) {
+  const remembered = plaintextValues(node)[fieldId];
+  if (typeof remembered === "string") return remembered;
+  const candidates = [
+    ...elements.map((element) => elementText(element)),
+    target?.value,
+  ];
+  const candidate = candidates.find(
+    (value) => typeof value === "string" && value !== MASKED_PROMPT_VALUE,
+  );
+  const plaintext = typeof candidate === "string" && !isProtectedPromptStorage(candidate)
+    ? candidate
+    : "";
+  plaintextValues(node)[fieldId] = plaintext;
+  return plaintext;
+}
+
+function presentationRevealActive(element) {
+  return element?.[PRESENTATION_POINTER_REVEAL] === true
+    || element?.[PRESENTATION_KEYBOARD_REVEAL] === true
+    || element?.matches?.(":hover") === true;
+}
+
+function reconcileElementPresentation(node, fieldId, target, element, unavailable) {
+  const masked = privatePresentation(node);
+  const fieldUnavailable = unavailable && masked;
+  const plaintext = presentationPlaintext(
+    node,
+    fieldId,
+    target,
+    widgetTextElements(node, target),
+  );
+  const reveal = masked
+    && !fieldUnavailable
+    && node.__aioManagedPrivacyLocked !== true
+    && presentationRevealActive(element);
+  writeElementText(element, masked && !reveal ? "" : plaintext);
+}
+
+function bindPresentationEvents(node, fieldId, target, element, unavailable) {
+  element[PRESENTATION_BINDINGS] ||= new Set();
+  if (element[PRESENTATION_BINDINGS].has(fieldId)) return;
+  const reconcile = () => reconcileElementPresentation(
+    node,
+    fieldId,
+    target,
+    element,
+    node.__aioManagedPrivacyUnavailable ?? unavailable,
+  );
+  element.addEventListener?.("pointerenter", () => {
+    element[PRESENTATION_POINTER_REVEAL] = true;
+    reconcile();
+  });
+  element.addEventListener?.("pointerleave", () => {
+    element[PRESENTATION_POINTER_REVEAL] = false;
+    reconcile();
+  });
+  element.addEventListener?.("focus", () => {
+    element[PRESENTATION_KEYBOARD_REVEAL] = element.matches?.(":focus-visible") === true;
+    reconcile();
+  });
+  element.addEventListener?.("blur", () => {
+    element[PRESENTATION_KEYBOARD_REVEAL] = false;
+    reconcile();
+  });
+  element[PRESENTATION_BINDINGS].add(fieldId);
+}
+
+function ensurePresentationObserver() {
+  if (
+    presentationObserver
+    || typeof MutationObserver !== "function"
+    || typeof document === "undefined"
+  ) return;
+  const root = document.documentElement || document.body;
+  if (!root) return;
+  presentationObserver = new MutationObserver(() => {
+    if (presentationObserverScheduled) return;
+    presentationObserverScheduled = true;
+    const reconcile = () => {
+      presentationObserverScheduled = false;
+      for (const reference of TRACKED_PRESENTATION_REFERENCES) {
+        const node = reference.deref();
+        if (!node) {
+          TRACKED_PRESENTATION_REFERENCES.delete(reference);
+          continue;
+        }
+        applyPrivacyPresentation(
+          node,
+          TRACKED_PRESENTATION_UNAVAILABLE.get(node) === true,
+        );
+      }
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(reconcile);
+    else Promise.resolve().then(reconcile);
+  });
+  presentationObserver.observe(root, { childList: true, subtree: true });
+}
+
+function trackPresentationNode(node, unavailable) {
+  if (!TRACKED_PRESENTATION_REFERENCE_BY_NODE.has(node)) {
+    const reference = typeof WeakRef === "function"
+      ? new WeakRef(node)
+      : { deref: () => node };
+    TRACKED_PRESENTATION_REFERENCE_BY_NODE.set(node, reference);
+    TRACKED_PRESENTATION_REFERENCES.add(reference);
+  }
+  TRACKED_PRESENTATION_UNAVAILABLE.set(node, unavailable);
+  ensurePresentationObserver();
+}
+
+function scheduleReadyPresentationReconcile(node, unavailable, epoch) {
+  const reconcile = () => {
+    if (node[PRESENTATION_RECONCILE_EPOCH] !== epoch) return;
+    applyPrivacyPresentation(node, unavailable);
+  };
+  if (typeof queueMicrotask === "function") queueMicrotask(reconcile);
+  else Promise.resolve().then(reconcile);
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(reconcile);
+}
+
+function applyPrivacyPresentation(node, unavailable) {
+  const masked = privatePresentation(node);
+  const fieldUnavailable = unavailable && masked;
+  let domReady = true;
+  for (const fieldId of nodeFieldIds(node)) {
+    const target = widget(node, { fieldId });
+    patchPromptDraw(node, target);
+    const elements = widgetTextElements(node, target);
+    if (!hasMountedTextElement(elements)) domReady = false;
+    for (const element of elements) {
+      element.classList?.add(PROMPT_FIELD_CLASS);
+      element.classList?.toggle(PRIVATE_FIELD_CLASS, masked);
+      element.classList?.toggle(PRIVACY_UNAVAILABLE_CLASS, fieldUnavailable);
+      element.setAttribute?.("data-aio-private", masked ? "true" : "false");
+      element.setAttribute?.(
+        "data-aio-privacy-unavailable",
+        fieldUnavailable ? "true" : "false",
+      );
+      bindPresentationEvents(node, fieldId, target, element, unavailable);
+      reconcileElementPresentation(node, fieldId, target, element, unavailable);
+    }
+  }
+  node.__aioManagedPrivacyUnavailable = unavailable;
+  node.__aioManagedPrivacyMasked = masked;
+  node.setDirtyCanvas?.(true, true);
+  return domReady;
 }
 
 function installPrivacyStyles() {
@@ -269,39 +441,17 @@ function patchPromptDraw(node, target) {
   target.__aioManagedPrivacyDrawPatched = true;
 }
 
-function applyPrivacyPresentation(node, unavailable) {
-  const masked = privatePresentation(node);
-  const fieldUnavailable = unavailable && masked;
-  let domReady = true;
-  for (const fieldId of nodeFieldIds(node)) {
-    const target = widget(node, { fieldId });
-    patchPromptDraw(node, target);
-    const elements = widgetTextElements(node, target);
-    if (!hasMountedTextElement(elements)) domReady = false;
-    for (const element of elements) {
-      element.classList?.add(PROMPT_FIELD_CLASS);
-      element.classList?.toggle(PRIVATE_FIELD_CLASS, masked);
-      element.classList?.toggle(PRIVACY_UNAVAILABLE_CLASS, fieldUnavailable);
-      element.setAttribute?.("data-aio-private", masked ? "true" : "false");
-      element.setAttribute?.(
-        "data-aio-privacy-unavailable",
-        fieldUnavailable ? "true" : "false",
-      );
-    }
-  }
-  node.__aioManagedPrivacyUnavailable = unavailable;
-  node.__aioManagedPrivacyMasked = masked;
-  node.setDirtyCanvas?.(true, true);
-  return domReady;
-}
-
 function schedulePrivacyPresentation(node, unavailable) {
   const epoch = (Number(node[PRESENTATION_RECONCILE_EPOCH]) || 0) + 1;
   node[PRESENTATION_RECONCILE_EPOCH] = epoch;
+  trackPresentationNode(node, unavailable);
   let remainingFrames = PRESENTATION_RECONCILE_FRAMES;
   const reconcile = () => {
     if (node[PRESENTATION_RECONCILE_EPOCH] !== epoch) return;
-    if (applyPrivacyPresentation(node, unavailable)) return;
+    if (applyPrivacyPresentation(node, unavailable)) {
+      scheduleReadyPresentationReconcile(node, unavailable, epoch);
+      return;
+    }
     if (remainingFrames <= 0 || typeof requestAnimationFrame !== "function") return;
     remainingFrames -= 1;
     requestAnimationFrame(reconcile);
@@ -455,14 +605,18 @@ export function createAioPromptWorkflowBrowserAdapter({
     const context = { fieldId };
     const target = widget(node, context);
     const plaintext = normalize(candidate === undefined ? liveText(node, context) : candidate);
-    plaintextValues(node)[fieldId] = plaintext;
     const protectedValue = protectedValues(node)[fieldId];
+    if (typeof protectedValue === "string" && plaintext === protectedValue) {
+      updatePrivacyPresentation(node);
+      return undefined;
+    }
+    plaintextValues(node)[fieldId] = plaintext;
     if (typeof protectedValue === "string") {
       transition.withInternalMutation(() => {
         target.value = protectedValue;
       });
     }
-    setDomText(node, target, plaintext);
+    updatePrivacyPresentation(node);
     if (typeof workflowHandle?.markEdited !== "function") fail();
     return workflowHandle.markEdited(node, fieldId);
   }
@@ -481,7 +635,14 @@ export function createAioPromptWorkflowBrowserAdapter({
       };
       target.__aioManagedPrivacyEditBindings.add(fieldId);
     }
+    const widgetOwnedElements = new Set([
+      target.inputEl,
+      target.element,
+      target.inputElement,
+      target.textarea,
+    ].filter(Boolean));
     for (const element of widgetTextElements(node, target)) {
+      if (widgetOwnedElements.has(element)) continue;
       element.__aioManagedPrivacyEditBindings ||= new Set();
       if (element.__aioManagedPrivacyEditBindings.has(fieldId)) continue;
       const onEdited = () => {
@@ -531,7 +692,6 @@ export function createAioPromptWorkflowBrowserAdapter({
         target.value = plaintext;
       });
     }
-    setDomText(node, target, plaintext);
     updatePrivacyPresentation(node);
   }
 
@@ -544,7 +704,6 @@ export function createAioPromptWorkflowBrowserAdapter({
         target.value = "";
       });
     }
-    setDomText(node, target, "");
     updatePrivacyPresentation(node);
   }
 
@@ -562,7 +721,6 @@ export function createAioPromptWorkflowBrowserAdapter({
     for (const [fieldId, field] of Object.entries(FIELD_FACTS)) {
       if (field.nodeType !== aioManagedNodeType(node)) continue;
       plaintextValues(node)[fieldId] = "";
-      setDomText(node, widget(node, { fieldId }), "");
     }
     updatePrivacyPresentation(node);
   }
@@ -622,22 +780,6 @@ export function createAioPromptWorkflowBrowserAdapter({
       transition.withInternalMutation(() => {
         target.value = protectedValue;
       });
-      const presentation = locked ? "" : plaintext;
-      setDomText(node, target, presentation);
-      if (typeof requestAnimationFrame === "function") {
-        let remainingFrames = 3;
-        const reconcileVueValue = () => {
-          if (
-            protectedValues(node)[field.fieldId] !== protectedValue
-            || plaintextValues(node)[field.fieldId] !== plaintext
-          ) return;
-          setDomText(node, target, presentation);
-          if (remainingFrames <= 0) return;
-          remainingFrames -= 1;
-          requestAnimationFrame(reconcileVueValue);
-        };
-        requestAnimationFrame(reconcileVueValue);
-      }
       updatePrivacyPresentation(node);
     },
     writePublic(node, context) {
@@ -650,7 +792,6 @@ export function createAioPromptWorkflowBrowserAdapter({
       transition.withInternalMutation(() => {
         target.value = plaintext;
       });
-      setDomText(node, target, plaintext);
       updatePrivacyPresentation(node);
       return plaintext;
     },
@@ -675,6 +816,9 @@ export function createAioPromptWorkflowBrowserAdapter({
       locked = snapshot?.state !== "ready" && snapshot?.state !== "unlocked";
       for (const owner of owners) {
         owner.__aioManagedPrivacyLocked = locked;
+        if (locked) {
+          for (const fieldId of nodeFieldIds(owner)) plaintextValues(owner)[fieldId] = "";
+        }
         updatePrivacyPresentation(owner);
       }
     },

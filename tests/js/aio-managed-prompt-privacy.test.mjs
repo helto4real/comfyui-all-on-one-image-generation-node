@@ -71,8 +71,11 @@ function serializedNode(node) {
 
 function textElement(value = "") {
   const classes = new Set();
+  const handlers = new Map();
   return {
     value,
+    hovered: false,
+    focusVisible: false,
     eventTypes: [],
     classList: {
       add: (...names) => names.forEach((name) => classes.add(name)),
@@ -81,7 +84,20 @@ function textElement(value = "") {
       contains: (name) => classes.has(name),
     },
     setAttribute(name, item) { this[name] = item; },
-    addEventListener(name) { this.eventTypes.push(name); },
+    addEventListener(name, handler) {
+      this.eventTypes.push(name);
+      const listeners = handlers.get(name) || [];
+      listeners.push(handler);
+      handlers.set(name, listeners);
+    },
+    dispatch(name) {
+      for (const handler of handlers.get(name) || []) handler({ type: name });
+    },
+    matches(selector) {
+      if (selector === ":hover") return this.hovered;
+      if (selector === ":focus-visible") return this.focusVisible;
+      return false;
+    },
   };
 }
 
@@ -104,7 +120,13 @@ test("inactive suite bootstrap masks prompt DOM fields before managed activation
     assert.equal(target.inputEl.classList.contains("aio-managed-private-field"), true);
     assert.equal(target.inputEl.classList.contains("aio-managed-privacy-unavailable"), true);
     assert.equal(target.inputEl["data-aio-privacy-unavailable"], "true");
-    assert.deepEqual(target.inputEl.eventTypes, []);
+    assert.deepEqual(target.inputEl.eventTypes, [
+      "pointerenter",
+      "pointerleave",
+      "focus",
+      "blur",
+    ]);
+    assert.equal(target.inputEl.value, "");
   }
   assert.equal(node.__aioManagedPrivacyUnavailable, true);
   assert.equal(node.__aioManagedPrivacyMasked, true);
@@ -222,7 +244,7 @@ test("private DOM prompt redraw preserves its value and native selection", () =>
 });
 
 
-test("Vue Nodes 2.0 prompt DOM keeps live plaintext while widget storage stays protected", () => {
+test("Vue Nodes 2.0 keeps protected storage and reveals live plaintext only on hover", async () => {
   const originalDocument = globalThis.document;
   const node = generateNode(true);
   node.id = 7;
@@ -230,15 +252,29 @@ test("Vue Nodes 2.0 prompt DOM keeps live plaintext while widget storage stays p
   const detached = textElement(prompt.value);
   detached.isConnected = false;
   prompt.element = detached;
+  const secret = "SYNTHETIC_VUE_PRIVATE_PROMPT";
+  const envelope = "SYNTHETIC_PROTECTED_ENVELOPE";
   const rendered = textElement("");
   rendered.isConnected = true;
   const row = {
-    textContent: "positive_prompt",
-    querySelectorAll: () => [rendered],
+    textContent: `positive_prompt ${envelope}`,
+    querySelectorAll: (selector) => selector === "label"
+      ? [{ textContent: "positive_prompt" }]
+      : [rendered],
+  };
+  const renderedNegative = textElement("");
+  renderedNegative.isConnected = true;
+  const negativeRow = {
+    textContent: "negative_prompt",
+    querySelectorAll: (selector) => selector === "label"
+      ? [{ textContent: "negative_prompt" }]
+      : [renderedNegative],
   };
   const root = {
     dataset: { nodeId: "7" },
-    querySelectorAll: (selector) => selector === '[data-testid="node-widget"]' ? [row] : [],
+    querySelectorAll: (selector) => selector === '[data-testid="node-widget"]'
+      ? [row, negativeRow]
+      : [],
   };
   globalThis.document = {
     getElementById: () => ({}),
@@ -253,22 +289,131 @@ test("Vue Nodes 2.0 prompt DOM keeps live plaintext while widget storage stays p
       fieldId: AIO_GENERATE_POSITIVE_FIELD_ID,
       location: { name: "positive_prompt" },
     };
-    const secret = "SYNTHETIC_VUE_PRIVATE_PROMPT";
-    const envelope = "SYNTHETIC_PROTECTED_ENVELOPE";
     adapter.onPrivacySessionChange({ state: "unlocked" });
     adapter.reconcileNode(node);
     adapter.apply(node, { value: secret }, field);
     adapter.writeProtected(node, envelope, field);
 
     assert.equal(prompt.value, envelope);
-    assert.equal(rendered.value, secret);
-    assert.equal(detached.value, secret);
+    assert.equal(rendered.value, "");
+    assert.equal(detached.value, "");
     assert.equal(rendered.classList.contains("aio-managed-private-field"), true);
     assert.equal(rendered["data-aio-private"], "true");
-    assert.deepEqual(rendered.eventTypes, ["input", "change"]);
+    assert.deepEqual(rendered.eventTypes, [
+      "input",
+      "change",
+      "pointerenter",
+      "pointerleave",
+      "focus",
+      "blur",
+    ]);
+
+    rendered.dispatch("pointerenter");
+    assert.equal(rendered.value, secret);
+    rendered.selectionStart = 0;
+    rendered.selectionEnd = 9;
+    rendered.dispatch("pointerup");
+    assert.equal(rendered.selectionStart, 0);
+    assert.equal(rendered.selectionEnd, 9);
+    assert.equal(rendered.value, secret);
+
+    const edited = "SYNTHETIC_VUE_EDITED_PRIVATE_PROMPT";
+    prompt.callback(edited);
+    rendered.value = envelope;
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(rendered.value, edited);
+    assert.equal(prompt.value, envelope);
+
+    rendered.dispatch("pointerleave");
+    assert.equal(rendered.value, "");
+    assert.equal(rendered.value.includes(secret), false);
   } finally {
     if (originalDocument === undefined) delete globalThis.document;
     else globalThis.document = originalDocument;
+  }
+});
+
+
+test("renderer switch reconciles a Vue textarea mounted after protected storage", async () => {
+  const originalDocument = globalThis.document;
+  const originalMutationObserver = globalThis.MutationObserver;
+  const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+  const scheduledFrames = [];
+  let observerCallback = null;
+  let roots = [];
+  globalThis.requestAnimationFrame = (callback) => {
+    scheduledFrames.push(callback);
+    return scheduledFrames.length;
+  };
+  globalThis.MutationObserver = class SyntheticMutationObserver {
+    constructor(callback) { observerCallback = callback; }
+    observe() {}
+  };
+  globalThis.document = {
+    documentElement: {},
+    getElementById: () => ({}),
+    querySelectorAll: (selector) => selector === "[data-node-id]" ? roots : [],
+  };
+
+  try {
+    const node = generateNode(true);
+    node.id = 8;
+    const prompt = node.widgets.find((item) => item.name === "positive_prompt");
+    prompt.inputEl = textElement("positive");
+    prompt.inputEl.isConnected = true;
+    const adapter = createAioPromptWorkflowBrowserAdapter({
+      workflowHandle: { markEdited() {} },
+    });
+    const field = {
+      fieldId: AIO_GENERATE_POSITIVE_FIELD_ID,
+      location: { name: "positive_prompt" },
+    };
+    const secret = "SYNTHETIC_RENDERER_SWITCH_PRIVATE_PROMPT";
+    const envelope = "SYNTHETIC_RENDERER_SWITCH_ENVELOPE";
+    adapter.onPrivacySessionChange({ state: "unlocked" });
+    adapter.reconcileNode(node);
+    adapter.apply(node, { value: secret }, field);
+    adapter.writeProtected(node, envelope, field);
+    while (scheduledFrames.length) scheduledFrames.shift()();
+    await Promise.resolve();
+
+    assert.equal(prompt.value, envelope);
+    assert.equal(prompt.inputEl.value, "");
+    assert.equal(typeof observerCallback, "function");
+
+    const rendered = textElement(envelope);
+    rendered.isConnected = true;
+    const row = {
+      textContent: `positive_prompt ${envelope}`,
+      querySelectorAll: (selector) => selector === "label"
+        ? [{ textContent: "positive_prompt" }]
+        : [rendered],
+    };
+    roots = [{
+      dataset: { nodeId: "8" },
+      querySelectorAll: (selector) => selector === '[data-testid="node-widget"]'
+        ? [row]
+        : [],
+    }];
+    observerCallback([]);
+    while (scheduledFrames.length) scheduledFrames.shift()();
+    await Promise.resolve();
+
+    assert.equal(rendered.value, "");
+    assert.equal(rendered["data-aio-private"], "true");
+    rendered.dispatch("pointerenter");
+    assert.equal(rendered.value, secret);
+    rendered.dispatch("pointerleave");
+    assert.equal(rendered.value, "");
+  } finally {
+    if (originalDocument === undefined) delete globalThis.document;
+    else globalThis.document = originalDocument;
+    if (originalMutationObserver === undefined) delete globalThis.MutationObserver;
+    else globalThis.MutationObserver = originalMutationObserver;
+    if (originalRequestAnimationFrame === undefined) delete globalThis.requestAnimationFrame;
+    else globalThis.requestAnimationFrame = originalRequestAnimationFrame;
   }
 });
 
@@ -324,6 +469,8 @@ test("restored node privacy bootstrap reconciles after its DOM widgets mount", (
       assert.equal(target.inputEl.classList.contains("aio-managed-privacy-unavailable"), true);
       assert.equal(target.inputEl["data-aio-privacy-unavailable"], "true");
     }
+    assert.equal(scheduledFrames.length, 1);
+    scheduledFrames.shift()();
     assert.equal(scheduledFrames.length, 0);
   } finally {
     if (originalRequestAnimationFrame === undefined) {
@@ -478,6 +625,50 @@ test("programmatic DOM widget assignments do not become user prompt edits", () =
   assert.deepEqual(edits, []);
   assert.equal(node.widgets[1].value, "CURRENT_POSITIVE");
   node.widgets[1].callback("user edit");
+  assert.deepEqual(edits, [[node, AIO_GENERATE_POSITIVE_FIELD_ID]]);
+});
+
+
+test("legacy DOM widget duplicate callbacks preserve the user's private edit", () => {
+  const node = generateNode(true);
+  node.widgets[1] = callbackOnAssignmentWidget("positive_prompt", "positive");
+  node.widgets[1].inputEl = textElement("positive");
+  const edits = [];
+  const adapter = createAioPromptWorkflowBrowserAdapter({
+    workflowHandle: {
+      markEdited: (owner, fieldId) => edits.push([owner, fieldId]),
+    },
+  });
+  const positive = {
+    fieldId: AIO_GENERATE_POSITIVE_FIELD_ID,
+    location: { name: "positive_prompt" },
+  };
+  const envelope = JSON.stringify({
+    version: 1,
+    schema: "helto.aio-image-generate.v2",
+    encrypted: true,
+    algorithm: "AES-256-GCM",
+    keyId: "synthetic-key",
+    nonce: "synthetic-nonce",
+    ciphertext: "synthetic-ciphertext",
+  });
+
+  adapter.onPrivacySessionChange({ state: "unlocked" });
+  adapter.reconcileNode(node);
+  assert.deepEqual(node.widgets[1].inputEl.eventTypes, [
+    "pointerenter",
+    "pointerleave",
+    "focus",
+    "blur",
+  ]);
+  adapter.apply(node, { value: "revealed positive" }, positive);
+  adapter.writeProtected(node, envelope, positive);
+
+  node.widgets[1].value = "edited positive";
+  node.widgets[1].callback(node.widgets[1].value);
+
+  assert.equal(node.widgets[1].value, envelope);
+  assert.deepEqual(adapter.normalize(node, positive), { value: "edited positive" });
   assert.deepEqual(edits, [[node, AIO_GENERATE_POSITIVE_FIELD_ID]]);
 });
 
