@@ -139,6 +139,62 @@ test("inactive suite bootstrap masks prompt DOM fields before managed activation
 });
 
 
+test("inactive suite bootstrap leaves explicitly public prompts visible", () => {
+  const extensions = [];
+  const app = {
+    registerExtension(extension) { extensions.push(extension); },
+  };
+  installAioPromptPrivacyBootstrap(app);
+
+  const node = generateNode(false);
+  for (const target of node.widgets.filter((item) => item.name.endsWith("_prompt"))) {
+    target.inputEl = textElement(target.value);
+  }
+  extensions[0].nodeCreated(node);
+
+  for (const target of node.widgets.filter((item) => item.name.endsWith("_prompt"))) {
+    assert.equal(target.inputEl.classList.contains("aio-managed-private-field"), false);
+    assert.equal(target.inputEl.classList.contains("aio-managed-privacy-unavailable"), false);
+    assert.equal(target.inputEl["data-aio-private"], "false");
+    assert.equal(target.inputEl["data-aio-privacy-unavailable"], "false");
+  }
+  assert.equal(node.__aioManagedPrivacyUnavailable, true);
+  assert.equal(node.__aioManagedPrivacyMasked, false);
+});
+
+
+test("inactive suite bootstrap updates presentation when privacy mode changes", () => {
+  const extensions = [];
+  const app = {
+    registerExtension(extension) { extensions.push(extension); },
+  };
+  installAioPromptPrivacyBootstrap(app);
+
+  const node = generateNode(true);
+  for (const target of node.widgets.filter((item) => item.name.endsWith("_prompt"))) {
+    target.inputEl = textElement(target.value);
+  }
+  extensions[0].nodeCreated(node);
+
+  const privacyMode = node.widgets.find((item) => item.name === "privacy_mode");
+  privacyMode.value = false;
+  privacyMode.callback(false);
+  for (const target of node.widgets.filter((item) => item.name.endsWith("_prompt"))) {
+    assert.equal(target.inputEl.classList.contains("aio-managed-private-field"), false);
+    assert.equal(target.inputEl.classList.contains("aio-managed-privacy-unavailable"), false);
+  }
+  assert.equal(node.__aioManagedPrivacyMasked, false);
+
+  privacyMode.value = true;
+  privacyMode.callback(true);
+  for (const target of node.widgets.filter((item) => item.name.endsWith("_prompt"))) {
+    assert.equal(target.inputEl.classList.contains("aio-managed-private-field"), true);
+    assert.equal(target.inputEl.classList.contains("aio-managed-privacy-unavailable"), true);
+  }
+  assert.equal(node.__aioManagedPrivacyMasked, true);
+});
+
+
 test("restored node privacy bootstrap reconciles after its DOM widgets mount", () => {
   const extensions = [];
   const scheduledFrames = [];

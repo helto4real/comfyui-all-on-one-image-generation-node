@@ -26,6 +26,7 @@ const PRIVATE_FIELD_CLASS = "aio-managed-private-field";
 const PRIVACY_UNAVAILABLE_CLASS = "aio-managed-privacy-unavailable";
 const REVEALED_FIELD_CLASS = "aio-managed-private-field-revealed";
 const REVEAL_BEHAVIOR_BOUND = "__aioManagedPromptRevealBehaviorBound";
+const BOOTSTRAP_MODE_BOUND = "__aioManagedPromptBootstrapModeBound";
 const MASKED_PROMPT_VALUE = "••••••••";
 const PRESENTATION_RECONCILE_EPOCH = "__aioManagedPrivacyPresentationEpoch";
 const PRESENTATION_RECONCILE_FRAMES = 240;
@@ -227,9 +228,7 @@ function patchPromptDraw(node, target) {
   const original = target.draw;
   if (typeof original === "function") {
     target.draw = function aioManagedPromptDraw() {
-      if (!node.__aioManagedPrivacyUnavailable && !privatePresentation(node)) {
-        return original.apply(this, arguments);
-      }
+      if (!node.__aioManagedPrivacyMasked) return original.apply(this, arguments);
       const value = this.value;
       this.value = MASKED_PROMPT_VALUE;
       try {
@@ -258,7 +257,8 @@ function installPromptRevealBehavior(element) {
 }
 
 function applyPrivacyPresentation(node, unavailable) {
-  const masked = unavailable || privatePresentation(node);
+  const masked = privatePresentation(node);
+  const fieldUnavailable = unavailable && masked;
   let domReady = true;
   for (const fieldId of nodeFieldIds(node)) {
     const target = widget(node, { fieldId });
@@ -269,10 +269,13 @@ function applyPrivacyPresentation(node, unavailable) {
       installPromptRevealBehavior(element);
       element.classList?.add(PROMPT_FIELD_CLASS);
       element.classList?.toggle(PRIVATE_FIELD_CLASS, masked);
-      element.classList?.toggle(PRIVACY_UNAVAILABLE_CLASS, unavailable);
+      element.classList?.toggle(PRIVACY_UNAVAILABLE_CLASS, fieldUnavailable);
       if (!masked) element.classList?.remove(REVEALED_FIELD_CLASS);
       element.setAttribute?.("data-aio-private", masked ? "true" : "false");
-      element.setAttribute?.("data-aio-privacy-unavailable", unavailable ? "true" : "false");
+      element.setAttribute?.(
+        "data-aio-privacy-unavailable",
+        fieldUnavailable ? "true" : "false",
+      );
     }
   }
   node.__aioManagedPrivacyUnavailable = unavailable;
@@ -295,6 +298,22 @@ function schedulePrivacyPresentation(node, unavailable) {
   reconcile();
 }
 
+function bindBootstrapModeChanges(node) {
+  if (aioManagedNodeType(node) !== GENERATE_NODE) return;
+  const target = node.widgets?.find((item) => item?.name === "privacy_mode");
+  if (!target || target[BOOTSTRAP_MODE_BOUND]) return;
+  const original = target.callback;
+  target.callback = function aioManagedBootstrapModeChanged() {
+    const result = original?.apply(this, arguments);
+    reconcileAioPromptPrivacyUnavailable(node);
+    for (const candidate of connectedKreaNodes(node)) {
+      reconcileAioPromptPrivacyUnavailable(candidate);
+    }
+    return result;
+  };
+  target[BOOTSTRAP_MODE_BOUND] = true;
+}
+
 function updatePrivacyPresentation(node) {
   schedulePrivacyPresentation(node, false);
 }
@@ -305,6 +324,7 @@ export function reconcileAioPromptPrivacyUnavailable(node) {
   }
   installPrivacyStyles();
   hideImplementationWidgets(node);
+  bindBootstrapModeChanges(node);
   schedulePrivacyPresentation(node, true);
   return true;
 }
