@@ -26,6 +26,9 @@ const PRIVATE_FIELD_CLASS = "aio-managed-private-field";
 const PRIVACY_UNAVAILABLE_CLASS = "aio-managed-privacy-unavailable";
 const REVEALED_FIELD_CLASS = "aio-managed-private-field-revealed";
 const REVEAL_BEHAVIOR_BOUND = "__aioManagedPromptRevealBehaviorBound";
+const REVEAL_EDITING_ACTIVE = "__aioManagedPromptEditingActive";
+const REVEAL_POINTER_ACTIVE = "__aioManagedPromptPointerActive";
+const REVEAL_POINTER_CLEANUP = "__aioManagedPromptPointerCleanup";
 const BOOTSTRAP_MODE_BOUND = "__aioManagedPromptBootstrapModeBound";
 const MASKED_PROMPT_VALUE = "••••••••";
 const PRESENTATION_RECONCILE_EPOCH = "__aioManagedPrivacyPresentationEpoch";
@@ -244,15 +247,53 @@ function patchPromptDraw(node, target) {
 function installPromptRevealBehavior(element) {
   if (!element || element[REVEAL_BEHAVIOR_BOUND]) return;
   const reveal = () => element.classList?.add(REVEALED_FIELD_CLASS);
+  const focused = () => {
+    const ownerDocument = element.ownerDocument
+      ?? (typeof document === "undefined" ? null : document);
+    return ownerDocument?.activeElement === element || element.matches?.(":focus");
+  };
   const conceal = () => {
-    const focused = typeof document !== "undefined" && document.activeElement === element;
-    if (focused || element.matches?.(":hover")) return;
+    if (element[REVEAL_EDITING_ACTIVE]
+        || element[REVEAL_POINTER_ACTIVE]
+        || focused()
+        || element.matches?.(":hover")) return;
     element.classList?.remove(REVEALED_FIELD_CLASS);
   };
+  const finishPointerSelection = () => {
+    element[REVEAL_POINTER_CLEANUP]?.();
+    element[REVEAL_POINTER_CLEANUP] = null;
+    element[REVEAL_POINTER_ACTIVE] = false;
+    if (!focused()) element[REVEAL_EDITING_ACTIVE] = false;
+    conceal();
+  };
+  const beginPointerSelection = () => {
+    element[REVEAL_EDITING_ACTIVE] = true;
+    element[REVEAL_POINTER_ACTIVE] = true;
+    reveal();
+    element[REVEAL_POINTER_CLEANUP]?.();
+    const ownerDocument = element.ownerDocument;
+    if (!ownerDocument?.addEventListener || !ownerDocument?.removeEventListener) return;
+    const finish = () => finishPointerSelection();
+    ownerDocument.addEventListener("pointerup", finish, true);
+    ownerDocument.addEventListener("pointercancel", finish, true);
+    element[REVEAL_POINTER_CLEANUP] = () => {
+      ownerDocument.removeEventListener("pointerup", finish, true);
+      ownerDocument.removeEventListener("pointercancel", finish, true);
+    };
+  };
   element.addEventListener?.("pointerenter", reveal);
-  element.addEventListener?.("focusin", reveal);
+  element.addEventListener?.("pointerdown", beginPointerSelection);
+  element.addEventListener?.("pointerup", finishPointerSelection);
+  element.addEventListener?.("pointercancel", finishPointerSelection);
+  element.addEventListener?.("focusin", () => {
+    element[REVEAL_EDITING_ACTIVE] = true;
+    reveal();
+  });
   element.addEventListener?.("pointerleave", conceal);
-  element.addEventListener?.("focusout", conceal);
+  element.addEventListener?.("focusout", () => {
+    element[REVEAL_EDITING_ACTIVE] = false;
+    conceal();
+  });
   element[REVEAL_BEHAVIOR_BOUND] = true;
 }
 

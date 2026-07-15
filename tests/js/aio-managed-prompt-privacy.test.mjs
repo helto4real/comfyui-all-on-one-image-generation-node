@@ -85,8 +85,8 @@ function textElement(value = "") {
       if (!listeners.has(name)) listeners.set(name, []);
       listeners.get(name).push(callback);
     },
-    dispatch(name) {
-      for (const callback of listeners.get(name) || []) callback();
+    dispatch(name, event = {}) {
+      for (const callback of listeners.get(name) || []) callback(event);
     },
   };
 }
@@ -117,6 +117,11 @@ test("inactive suite bootstrap masks prompt DOM fields before managed activation
     target.inputEl.dispatch("focusin");
     assert.equal(target.inputEl.classList.contains("aio-managed-private-field-revealed"), true);
     target.inputEl.dispatch("focusout");
+    assert.equal(target.inputEl.classList.contains("aio-managed-private-field-revealed"), false);
+    target.inputEl.dispatch("pointerdown");
+    target.inputEl.dispatch("pointerleave");
+    assert.equal(target.inputEl.classList.contains("aio-managed-private-field-revealed"), true);
+    target.inputEl.dispatch("pointerup");
     assert.equal(target.inputEl.classList.contains("aio-managed-private-field-revealed"), false);
   }
   assert.equal(node.__aioManagedPrivacyUnavailable, true);
