@@ -1,1 +1,1 @@
-helto-privacy @ git+https://github.com/helto4real/helto-privacy.git@2e85c71f9aa22bd47ee6f13f2add83d111ab4591
+helto-privacy==0.4.0

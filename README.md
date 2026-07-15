@@ -10,7 +10,7 @@ Clone or copy this folder into `ComfyUI/custom_nodes`, install its Python depend
 python -m pip install -r ComfyUI/custom_nodes/comfyui-all-on-one-image-generation-node/requirements.txt
 ```
 
-The required package is `helto-privacy`, which supplies the shared privacy runtime and its cryptography dependency. ComfyUI Manager may install `requirements.txt` automatically; the command above is the explicit fallback. Both dependency declarations pin the same immutable shared candidate commit, and the manager metadata publishes `web/`, including the attested `aio_managed_privacy.js` browser entrypoint.
+The required package is `helto-privacy`, which supplies the shared privacy runtime and its cryptography dependency. ComfyUI Manager may install `requirements.txt` automatically; the command above is the explicit fallback. Both dependency declarations pin the same exact shared release, and the manager metadata publishes `web/`, including the attested `aio_managed_privacy.js` browser entrypoint.
 
 Privacy is activated as one attested `helto.aio-image-generation` profile. Prompt fields, the Ideogram builder, the private prompt library, run information, recovery, workflow serialization, and queue-time execution all use the shared runtime. The node pack contains no independent privacy codec or token-authenticated privacy routes.
 

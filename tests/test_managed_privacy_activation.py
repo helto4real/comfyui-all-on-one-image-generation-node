@@ -14,11 +14,7 @@ import helto_privacy.runtime as runtime
 from services import managed_prompt_privacy as managed
 
 
-DECLARED_SHARED_PRIVACY_REVISION = "2e85c71f9aa22bd47ee6f13f2add83d111ab4591"
-DECLARED_SHARED_PRIVACY_REQUIREMENT = (
-    "helto-privacy @ git+https://github.com/helto4real/"
-    f"helto-privacy.git@{DECLARED_SHARED_PRIVACY_REVISION}"
-)
+DECLARED_SHARED_PRIVACY_REQUIREMENT = "helto-privacy==0.4.0"
 
 
 def test_production_adapter_builder_binds_the_exact_profile_set(tmp_path):
@@ -129,7 +125,7 @@ def test_distribution_metadata_is_aligned_and_packages_browser_entrypoint():
     }
     assert all(
         marker not in DECLARED_SHARED_PRIVACY_REQUIREMENT
-        for marker in ("file:", "/home/", "@main", "@master")
+        for marker in ("file:", "/home/", "@main", "@master", "git+")
     )
     assert (root / "web/js/aio_managed_privacy.js").is_file()
     assert 'import "./aio_managed_privacy.js"' in (
