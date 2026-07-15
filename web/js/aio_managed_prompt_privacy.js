@@ -29,6 +29,7 @@ const REVEAL_BEHAVIOR_BOUND = "__aioManagedPromptRevealBehaviorBound";
 const REVEAL_EDITING_ACTIVE = "__aioManagedPromptEditingActive";
 const REVEAL_POINTER_ACTIVE = "__aioManagedPromptPointerActive";
 const REVEAL_POINTER_CLEANUP = "__aioManagedPromptPointerCleanup";
+const REVEAL_DISMISS_CLEANUP = "__aioManagedPromptDismissCleanup";
 const BOOTSTRAP_MODE_BOUND = "__aioManagedPromptBootstrapModeBound";
 const MASKED_PROMPT_VALUE = "••••••••";
 const PRESENTATION_RECONCILE_EPOCH = "__aioManagedPrivacyPresentationEpoch";
@@ -252,6 +253,9 @@ function installPromptRevealBehavior(element) {
       ?? (typeof document === "undefined" ? null : document);
     return ownerDocument?.activeElement === element || element.matches?.(":focus");
   };
+  const hasSelection = () => Number.isInteger(element.selectionStart)
+    && Number.isInteger(element.selectionEnd)
+    && element.selectionStart !== element.selectionEnd;
   const conceal = () => {
     if (element[REVEAL_EDITING_ACTIVE]
         || element[REVEAL_POINTER_ACTIVE]
@@ -259,14 +263,47 @@ function installPromptRevealBehavior(element) {
         || element.matches?.(":hover")) return;
     element.classList?.remove(REVEALED_FIELD_CLASS);
   };
+  const clearOutsideDismiss = () => {
+    element[REVEAL_DISMISS_CLEANUP]?.();
+    element[REVEAL_DISMISS_CLEANUP] = null;
+  };
+  const bindOutsideDismiss = () => {
+    clearOutsideDismiss();
+    const ownerDocument = element.ownerDocument;
+    if (!ownerDocument?.addEventListener || !ownerDocument?.removeEventListener) return;
+    const dismiss = (event) => {
+      if (event.target === element || element.contains?.(event.target)) return;
+      clearOutsideDismiss();
+      element[REVEAL_EDITING_ACTIVE] = false;
+      element[REVEAL_POINTER_ACTIVE] = false;
+      element.classList?.remove(REVEALED_FIELD_CLASS);
+    };
+    ownerDocument.addEventListener("pointerdown", dismiss, true);
+    element[REVEAL_DISMISS_CLEANUP] = () => {
+      ownerDocument.removeEventListener("pointerdown", dismiss, true);
+    };
+  };
   const finishPointerSelection = () => {
+    if (!element[REVEAL_POINTER_ACTIVE]) return;
     element[REVEAL_POINTER_CLEANUP]?.();
     element[REVEAL_POINTER_CLEANUP] = null;
     element[REVEAL_POINTER_ACTIVE] = false;
-    if (!focused()) element[REVEAL_EDITING_ACTIVE] = false;
-    conceal();
+    const finalize = () => {
+      if (element[REVEAL_POINTER_ACTIVE]) return;
+      if (hasSelection()) {
+        element[REVEAL_EDITING_ACTIVE] = true;
+        reveal();
+        bindOutsideDismiss();
+        return;
+      }
+      if (!focused()) element[REVEAL_EDITING_ACTIVE] = false;
+      conceal();
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(finalize);
+    else finalize();
   };
   const beginPointerSelection = () => {
+    clearOutsideDismiss();
     element[REVEAL_EDITING_ACTIVE] = true;
     element[REVEAL_POINTER_ACTIVE] = true;
     reveal();
@@ -291,6 +328,7 @@ function installPromptRevealBehavior(element) {
   });
   element.addEventListener?.("pointerleave", conceal);
   element.addEventListener?.("focusout", () => {
+    clearOutsideDismiss();
     element[REVEAL_EDITING_ACTIVE] = false;
     conceal();
   });
