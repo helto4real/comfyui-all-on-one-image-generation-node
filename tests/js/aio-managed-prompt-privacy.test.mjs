@@ -71,11 +71,9 @@ function serializedNode(node) {
 
 function textElement(value = "") {
   const classes = new Set();
-  const listeners = new Map();
   return {
     value,
-    selectionStart: 0,
-    selectionEnd: 0,
+    eventTypes: [],
     classList: {
       add: (...names) => names.forEach((name) => classes.add(name)),
       remove: (...names) => names.forEach((name) => classes.delete(name)),
@@ -83,13 +81,7 @@ function textElement(value = "") {
       contains: (name) => classes.has(name),
     },
     setAttribute(name, item) { this[name] = item; },
-    addEventListener(name, callback) {
-      if (!listeners.has(name)) listeners.set(name, []);
-      listeners.get(name).push(callback);
-    },
-    dispatch(name, event = {}) {
-      for (const callback of listeners.get(name) || []) callback(event);
-    },
+    addEventListener(name) { this.eventTypes.push(name); },
   };
 }
 
@@ -112,22 +104,7 @@ test("inactive suite bootstrap masks prompt DOM fields before managed activation
     assert.equal(target.inputEl.classList.contains("aio-managed-private-field"), true);
     assert.equal(target.inputEl.classList.contains("aio-managed-privacy-unavailable"), true);
     assert.equal(target.inputEl["data-aio-privacy-unavailable"], "true");
-    target.inputEl.dispatch("pointerenter");
-    assert.equal(target.inputEl.classList.contains("aio-managed-private-field-revealed"), true);
-    target.inputEl.dispatch("pointerleave");
-    assert.equal(target.inputEl.classList.contains("aio-managed-private-field-revealed"), false);
-    target.inputEl.dispatch("focusin");
-    assert.equal(target.inputEl.classList.contains("aio-managed-private-field-revealed"), true);
-    target.inputEl.dispatch("focusout");
-    assert.equal(target.inputEl.classList.contains("aio-managed-private-field-revealed"), false);
-    target.inputEl.dispatch("pointerdown");
-    target.inputEl.selectionEnd = 4;
-    target.inputEl.dispatch("pointerleave");
-    assert.equal(target.inputEl.classList.contains("aio-managed-private-field-revealed"), true);
-    target.inputEl.dispatch("pointerup");
-    assert.equal(target.inputEl.classList.contains("aio-managed-private-field-revealed"), true);
-    target.inputEl.dispatch("focusout");
-    assert.equal(target.inputEl.classList.contains("aio-managed-private-field-revealed"), false);
+    assert.deepEqual(target.inputEl.eventTypes, []);
   }
   assert.equal(node.__aioManagedPrivacyUnavailable, true);
   assert.equal(node.__aioManagedPrivacyMasked, true);
@@ -202,52 +179,6 @@ test("inactive suite bootstrap updates presentation when privacy mode changes", 
     assert.equal(target.inputEl.classList.contains("aio-managed-privacy-unavailable"), true);
   }
   assert.equal(node.__aioManagedPrivacyMasked, true);
-});
-
-
-test("private prompt selection remains revealed after pointer release", () => {
-  const extensions = [];
-  const scheduledFrames = [];
-  const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
-  globalThis.requestAnimationFrame = (callback) => {
-    scheduledFrames.push(callback);
-    return scheduledFrames.length;
-  };
-
-  try {
-    const app = {
-      registerExtension(extension) { extensions.push(extension); },
-    };
-    installAioPromptPrivacyBootstrap(app);
-
-    const node = generateNode(true);
-    for (const target of node.widgets.filter((item) => item.name.endsWith("_prompt"))) {
-      target.inputEl = textElement(target.value);
-    }
-    extensions[0].nodeCreated(node);
-
-    const prompt = node.widgets.find((item) => item.name === "positive_prompt").inputEl;
-    prompt.dispatch("pointerdown");
-    prompt.selectionStart = 0;
-    prompt.selectionEnd = 8;
-    prompt.dispatch("pointerleave");
-    prompt.dispatch("pointerup");
-
-    assert.equal(scheduledFrames.length, 1);
-    scheduledFrames.shift()();
-    assert.equal(prompt.selectionStart, 0);
-    assert.equal(prompt.selectionEnd, 8);
-    assert.equal(prompt.classList.contains("aio-managed-private-field-revealed"), true);
-
-    prompt.dispatch("focusout");
-    assert.equal(prompt.classList.contains("aio-managed-private-field-revealed"), false);
-  } finally {
-    if (originalRequestAnimationFrame === undefined) {
-      delete globalThis.requestAnimationFrame;
-    } else {
-      globalThis.requestAnimationFrame = originalRequestAnimationFrame;
-    }
-  }
 });
 
 

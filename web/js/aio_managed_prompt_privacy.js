@@ -24,12 +24,6 @@ const PRIVACY_STYLE_ID = "aio-managed-prompt-privacy-style";
 const PROMPT_FIELD_CLASS = "aio-managed-prompt-field";
 const PRIVATE_FIELD_CLASS = "aio-managed-private-field";
 const PRIVACY_UNAVAILABLE_CLASS = "aio-managed-privacy-unavailable";
-const REVEALED_FIELD_CLASS = "aio-managed-private-field-revealed";
-const REVEAL_BEHAVIOR_BOUND = "__aioManagedPromptRevealBehaviorBound";
-const REVEAL_EDITING_ACTIVE = "__aioManagedPromptEditingActive";
-const REVEAL_POINTER_ACTIVE = "__aioManagedPromptPointerActive";
-const REVEAL_POINTER_CLEANUP = "__aioManagedPromptPointerCleanup";
-const REVEAL_DISMISS_CLEANUP = "__aioManagedPromptDismissCleanup";
 const BOOTSTRAP_MODE_BOUND = "__aioManagedPromptBootstrapModeBound";
 const MASKED_PROMPT_VALUE = "••••••••";
 const PRESENTATION_RECONCILE_EPOCH = "__aioManagedPrivacyPresentationEpoch";
@@ -171,10 +165,7 @@ function installPrivacyStyles() {
       color: transparent !important;
       -webkit-text-fill-color: transparent !important;
     }
-    .${PRIVATE_FIELD_CLASS}:hover,
-    .${PRIVATE_FIELD_CLASS}:focus,
-    .${PRIVATE_FIELD_CLASS}:focus-visible,
-    .${REVEALED_FIELD_CLASS} {
+    .${PRIVATE_FIELD_CLASS}:hover {
       background: var(--helto-surface-2) !important;
       border-color: var(--helto-border-strong) !important;
       color: var(--helto-text, #cdd6f4) !important;
@@ -187,10 +178,7 @@ function installPrivacyStyles() {
       caret-color: transparent !important;
       text-shadow: none !important;
     }
-    .${PRIVACY_UNAVAILABLE_CLASS}:hover,
-    .${PRIVACY_UNAVAILABLE_CLASS}:focus,
-    .${PRIVACY_UNAVAILABLE_CLASS}:focus-visible,
-    .${PRIVACY_UNAVAILABLE_CLASS}.${REVEALED_FIELD_CLASS} {
+    .${PRIVACY_UNAVAILABLE_CLASS}:hover {
       color: var(--helto-text, #cdd6f4) !important;
       -webkit-text-fill-color: currentColor !important;
       caret-color: auto !important;
@@ -245,96 +233,6 @@ function patchPromptDraw(node, target) {
   target.__aioManagedPrivacyDrawPatched = true;
 }
 
-function installPromptRevealBehavior(element) {
-  if (!element || element[REVEAL_BEHAVIOR_BOUND]) return;
-  const reveal = () => element.classList?.add(REVEALED_FIELD_CLASS);
-  const focused = () => {
-    const ownerDocument = element.ownerDocument
-      ?? (typeof document === "undefined" ? null : document);
-    return ownerDocument?.activeElement === element || element.matches?.(":focus");
-  };
-  const hasSelection = () => Number.isInteger(element.selectionStart)
-    && Number.isInteger(element.selectionEnd)
-    && element.selectionStart !== element.selectionEnd;
-  const conceal = () => {
-    if (element[REVEAL_EDITING_ACTIVE]
-        || element[REVEAL_POINTER_ACTIVE]
-        || focused()
-        || element.matches?.(":hover")) return;
-    element.classList?.remove(REVEALED_FIELD_CLASS);
-  };
-  const clearOutsideDismiss = () => {
-    element[REVEAL_DISMISS_CLEANUP]?.();
-    element[REVEAL_DISMISS_CLEANUP] = null;
-  };
-  const bindOutsideDismiss = () => {
-    clearOutsideDismiss();
-    const ownerDocument = element.ownerDocument;
-    if (!ownerDocument?.addEventListener || !ownerDocument?.removeEventListener) return;
-    const dismiss = (event) => {
-      if (event.target === element || element.contains?.(event.target)) return;
-      clearOutsideDismiss();
-      element[REVEAL_EDITING_ACTIVE] = false;
-      element[REVEAL_POINTER_ACTIVE] = false;
-      element.classList?.remove(REVEALED_FIELD_CLASS);
-    };
-    ownerDocument.addEventListener("pointerdown", dismiss, true);
-    element[REVEAL_DISMISS_CLEANUP] = () => {
-      ownerDocument.removeEventListener("pointerdown", dismiss, true);
-    };
-  };
-  const finishPointerSelection = () => {
-    if (!element[REVEAL_POINTER_ACTIVE]) return;
-    element[REVEAL_POINTER_CLEANUP]?.();
-    element[REVEAL_POINTER_CLEANUP] = null;
-    element[REVEAL_POINTER_ACTIVE] = false;
-    const finalize = () => {
-      if (element[REVEAL_POINTER_ACTIVE]) return;
-      if (hasSelection()) {
-        element[REVEAL_EDITING_ACTIVE] = true;
-        reveal();
-        bindOutsideDismiss();
-        return;
-      }
-      if (!focused()) element[REVEAL_EDITING_ACTIVE] = false;
-      conceal();
-    };
-    if (typeof requestAnimationFrame === "function") requestAnimationFrame(finalize);
-    else finalize();
-  };
-  const beginPointerSelection = () => {
-    clearOutsideDismiss();
-    element[REVEAL_EDITING_ACTIVE] = true;
-    element[REVEAL_POINTER_ACTIVE] = true;
-    reveal();
-    element[REVEAL_POINTER_CLEANUP]?.();
-    const ownerDocument = element.ownerDocument;
-    if (!ownerDocument?.addEventListener || !ownerDocument?.removeEventListener) return;
-    const finish = () => finishPointerSelection();
-    ownerDocument.addEventListener("pointerup", finish, true);
-    ownerDocument.addEventListener("pointercancel", finish, true);
-    element[REVEAL_POINTER_CLEANUP] = () => {
-      ownerDocument.removeEventListener("pointerup", finish, true);
-      ownerDocument.removeEventListener("pointercancel", finish, true);
-    };
-  };
-  element.addEventListener?.("pointerenter", reveal);
-  element.addEventListener?.("pointerdown", beginPointerSelection);
-  element.addEventListener?.("pointerup", finishPointerSelection);
-  element.addEventListener?.("pointercancel", finishPointerSelection);
-  element.addEventListener?.("focusin", () => {
-    element[REVEAL_EDITING_ACTIVE] = true;
-    reveal();
-  });
-  element.addEventListener?.("pointerleave", conceal);
-  element.addEventListener?.("focusout", () => {
-    clearOutsideDismiss();
-    element[REVEAL_EDITING_ACTIVE] = false;
-    conceal();
-  });
-  element[REVEAL_BEHAVIOR_BOUND] = true;
-}
-
 function applyPrivacyPresentation(node, unavailable) {
   const masked = privatePresentation(node);
   const fieldUnavailable = unavailable && masked;
@@ -345,11 +243,9 @@ function applyPrivacyPresentation(node, unavailable) {
     const elements = widgetTextElements(target);
     if (elements.length === 0) domReady = false;
     for (const element of elements) {
-      installPromptRevealBehavior(element);
       element.classList?.add(PROMPT_FIELD_CLASS);
       element.classList?.toggle(PRIVATE_FIELD_CLASS, masked);
       element.classList?.toggle(PRIVACY_UNAVAILABLE_CLASS, fieldUnavailable);
-      if (!masked) element.classList?.remove(REVEALED_FIELD_CLASS);
       element.setAttribute?.("data-aio-private", masked ? "true" : "false");
       element.setAttribute?.(
         "data-aio-privacy-unavailable",
