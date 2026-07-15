@@ -356,7 +356,10 @@ def test_aio_frontend_has_no_hover_based_privacy_authority():
     assert "onMouseLeave" not in source
     assert "onPrivacySessionChange(snapshot)" in managed
     assert 'locked = snapshot?.state !== "ready" && snapshot?.state !== "unlocked"' in managed
-    assert 'setDomText(target, locked ? "" : plaintext)' in managed
+    assert 'const presentation = locked ? "" : plaintext' in managed
+    assert "setDomText(node, target, presentation)" in managed
+    assert "protectedValues(node)[field.fieldId] !== protectedValue" in managed
+    assert "plaintextValues(node)[field.fieldId] !== plaintext" in managed
 
 
 def test_aio_fixed_seed_button_sets_control_back_to_fixed():

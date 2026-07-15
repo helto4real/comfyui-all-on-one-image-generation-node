@@ -28,6 +28,7 @@ const BOOTSTRAP_MODE_BOUND = "__aioManagedPromptBootstrapModeBound";
 const MASKED_PROMPT_VALUE = "••••••••";
 const PRESENTATION_RECONCILE_EPOCH = "__aioManagedPrivacyPresentationEpoch";
 const PRESENTATION_RECONCILE_FRAMES = 240;
+const EDIT_BINDING_RECONCILE_EPOCH = "__aioManagedPrivacyEditBindingEpoch";
 const BOOTSTRAPPED_APPS = new WeakSet();
 const IMPLEMENTATION_WIDGET_NAMES = Object.freeze([
   "privacy_mode_reference",
@@ -128,20 +129,50 @@ function normalize(value) {
   return result;
 }
 
-function setDomText(target, value) {
+function vueWidgetTextElements(node, target) {
+  if (typeof document === "undefined" || typeof document.querySelectorAll !== "function") {
+    return [];
+  }
+  const nodeId = String(node?.id ?? "");
+  if (!nodeId) return [];
+  const root = [...document.querySelectorAll("[data-node-id]")].find(
+    (candidate) => String(candidate?.dataset?.nodeId ?? "") === nodeId,
+  );
+  if (!root || typeof root.querySelectorAll !== "function") return [];
+  const name = String(target?.name || "");
+  const row = [...root.querySelectorAll('[data-testid="node-widget"]')].find(
+    (candidate) => String(candidate?.textContent || "").trim() === name,
+  );
+  if (!row || typeof row.querySelectorAll !== "function") return [];
+  return [...row.querySelectorAll(
+    'textarea, input:not([type="hidden"]), [contenteditable="true"]',
+  )];
+}
+
+function widgetTextElements(node, target) {
+  const elements = [
+    target?.inputEl,
+    target?.element,
+    target?.inputElement,
+    target?.textarea,
+    ...vueWidgetTextElements(node, target),
+  ].filter((element) => element && (
+    typeof element.value === "string" || element.isContentEditable
+  ));
+  return [...new Set(elements)];
+}
+
+function hasMountedTextElement(elements) {
+  return elements.some((element) => element.isConnected !== false);
+}
+
+function setDomText(node, target, value) {
   const text = normalize(value);
-  for (const element of [target.inputEl, target.element, target.inputElement, target.textarea]) {
+  for (const element of widgetTextElements(node, target)) {
     if (!element) continue;
     if ("value" in element) element.value = text;
     else if (element.isContentEditable) element.textContent = text;
   }
-}
-
-function widgetTextElements(target) {
-  return [target?.inputEl, target?.element, target?.inputElement, target?.textarea]
-    .filter((element) => element && (
-      typeof element.value === "string" || element.isContentEditable
-    ));
 }
 
 function installPrivacyStyles() {
@@ -220,7 +251,10 @@ function patchPromptDraw(node, target) {
   const original = target.draw;
   if (typeof original === "function") {
     target.draw = function aioManagedPromptDraw() {
-      if (!node.__aioManagedPrivacyMasked || widgetTextElements(target).length > 0) {
+      if (
+        !node.__aioManagedPrivacyMasked
+        || hasMountedTextElement(widgetTextElements(node, target))
+      ) {
         return original.apply(this, arguments);
       }
       const value = this.value;
@@ -242,8 +276,8 @@ function applyPrivacyPresentation(node, unavailable) {
   for (const fieldId of nodeFieldIds(node)) {
     const target = widget(node, { fieldId });
     patchPromptDraw(node, target);
-    const elements = widgetTextElements(target);
-    if (elements.length === 0) domReady = false;
+    const elements = widgetTextElements(node, target);
+    if (!hasMountedTextElement(elements)) domReady = false;
     for (const element of elements) {
       element.classList?.add(PROMPT_FIELD_CLASS);
       element.classList?.toggle(PRIVATE_FIELD_CLASS, masked);
@@ -428,7 +462,7 @@ export function createAioPromptWorkflowBrowserAdapter({
         target.value = protectedValue;
       });
     }
-    setDomText(target, plaintext);
+    setDomText(node, target, plaintext);
     if (typeof workflowHandle?.markEdited !== "function") fail();
     return workflowHandle.markEdited(node, fieldId);
   }
@@ -447,7 +481,7 @@ export function createAioPromptWorkflowBrowserAdapter({
       };
       target.__aioManagedPrivacyEditBindings.add(fieldId);
     }
-    for (const element of widgetTextElements(target)) {
+    for (const element of widgetTextElements(node, target)) {
       element.__aioManagedPrivacyEditBindings ||= new Set();
       if (element.__aioManagedPrivacyEditBindings.has(fieldId)) continue;
       const onEdited = () => {
@@ -464,6 +498,29 @@ export function createAioPromptWorkflowBrowserAdapter({
     }
   }
 
+  function scheduleEditBindings(node) {
+    const epoch = (Number(node[EDIT_BINDING_RECONCILE_EPOCH]) || 0) + 1;
+    node[EDIT_BINDING_RECONCILE_EPOCH] = epoch;
+    let remainingFrames = PRESENTATION_RECONCILE_FRAMES;
+    const reconcile = () => {
+      if (node[EDIT_BINDING_RECONCILE_EPOCH] !== epoch) return;
+      const fieldIds = nodeFieldIds(node);
+      for (const fieldId of fieldIds) bindEdits(node, fieldId);
+      const ready = fieldIds.every((fieldId) => {
+        const target = widget(node, { fieldId });
+        return hasMountedTextElement(widgetTextElements(node, target));
+      });
+      if (
+        ready
+        || remainingFrames <= 0
+        || typeof requestAnimationFrame !== "function"
+      ) return;
+      remainingFrames -= 1;
+      requestAnimationFrame(reconcile);
+    };
+    reconcile();
+  }
+
   function applyValue(node, value, context) {
     const field = facts(context);
     const target = widget(node, context);
@@ -474,7 +531,7 @@ export function createAioPromptWorkflowBrowserAdapter({
         target.value = plaintext;
       });
     }
-    setDomText(target, plaintext);
+    setDomText(node, target, plaintext);
     updatePrivacyPresentation(node);
   }
 
@@ -487,7 +544,7 @@ export function createAioPromptWorkflowBrowserAdapter({
         target.value = "";
       });
     }
-    setDomText(target, "");
+    setDomText(node, target, "");
     updatePrivacyPresentation(node);
   }
 
@@ -499,15 +556,13 @@ export function createAioPromptWorkflowBrowserAdapter({
     installPrivacyStyles();
     hideImplementationWidgets(node);
     bindModeChanges(node);
-    for (const [fieldId, field] of Object.entries(FIELD_FACTS)) {
-      if (field.nodeType === aioManagedNodeType(node)) bindEdits(node, fieldId);
-    }
+    scheduleEditBindings(node);
     updatePrivacyPresentation(node);
     if (!locked) return;
     for (const [fieldId, field] of Object.entries(FIELD_FACTS)) {
       if (field.nodeType !== aioManagedNodeType(node)) continue;
       plaintextValues(node)[fieldId] = "";
-      setDomText(widget(node, { fieldId }), "");
+      setDomText(node, widget(node, { fieldId }), "");
     }
     updatePrivacyPresentation(node);
   }
@@ -567,7 +622,22 @@ export function createAioPromptWorkflowBrowserAdapter({
       transition.withInternalMutation(() => {
         target.value = protectedValue;
       });
-      setDomText(target, locked ? "" : plaintext);
+      const presentation = locked ? "" : plaintext;
+      setDomText(node, target, presentation);
+      if (typeof requestAnimationFrame === "function") {
+        let remainingFrames = 3;
+        const reconcileVueValue = () => {
+          if (
+            protectedValues(node)[field.fieldId] !== protectedValue
+            || plaintextValues(node)[field.fieldId] !== plaintext
+          ) return;
+          setDomText(node, target, presentation);
+          if (remainingFrames <= 0) return;
+          remainingFrames -= 1;
+          requestAnimationFrame(reconcileVueValue);
+        };
+        requestAnimationFrame(reconcileVueValue);
+      }
       updatePrivacyPresentation(node);
     },
     writePublic(node, context) {
@@ -580,7 +650,7 @@ export function createAioPromptWorkflowBrowserAdapter({
       transition.withInternalMutation(() => {
         target.value = plaintext;
       });
-      setDomText(target, plaintext);
+      setDomText(node, target, plaintext);
       updatePrivacyPresentation(node);
       return plaintext;
     },

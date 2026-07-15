@@ -222,6 +222,57 @@ test("private DOM prompt redraw preserves its value and native selection", () =>
 });
 
 
+test("Vue Nodes 2.0 prompt DOM keeps live plaintext while widget storage stays protected", () => {
+  const originalDocument = globalThis.document;
+  const node = generateNode(true);
+  node.id = 7;
+  const prompt = node.widgets.find((item) => item.name === "positive_prompt");
+  const detached = textElement(prompt.value);
+  detached.isConnected = false;
+  prompt.element = detached;
+  const rendered = textElement("");
+  rendered.isConnected = true;
+  const row = {
+    textContent: "positive_prompt",
+    querySelectorAll: () => [rendered],
+  };
+  const root = {
+    dataset: { nodeId: "7" },
+    querySelectorAll: (selector) => selector === '[data-testid="node-widget"]' ? [row] : [],
+  };
+  globalThis.document = {
+    getElementById: () => ({}),
+    querySelectorAll: (selector) => selector === "[data-node-id]" ? [root] : [],
+  };
+
+  try {
+    const adapter = createAioPromptWorkflowBrowserAdapter({
+      workflowHandle: { markEdited() {} },
+    });
+    const field = {
+      fieldId: AIO_GENERATE_POSITIVE_FIELD_ID,
+      location: { name: "positive_prompt" },
+    };
+    const secret = "SYNTHETIC_VUE_PRIVATE_PROMPT";
+    const envelope = "SYNTHETIC_PROTECTED_ENVELOPE";
+    adapter.onPrivacySessionChange({ state: "unlocked" });
+    adapter.reconcileNode(node);
+    adapter.apply(node, { value: secret }, field);
+    adapter.writeProtected(node, envelope, field);
+
+    assert.equal(prompt.value, envelope);
+    assert.equal(rendered.value, secret);
+    assert.equal(detached.value, secret);
+    assert.equal(rendered.classList.contains("aio-managed-private-field"), true);
+    assert.equal(rendered["data-aio-private"], "true");
+    assert.deepEqual(rendered.eventTypes, ["input", "change"]);
+  } finally {
+    if (originalDocument === undefined) delete globalThis.document;
+    else globalThis.document = originalDocument;
+  }
+});
+
+
 test("private legacy canvas prompt redraw masks without retaining the mask", () => {
   const extensions = [];
   const app = {

@@ -147,7 +147,10 @@ def test_managed_adapters_bind_edits_and_fail_closed_when_locked():
     )
 
     assert "workflowHandle.markEdited(node, fieldId)" in prompt
-    assert 'setDomText(target, locked ? "" : plaintext)' in prompt
+    assert 'const presentation = locked ? "" : plaintext' in prompt
+    assert "setDomText(node, target, presentation)" in prompt
+    assert "protectedValues(node)[field.fieldId] !== protectedValue" in prompt
+    assert "plaintextValues(node)[field.fieldId] !== plaintext" in prompt
     assert "node.__aioManagedPrivacyLocked = locked" in prompt
     assert "writeWorkflowProjection(node, serializedNode, protectedValue, context)" in prompt
     assert "workflowHandle.markEdited(node, fieldId)" in builder
