@@ -24,7 +24,11 @@ const PRIVACY_STYLE_ID = "aio-managed-prompt-privacy-style";
 const PROMPT_FIELD_CLASS = "aio-managed-prompt-field";
 const PRIVATE_FIELD_CLASS = "aio-managed-private-field";
 const PRIVACY_UNAVAILABLE_CLASS = "aio-managed-privacy-unavailable";
+const REVEALED_FIELD_CLASS = "aio-managed-private-field-revealed";
+const REVEAL_BEHAVIOR_BOUND = "__aioManagedPromptRevealBehaviorBound";
 const MASKED_PROMPT_VALUE = "••••••••";
+const PRESENTATION_RECONCILE_EPOCH = "__aioManagedPrivacyPresentationEpoch";
+const PRESENTATION_RECONCILE_FRAMES = 240;
 const BOOTSTRAPPED_APPS = new WeakSet();
 const IMPLEMENTATION_WIDGET_NAMES = Object.freeze([
   "privacy_mode_reference",
@@ -164,21 +168,27 @@ function installPrivacyStyles() {
     }
     .${PRIVATE_FIELD_CLASS}:hover,
     .${PRIVATE_FIELD_CLASS}:focus,
-    .${PRIVATE_FIELD_CLASS}:focus-visible {
+    .${PRIVATE_FIELD_CLASS}:focus-visible,
+    .${REVEALED_FIELD_CLASS} {
       background: var(--helto-surface-2) !important;
       border-color: var(--helto-border-strong) !important;
-      color: inherit !important;
+      color: var(--helto-text, #cdd6f4) !important;
       -webkit-text-fill-color: currentColor !important;
       caret-color: auto !important;
     }
-    .${PRIVACY_UNAVAILABLE_CLASS},
-    .${PRIVACY_UNAVAILABLE_CLASS}:hover,
-    .${PRIVACY_UNAVAILABLE_CLASS}:focus,
-    .${PRIVACY_UNAVAILABLE_CLASS}:focus-visible {
+    .${PRIVACY_UNAVAILABLE_CLASS} {
       color: transparent !important;
       -webkit-text-fill-color: transparent !important;
       caret-color: transparent !important;
       text-shadow: none !important;
+    }
+    .${PRIVACY_UNAVAILABLE_CLASS}:hover,
+    .${PRIVACY_UNAVAILABLE_CLASS}:focus,
+    .${PRIVACY_UNAVAILABLE_CLASS}:focus-visible,
+    .${PRIVACY_UNAVAILABLE_CLASS}.${REVEALED_FIELD_CLASS} {
+      color: var(--helto-text, #cdd6f4) !important;
+      -webkit-text-fill-color: currentColor !important;
+      caret-color: auto !important;
     }
   `;
   document.head.appendChild(style);
@@ -217,7 +227,9 @@ function patchPromptDraw(node, target) {
   const original = target.draw;
   if (typeof original === "function") {
     target.draw = function aioManagedPromptDraw() {
-      if (!privatePresentation(node)) return original.apply(this, arguments);
+      if (!node.__aioManagedPrivacyUnavailable && !privatePresentation(node)) {
+        return original.apply(this, arguments);
+      }
       const value = this.value;
       this.value = MASKED_PROMPT_VALUE;
       try {
@@ -230,22 +242,61 @@ function patchPromptDraw(node, target) {
   target.__aioManagedPrivacyDrawPatched = true;
 }
 
-function updatePrivacyPresentation(node) {
-  const masked = privatePresentation(node);
+function installPromptRevealBehavior(element) {
+  if (!element || element[REVEAL_BEHAVIOR_BOUND]) return;
+  const reveal = () => element.classList?.add(REVEALED_FIELD_CLASS);
+  const conceal = () => {
+    const focused = typeof document !== "undefined" && document.activeElement === element;
+    if (focused || element.matches?.(":hover")) return;
+    element.classList?.remove(REVEALED_FIELD_CLASS);
+  };
+  element.addEventListener?.("pointerenter", reveal);
+  element.addEventListener?.("focusin", reveal);
+  element.addEventListener?.("pointerleave", conceal);
+  element.addEventListener?.("focusout", conceal);
+  element[REVEAL_BEHAVIOR_BOUND] = true;
+}
+
+function applyPrivacyPresentation(node, unavailable) {
+  const masked = unavailable || privatePresentation(node);
+  let domReady = true;
   for (const fieldId of nodeFieldIds(node)) {
     const target = widget(node, { fieldId });
     patchPromptDraw(node, target);
-    for (const element of widgetTextElements(target)) {
+    const elements = widgetTextElements(target);
+    if (elements.length === 0) domReady = false;
+    for (const element of elements) {
+      installPromptRevealBehavior(element);
       element.classList?.add(PROMPT_FIELD_CLASS);
       element.classList?.toggle(PRIVATE_FIELD_CLASS, masked);
-      element.classList?.toggle(PRIVACY_UNAVAILABLE_CLASS, false);
+      element.classList?.toggle(PRIVACY_UNAVAILABLE_CLASS, unavailable);
+      if (!masked) element.classList?.remove(REVEALED_FIELD_CLASS);
       element.setAttribute?.("data-aio-private", masked ? "true" : "false");
-      element.setAttribute?.("data-aio-privacy-unavailable", "false");
+      element.setAttribute?.("data-aio-privacy-unavailable", unavailable ? "true" : "false");
     }
   }
-  node.__aioManagedPrivacyUnavailable = false;
+  node.__aioManagedPrivacyUnavailable = unavailable;
   node.__aioManagedPrivacyMasked = masked;
   node.setDirtyCanvas?.(true, true);
+  return domReady;
+}
+
+function schedulePrivacyPresentation(node, unavailable) {
+  const epoch = (Number(node[PRESENTATION_RECONCILE_EPOCH]) || 0) + 1;
+  node[PRESENTATION_RECONCILE_EPOCH] = epoch;
+  let remainingFrames = PRESENTATION_RECONCILE_FRAMES;
+  const reconcile = () => {
+    if (node[PRESENTATION_RECONCILE_EPOCH] !== epoch) return;
+    if (applyPrivacyPresentation(node, unavailable)) return;
+    if (remainingFrames <= 0 || typeof requestAnimationFrame !== "function") return;
+    remainingFrames -= 1;
+    requestAnimationFrame(reconcile);
+  };
+  reconcile();
+}
+
+function updatePrivacyPresentation(node) {
+  schedulePrivacyPresentation(node, false);
 }
 
 export function reconcileAioPromptPrivacyUnavailable(node) {
@@ -254,18 +305,7 @@ export function reconcileAioPromptPrivacyUnavailable(node) {
   }
   installPrivacyStyles();
   hideImplementationWidgets(node);
-  for (const fieldId of nodeFieldIds(node)) {
-    const target = widget(node, { fieldId });
-    patchPromptDraw(node, target);
-    for (const element of widgetTextElements(target)) {
-      element.classList?.add(PROMPT_FIELD_CLASS, PRIVATE_FIELD_CLASS, PRIVACY_UNAVAILABLE_CLASS);
-      element.setAttribute?.("data-aio-private", "true");
-      element.setAttribute?.("data-aio-privacy-unavailable", "true");
-    }
-  }
-  node.__aioManagedPrivacyUnavailable = true;
-  node.__aioManagedPrivacyMasked = true;
-  node.setDirtyCanvas?.(true, true);
+  schedulePrivacyPresentation(node, true);
   return true;
 }
 
