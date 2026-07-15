@@ -23,7 +23,9 @@ const PLAINTEXT_VALUES = "__aioManagedPromptPlaintextValues";
 const PRIVACY_STYLE_ID = "aio-managed-prompt-privacy-style";
 const PROMPT_FIELD_CLASS = "aio-managed-prompt-field";
 const PRIVATE_FIELD_CLASS = "aio-managed-private-field";
+const PRIVACY_UNAVAILABLE_CLASS = "aio-managed-privacy-unavailable";
 const MASKED_PROMPT_VALUE = "••••••••";
+const BOOTSTRAPPED_APPS = new WeakSet();
 const IMPLEMENTATION_WIDGET_NAMES = Object.freeze([
   "privacy_mode_reference",
   "private_execution",
@@ -169,6 +171,15 @@ function installPrivacyStyles() {
       -webkit-text-fill-color: currentColor !important;
       caret-color: auto !important;
     }
+    .${PRIVACY_UNAVAILABLE_CLASS},
+    .${PRIVACY_UNAVAILABLE_CLASS}:hover,
+    .${PRIVACY_UNAVAILABLE_CLASS}:focus,
+    .${PRIVACY_UNAVAILABLE_CLASS}:focus-visible {
+      color: transparent !important;
+      -webkit-text-fill-color: transparent !important;
+      caret-color: transparent !important;
+      text-shadow: none !important;
+    }
   `;
   document.head.appendChild(style);
 }
@@ -227,11 +238,46 @@ function updatePrivacyPresentation(node) {
     for (const element of widgetTextElements(target)) {
       element.classList?.add(PROMPT_FIELD_CLASS);
       element.classList?.toggle(PRIVATE_FIELD_CLASS, masked);
+      element.classList?.toggle(PRIVACY_UNAVAILABLE_CLASS, false);
       element.setAttribute?.("data-aio-private", masked ? "true" : "false");
+      element.setAttribute?.("data-aio-privacy-unavailable", "false");
     }
   }
+  node.__aioManagedPrivacyUnavailable = false;
   node.__aioManagedPrivacyMasked = masked;
   node.setDirtyCanvas?.(true, true);
+}
+
+export function reconcileAioPromptPrivacyUnavailable(node) {
+  if (!Object.values(FIELD_FACTS).some((field) => field.nodeType === aioManagedNodeType(node))) {
+    return false;
+  }
+  installPrivacyStyles();
+  hideImplementationWidgets(node);
+  for (const fieldId of nodeFieldIds(node)) {
+    const target = widget(node, { fieldId });
+    patchPromptDraw(node, target);
+    for (const element of widgetTextElements(target)) {
+      element.classList?.add(PROMPT_FIELD_CLASS, PRIVATE_FIELD_CLASS, PRIVACY_UNAVAILABLE_CLASS);
+      element.setAttribute?.("data-aio-private", "true");
+      element.setAttribute?.("data-aio-privacy-unavailable", "true");
+    }
+  }
+  node.__aioManagedPrivacyUnavailable = true;
+  node.__aioManagedPrivacyMasked = true;
+  node.setDirtyCanvas?.(true, true);
+  return true;
+}
+
+export function installAioPromptPrivacyBootstrap(app) {
+  if (!app || typeof app.registerExtension !== "function") fail();
+  if (BOOTSTRAPPED_APPS.has(app)) return;
+  BOOTSTRAPPED_APPS.add(app);
+  app.registerExtension({
+    name: "helto.aio-image-generation.privacy-bootstrap",
+    nodeCreated: reconcileAioPromptPrivacyUnavailable,
+    loadedGraphNode: reconcileAioPromptPrivacyUnavailable,
+  });
 }
 
 function protectedValues(node) {

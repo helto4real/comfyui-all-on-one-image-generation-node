@@ -15,11 +15,13 @@ import {
 import {
   createAioPromptModeBrowserAdapter,
   createAioPromptWorkflowBrowserAdapter,
+  installAioPromptPrivacyBootstrap,
 } from "./aio_managed_prompt_privacy.js";
 
 export const AIO_PRIVACY_PROFILE_ID = "helto.aio-image-generation";
 export const AIO_PRIVACY_PROFILE_FINGERPRINT = "f63424f85dfa083277d43069d1a399f500f77e132f001a9355da20dab0f133a1";
 const activationGate = installPrivacyConnectionSerializationGate(app);
+installAioPromptPrivacyBootstrap(app);
 
 function requireActiveSuite(status) {
   const digest = String(status?.suiteManifestDigest || "");

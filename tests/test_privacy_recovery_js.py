@@ -58,7 +58,10 @@ def _activation_fixture(tmp_path: Path, status: dict[str, object]) -> Path:
     runtime_path = tmp_path / "runtime.mjs"
     activation_path = tmp_path / "activation.mjs"
     script_path = tmp_path / "test.mjs"
-    app_path.write_text("export const app = {};\n", encoding="utf-8")
+    app_path.write_text(
+        "export const app = { registerExtension() {} };\n",
+        encoding="utf-8",
+    )
     gate_path.write_text(
         textwrap.dedent(
             """

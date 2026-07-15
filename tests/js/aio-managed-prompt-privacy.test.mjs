@@ -7,6 +7,7 @@ import {
   AIO_KREA_INPAINT_FIELD_ID,
   createAioPromptModeBrowserAdapter,
   createAioPromptWorkflowBrowserAdapter,
+  installAioPromptPrivacyBootstrap,
 } from "../../web/js/aio_managed_prompt_privacy.js";
 import {
   AIO_BUILDER_LEGACY_WORKFLOW_STATE_KEY,
@@ -81,6 +82,45 @@ function textElement(value = "") {
     addEventListener() {},
   };
 }
+
+
+test("inactive suite bootstrap masks prompt DOM fields before managed activation", () => {
+  const extensions = [];
+  const app = {
+    registerExtension(extension) { extensions.push(extension); },
+  };
+  installAioPromptPrivacyBootstrap(app);
+  assert.equal(extensions.length, 1);
+
+  const node = generateNode(true);
+  for (const target of node.widgets.filter((item) => item.name.endsWith("_prompt"))) {
+    target.inputEl = textElement(target.value);
+  }
+  extensions[0].nodeCreated(node);
+
+  for (const target of node.widgets.filter((item) => item.name.endsWith("_prompt"))) {
+    assert.equal(target.inputEl.classList.contains("aio-managed-private-field"), true);
+    assert.equal(target.inputEl.classList.contains("aio-managed-privacy-unavailable"), true);
+    assert.equal(target.inputEl["data-aio-privacy-unavailable"], "true");
+  }
+  assert.equal(node.__aioManagedPrivacyUnavailable, true);
+  assert.equal(node.__aioManagedPrivacyMasked, true);
+
+  const managed = createAioPromptWorkflowBrowserAdapter({
+    workflowHandle: {
+      markEdited() {},
+      notifyModeChange: async () => {},
+    },
+  });
+  managed.onPrivacySessionChange({ state: "unlocked" });
+  managed.reconcileNode(node);
+  for (const target of node.widgets.filter((item) => item.name.endsWith("_prompt"))) {
+    assert.equal(target.inputEl.classList.contains("aio-managed-private-field"), true);
+    assert.equal(target.inputEl.classList.contains("aio-managed-privacy-unavailable"), false);
+    assert.equal(target.inputEl["data-aio-privacy-unavailable"], "false");
+  }
+  assert.equal(node.__aioManagedPrivacyUnavailable, false);
+});
 
 
 function callbackOnAssignmentWidget(name, initialValue) {
