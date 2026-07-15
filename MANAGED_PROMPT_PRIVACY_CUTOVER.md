@@ -33,9 +33,9 @@ the explicit legacy-removal ticket.
 
 ## Distribution gate
 
-The source checkout requires the exact `helto-privacy` candidate commit used
-by the test suite. `requirements.txt` and `pyproject.toml` name the same
-immutable source identity; neither declaration uses a local path or mutable
-branch. Publication remains a separate gated operation. `[tool.comfy]`
+The source checkout requires the exact `helto-privacy` candidate release used
+by the test suite. `requirements.txt` and `pyproject.toml` name the same exact
+version; neither declaration uses a local path, mutable branch, or compatible
+range. Publication remains a separate gated operation. `[tool.comfy]`
 publishes the `web/` tree containing the attested
 `aio_managed_privacy.js` entrypoint.
