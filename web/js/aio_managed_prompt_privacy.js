@@ -220,7 +220,9 @@ function patchPromptDraw(node, target) {
   const original = target.draw;
   if (typeof original === "function") {
     target.draw = function aioManagedPromptDraw() {
-      if (!node.__aioManagedPrivacyMasked) return original.apply(this, arguments);
+      if (!node.__aioManagedPrivacyMasked || widgetTextElements(target).length > 0) {
+        return original.apply(this, arguments);
+      }
       const value = this.value;
       this.value = MASKED_PROMPT_VALUE;
       try {

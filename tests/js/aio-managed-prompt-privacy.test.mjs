@@ -182,6 +182,68 @@ test("inactive suite bootstrap updates presentation when privacy mode changes", 
 });
 
 
+test("private DOM prompt redraw preserves its value and native selection", () => {
+  const extensions = [];
+  const app = {
+    registerExtension(extension) { extensions.push(extension); },
+  };
+  installAioPromptPrivacyBootstrap(app);
+
+  const node = generateNode(true);
+  const prompt = node.widgets.find((item) => item.name === "positive_prompt");
+  prompt.inputEl = textElement(prompt.value);
+  prompt.inputEl.selectionStart = 1;
+  prompt.inputEl.selectionEnd = 5;
+  let promptValue = prompt.value;
+  let valueWrites = 0;
+  Object.defineProperty(prompt, "value", {
+    configurable: true,
+    get() { return promptValue; },
+    set(value) {
+      promptValue = value;
+      valueWrites += 1;
+      prompt.inputEl.selectionStart = value.length;
+      prompt.inputEl.selectionEnd = value.length;
+    },
+  });
+  const drawnValues = [];
+  prompt.draw = function drawPrompt() {
+    drawnValues.push(this.value);
+    return "drawn";
+  };
+  extensions[0].nodeCreated(node);
+
+  assert.equal(prompt.draw(), "drawn");
+  assert.deepEqual(drawnValues, ["positive"]);
+  assert.equal(prompt.value, "positive");
+  assert.equal(valueWrites, 0);
+  assert.equal(prompt.inputEl.selectionStart, 1);
+  assert.equal(prompt.inputEl.selectionEnd, 5);
+});
+
+
+test("private legacy canvas prompt redraw masks without retaining the mask", () => {
+  const extensions = [];
+  const app = {
+    registerExtension(extension) { extensions.push(extension); },
+  };
+  installAioPromptPrivacyBootstrap(app);
+
+  const node = generateNode(true);
+  const prompt = node.widgets.find((item) => item.name === "positive_prompt");
+  const drawnValues = [];
+  prompt.draw = function drawPrompt() {
+    drawnValues.push(this.value);
+    return "drawn";
+  };
+  extensions[0].nodeCreated(node);
+
+  assert.equal(prompt.draw(), "drawn");
+  assert.deepEqual(drawnValues, ["••••••••"]);
+  assert.equal(prompt.value, "positive");
+});
+
+
 test("restored node privacy bootstrap reconciles after its DOM widgets mount", () => {
   const extensions = [];
   const scheduledFrames = [];
@@ -409,7 +471,7 @@ test("private Generate prompts auto-mask and managed transport widgets stay hidd
   }
 
   node.widgets[1].draw();
-  assert.deepEqual(drawValues, ["••••••••"]);
+  assert.deepEqual(drawValues, ["positive"]);
   assert.equal(node.widgets[1].value, "positive");
 });
 
