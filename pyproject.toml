@@ -1,11 +1,11 @@
 [project]
 name = "comfyui-all-on-one-image-generation-node"
-version = "0.1.4"
+version = "0.1.5"
 description = "Helto all-in-one ComfyUI image generation nodes with managed privacy."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "helto-privacy==0.4.3",
+    "helto-privacy==0.4.4",
 ]
 license = "GPL-3.0-only"
 

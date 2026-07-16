@@ -14,7 +14,7 @@ import helto_privacy.runtime as runtime
 from services import managed_prompt_privacy as managed
 
 
-DECLARED_SHARED_PRIVACY_REQUIREMENT = "helto-privacy==0.4.3"
+DECLARED_SHARED_PRIVACY_REQUIREMENT = "helto-privacy==0.4.4"
 
 
 def test_production_adapter_builder_binds_the_exact_profile_set(tmp_path):
@@ -112,7 +112,7 @@ def test_distribution_metadata_is_aligned_and_packages_browser_entrypoint():
     assert project["project"]["name"] == root.name
     assert project["project"]["dependencies"] == [DECLARED_SHARED_PRIVACY_REQUIREMENT]
     assert requirements == (DECLARED_SHARED_PRIVACY_REQUIREMENT,)
-    assert project["project"]["version"] == "0.1.4"
+    assert project["project"]["version"] == "0.1.5"
     assert project["project"]["readme"] == "README.md"
     assert project["project"]["urls"]["Repository"] == (
         "https://github.com/helto4real/comfyui-all-on-one-image-generation-node"
@@ -128,6 +128,9 @@ def test_distribution_metadata_is_aligned_and_packages_browser_entrypoint():
         for marker in ("file:", "/home/", "@main", "@master", "git+")
     )
     assert (root / "web/js/aio_managed_privacy.js").is_file()
+    managed_privacy = (root / "web/js/aio_managed_privacy.js").read_text(encoding="utf-8")
+    assert "await pack.readiness.waitUntilReady();" in managed_privacy
+    assert managed_privacy.index("await pack.readiness.waitUntilReady();") < managed_privacy.index("pack.authorization.requireReady();")
     assert 'import "./aio_managed_privacy.js"' in (
         root / "web/js/aio_image_generate.js"
     ).read_text(encoding="utf-8")

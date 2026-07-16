@@ -79,6 +79,7 @@ export const aioPrivacy = connect();
 
 export async function requireAioPrivacy() {
   const pack = await aioPrivacy;
+  await pack.readiness.waitUntilReady();
   pack.authorization.requireReady();
   return pack;
 }
