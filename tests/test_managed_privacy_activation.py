@@ -14,7 +14,7 @@ import helto_privacy.runtime as runtime
 from services import managed_prompt_privacy as managed
 
 
-DECLARED_SHARED_PRIVACY_REQUIREMENT = "helto-privacy==0.4.2"
+DECLARED_SHARED_PRIVACY_REQUIREMENT = "helto-privacy==0.4.3"
 
 
 def test_production_adapter_builder_binds_the_exact_profile_set(tmp_path):
@@ -112,7 +112,7 @@ def test_distribution_metadata_is_aligned_and_packages_browser_entrypoint():
     assert project["project"]["name"] == root.name
     assert project["project"]["dependencies"] == [DECLARED_SHARED_PRIVACY_REQUIREMENT]
     assert requirements == (DECLARED_SHARED_PRIVACY_REQUIREMENT,)
-    assert project["project"]["version"] == "0.1.3"
+    assert project["project"]["version"] == "0.1.4"
     assert project["project"]["readme"] == "README.md"
     assert project["project"]["urls"]["Repository"] == (
         "https://github.com/helto4real/comfyui-all-on-one-image-generation-node"
