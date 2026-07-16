@@ -10,6 +10,12 @@
 - Kept fresh package imports independent of Torch, GGUF, and ComfyUI server imports.
 - Corrected dependency installation guidance and aligned the combined distribution license with its GPL-3.0-derived prompt-builder code.
 
+## 0.1.1
+
+- Removed private prompt plaintext from idle legacy and Nodes 2.0 accessibility surfaces while retaining authorized hover and keyboard reveal.
+- Kept Nodes 2.0 prompt presentation separate from encrypted workflow storage so envelope JSON is never rendered as editable prompt text.
+- Preserved mouse text selection and live private edits across legacy DOM widget callback echoes and renderer switches.
+
 ## 0.1.0
 
 - Added classic ComfyUI node registration for AIO Image Generate.
