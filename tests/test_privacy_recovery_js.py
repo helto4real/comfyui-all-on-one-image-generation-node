@@ -41,7 +41,7 @@ def test_managed_activation_uses_attested_digest_routed_runtime():
     assert "installPrivacyConnectionSerializationGate(app)" in source
     assert "activationGate.markUnavailable()" in source
     assert "activationGate.coalesce()" in source
-    assert 'status?.suiteStatus !== "active"' in source
+    assert '["ready", "activation-required", "active"]' in source
     assert "/helto_privacy/ui/privacy_profile/${suiteManifestDigest}.js" in source
     assert "runtime.connectPrivacyPack" in source
     assert 'packId: AIO_PRIVACY_PROFILE_ID' in source

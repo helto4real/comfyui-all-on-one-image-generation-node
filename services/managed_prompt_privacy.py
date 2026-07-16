@@ -14,6 +14,7 @@ from helto_privacy import (
     AIO_V1_READER_ID,
     AdapterSlot,
     BoundPrivacyPack,
+    ConsumerSuiteDeclaration,
     FieldLocation,
     FieldLocationKind,
     ExternalTransitionPolicy,
@@ -34,6 +35,7 @@ from helto_privacy import (
     SubjectModeBinding,
     aio_v1_reader_unit,
     install,
+    register_consumer_suite_declaration,
     register_legacy_reader_units,
 )
 from helto_privacy.runtime import bound_privacy_pack
@@ -95,6 +97,7 @@ from .managed_mode_transition import (
 
 AIO_PRIVACY_PROFILE_ID = AIO_MANAGED_PRIVACY_PROFILE_ID
 AIO_PRIVACY_DISTRIBUTION = "comfyui-all-on-one-image-generation-node"
+AIO_SUITE_ID = "helto-suite-2026-07-16.2"
 AIO_CURRENT_PROMPT_SCHEMA = "helto.aio-image-generate.v2"
 AIO_PRIVACY_PROFILE_FINGERPRINT = (
     "f63424f85dfa083277d43069d1a399f500f77e132f001a9355da20dab0f133a1"
@@ -708,6 +711,9 @@ def install_aio_privacy(
         if set(adapters) != expected:
             raise RuntimeError("AIO privacy adapter binding is incomplete.")
         _PACK = install(profile, adapters)
+        register_consumer_suite_declaration(
+            ConsumerSuiteDeclaration(AIO_PRIVACY_DISTRIBUTION, AIO_SUITE_ID)
+        )
         _ADAPTERS = adapters
         return _PACK
 

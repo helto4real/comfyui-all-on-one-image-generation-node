@@ -23,9 +23,12 @@ export const AIO_PRIVACY_PROFILE_FINGERPRINT = "f63424f85dfa083277d43069d1a399f5
 const activationGate = installPrivacyConnectionSerializationGate(app);
 installAioPromptPrivacyBootstrap(app);
 
-function requireActiveSuite(status) {
+function requireConfiguredSuite(status) {
   const digest = String(status?.suiteManifestDigest || "");
-  if (status?.suiteStatus !== "active" || !/^[0-9a-f]{64}$/.test(digest)) {
+  if (
+    !["ready", "activation-required", "active"].includes(status?.suiteStatus)
+    || !/^[0-9a-f]{64}$/.test(digest)
+  ) {
     throw new Error("PRIVACY_SUITE_BLOCKED");
   }
   return digest;
@@ -40,7 +43,7 @@ async function connect() {
       credentials: "same-origin",
     });
     if (!response.ok) throw new Error("PRIVACY_SUITE_BLOCKED");
-    suiteManifestDigest = requireActiveSuite(await response.json());
+    suiteManifestDigest = requireConfiguredSuite(await response.json());
     runtime = await import(
       `/helto_privacy/ui/privacy_profile/${suiteManifestDigest}.js`
     );

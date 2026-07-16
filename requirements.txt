@@ -1,1 +1,1 @@
-helto-privacy==0.4.0
+helto-privacy==0.4.1
