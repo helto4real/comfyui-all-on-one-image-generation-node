@@ -97,7 +97,7 @@ from .managed_mode_transition import (
 
 AIO_PRIVACY_PROFILE_ID = AIO_MANAGED_PRIVACY_PROFILE_ID
 AIO_PRIVACY_DISTRIBUTION = "comfyui-all-on-one-image-generation-node"
-AIO_SUITE_ID = "helto-suite-2026-07-17.2"
+AIO_SUITE_ID = "helto-suite-2026-07-17.3"
 AIO_CURRENT_PROMPT_SCHEMA = "helto.aio-image-generate.v2"
 AIO_PRIVACY_PROFILE_FINGERPRINT = (
     "f63424f85dfa083277d43069d1a399f500f77e132f001a9355da20dab0f133a1"

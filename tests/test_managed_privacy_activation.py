@@ -112,8 +112,8 @@ def test_distribution_metadata_is_aligned_and_packages_browser_entrypoint():
     assert project["project"]["name"] == root.name
     assert project["project"]["dependencies"] == [DECLARED_SHARED_PRIVACY_REQUIREMENT]
     assert requirements == (DECLARED_SHARED_PRIVACY_REQUIREMENT,)
-    assert project["project"]["version"] == "0.1.6"
-    assert managed.AIO_SUITE_ID == "helto-suite-2026-07-17.2"
+    assert project["project"]["version"] == "0.1.7"
+    assert managed.AIO_SUITE_ID == "helto-suite-2026-07-17.3"
     assert project["project"]["readme"] == "README.md"
     assert project["project"]["urls"]["Repository"] == (
         "https://github.com/helto4real/comfyui-all-on-one-image-generation-node"
