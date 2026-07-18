@@ -217,13 +217,12 @@ def test_aio_seed_frontend_randomizes_live_seed_before_queue():
     source = (ROOT / "web/js/aio_image_generate.js").read_text(encoding="utf-8")
 
     assert "const SEED_MAX = Number.MAX_SAFE_INTEGER;" in source
-    assert "function randomizeAioSeedsBeforeQueue()" in source
+    assert "function installAioSeedQueueLifecycle(node)" in source
     assert 'liveSeedControlMode(node) !== "randomize"' in source
     assert "writeAioSeedValue(node, seed)" in source
-    assert "suspendSeedControlCallbacks(controlWidget)" in source
-    assert "restoreQueuedAioSeeds(queuedSeeds)" in source
-    assert "app.queuePrompt = wrappedQueuePrompt" in source
-    assert "scheduleAioSeedQueuePatch(\"setup\")" in source
+    assert "target.beforeQueued = function" in source
+    assert "target.afterQueued = function" in source
+    assert "app.queuePrompt = wrappedQueuePrompt" not in source
     assert "AIOSeedProbe" not in source
 
 

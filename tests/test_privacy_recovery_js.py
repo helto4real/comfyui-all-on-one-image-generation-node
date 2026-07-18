@@ -9,6 +9,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 AIO_PRIVACY = ROOT / "web" / "js" / "aio_privacy.js"
 AIO_RECOVERY = ROOT / "web" / "js" / "aio_privacy_recovery.js"
+AIO_GENERATE = ROOT / "web" / "js" / "aio_image_generate.js"
+AIO_PROMPT_BUILDER = ROOT / "web" / "js" / "aio_ideogram4_prompt_builder.js"
 LOCAL_PRIVACY_UI = Path(helto_privacy.__file__).resolve().parent / "web" / "privacy_ui.js"
 
 
@@ -116,6 +118,30 @@ def test_recovery_descriptors_cover_aio_private_controls(tmp_path):
         assert(fieldsById.get("aio-image-generate:prompt-builder").includes("elements_data"));
         """,
     )
+
+
+def test_unreadable_value_classification_preserves_locked_envelopes(tmp_path):
+    _run_node_module_test(
+        tmp_path,
+        """
+        assert.equal(await aioPrivacy.isUnreadablePrivacyValueError(new Error("PRIVACY_LOCKED: locked")), false);
+        assert.equal(await aioPrivacy.isUnreadablePrivacyValueError(new Error("PRIVACY_KEY_MISMATCH: wrong key")), true);
+        assert.equal(await aioPrivacy.isPrivacyKeyUnavailableError(new Error("PRIVACY_KEY_MISSING: gone")), true);
+        assert.equal(await aioPrivacy.isPrivacyKeyUnavailableError(new Error("PRIVACY_KEY_MISMATCH: wrong key")), false);
+        """,
+    )
+
+
+def test_runtime_unreadable_resets_require_shared_confirmation():
+    privacy_source = AIO_PRIVACY.read_text(encoding="utf-8")
+    generate_source = AIO_GENERATE.read_text(encoding="utf-8")
+    builder_source = AIO_PROMPT_BUILDER.read_text(encoding="utf-8")
+
+    assert 'typeof privacy?.confirmUnreadablePrivacyReset !== "function"' in privacy_source
+    assert "if (!await confirmUnreadablePrivacyReset())" in generate_source
+    assert "The encrypted value was preserved." in generate_source
+    assert "if (!await confirmUnreadablePrivacyReset())" in builder_source
+    assert "The encrypted value was preserved." in builder_source
 
 
 def test_recovery_scan_detects_unsafe_values_without_leaking_payloads(tmp_path):

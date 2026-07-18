@@ -2,14 +2,18 @@ import { app } from "/scripts/app.js";
 import { api } from "/scripts/api.js";
 import {
   assertSupportedPrivacyPayload,
+  confirmUnreadablePrivacyReset,
   decryptValue,
   encryptValueSync,
   isAnyAioPrivacyPayload,
   isEncryptedPrivacyPayload,
+  isPrivacyKeyUnavailableError,
   isLegacyPrivacyPayload,
+  isUnreadablePrivacyValueError,
 } from "./aio_privacy.js";
 import {
   appendPrivacyRecoveryMenuOption,
+  DEFAULT_GENERATE_PROMPT,
   registerAioPrivacyRecoveryDescriptors,
 } from "./aio_privacy_recovery.js";
 import {
@@ -62,9 +66,9 @@ const MAX_SIDE_MIN = 256;
 const MAX_SIDE_MAX = 4096;
 const SEED_MAX = Number.MAX_SAFE_INTEGER;
 const SEED_CONTROL_MODES = ["fixed", "increment", "decrement", "randomize"];
-const AIO_SEED_QUEUE_WRAPPER_KEY = "__aioGenerateSeedQueuePromptWrapper";
-const AIO_SEED_QUEUE_INSTALL_KEY = "__aioGenerateSeedQueuePromptInstallScheduled";
-const AIO_SEED_QUEUE_INSTALL_ATTEMPT_LIMIT = 80;
+const AIO_SEED_QUEUE_LIFECYCLE_KEY = "__aioGenerateSeedQueueLifecycle";
+const AIO_SEED_QUEUE_ACTIVE_KEY = "__aioGenerateActiveQueuedSeed";
+const AIO_SEED_QUEUE_MAX_AGE_MS = 10000;
 const AIO_PRIVACY_GRAPH_TO_PROMPT_WRAPPER_KEY = "__aioGeneratePrivacyGraphToPromptWrapper";
 const AIO_PRIVACY_GRAPH_TO_PROMPT_INSTALL_KEY = "__aioGeneratePrivacyGraphToPromptInstallScheduled";
 const AIO_PRIVACY_GRAPH_TO_PROMPT_INSTALL_ATTEMPT_LIMIT = 80;
@@ -702,112 +706,39 @@ function installAioGenerateProgressTextCleanup() {
   api.addEventListener?.("execution_interrupted", scheduleAioGenerateProgressTextCleanup);
 }
 
-function suspendSeedControlCallbacks(controlWidget) {
-  if (!controlWidget) {
-    return null;
-  }
-  const beforeQueued = controlWidget.beforeQueued;
-  const afterQueued = controlWidget.afterQueued;
-  const beforeQueuedNoop = () => {};
-  const afterQueuedNoop = () => {};
-  controlWidget.beforeQueued = beforeQueuedNoop;
-  controlWidget.afterQueued = afterQueuedNoop;
-  return {
-    controlWidget,
-    beforeQueued,
-    afterQueued,
-    beforeQueuedNoop,
-    afterQueuedNoop,
-  };
-}
+function installAioSeedQueueLifecycle(node) {
+  if (!isAioGenerateNode(node)) return false;
+  const seedWidget = widgetByName(node, "seed");
+  const target = seedControlWidget(node, seedWidget);
+  if (!seedWidget || !target || target[AIO_SEED_QUEUE_LIFECYCLE_KEY]) return Boolean(target);
 
-function restoreSeedControlCallbacks(suspended) {
-  for (const item of suspended) {
-    if (item.controlWidget.beforeQueued === item.beforeQueuedNoop) {
-      item.controlWidget.beforeQueued = item.beforeQueued;
+  const originalBeforeQueued = target.beforeQueued;
+  const originalAfterQueued = target.afterQueued;
+  target.beforeQueued = function (...args) {
+    if (liveSeedControlMode(node) !== "randomize") {
+      delete node[AIO_SEED_QUEUE_ACTIVE_KEY];
+      return originalBeforeQueued?.apply(this, args);
     }
-    if (item.controlWidget.afterQueued === item.afterQueuedNoop) {
-      item.controlWidget.afterQueued = item.afterQueued;
-    }
-  }
-}
-
-function randomizeAioSeedsBeforeQueue() {
-  const queuedSeeds = [];
-  for (const node of graphNodes()) {
-    if (!isAioGenerateNode(node) || liveSeedControlMode(node) !== "randomize") {
-      continue;
-    }
-    const seedWidget = widgetByName(node, "seed");
-    const controlWidget = seedControlWidget(node, seedWidget);
     const seed = randomFixedSeed();
     if (!writeAioSeedValue(node, seed)) {
-      continue;
+      return originalBeforeQueued?.apply(this, args);
     }
-    node._aioGenerateQueuedSeed = { seed, at: Date.now() };
-    queuedSeeds.push({
-      node,
-      seed,
-      suspended: suspendSeedControlCallbacks(controlWidget),
-    });
-  }
-  return queuedSeeds;
-}
-
-function restoreQueuedAioSeeds(queuedSeeds) {
-  restoreSeedControlCallbacks(queuedSeeds.map((item) => item.suspended).filter(Boolean));
-  for (const { node, seed } of queuedSeeds) {
-    const queuedSeed = node?._aioGenerateQueuedSeed;
-    if (!queuedSeed || queuedSeed.seed !== seed || Date.now() - queuedSeed.at > 10000) {
-      continue;
-    }
-    if (Number(widgetByName(node, "seed")?.value) !== Number(seed)) {
-      writeAioSeedValue(node, seed);
-    }
-  }
-}
-
-function installAioSeedQueuePatch(source = "install") {
-  if (typeof app.queuePrompt !== "function") {
-    return false;
-  }
-  if (app.queuePrompt[AIO_SEED_QUEUE_WRAPPER_KEY]) {
-    return true;
-  }
-
-  const originalQueuePrompt = app.queuePrompt;
-  const wrappedQueuePrompt = async function (...args) {
-    const queuedSeeds = randomizeAioSeedsBeforeQueue();
-    try {
-      return await originalQueuePrompt.apply(this, args);
-    } finally {
-      restoreQueuedAioSeeds(queuedSeeds);
-    }
+    node[AIO_SEED_QUEUE_ACTIVE_KEY] = { seed, at: Date.now() };
+    return undefined;
   };
-  Object.defineProperty(wrappedQueuePrompt, AIO_SEED_QUEUE_WRAPPER_KEY, {
-    value: true,
-    configurable: true,
-  });
-  app.queuePrompt = wrappedQueuePrompt;
-  return true;
-}
-
-function scheduleAioSeedQueuePatch(source = "top-level") {
-  if (globalThis[AIO_SEED_QUEUE_INSTALL_KEY]) {
-    installAioSeedQueuePatch(`${source}:resync`);
-    return;
-  }
-  globalThis[AIO_SEED_QUEUE_INSTALL_KEY] = true;
-
-  let attempts = 0;
-  function attempt() {
-    attempts += 1;
-    installAioSeedQueuePatch(`${source}:${attempts}`);
-    if (attempts < AIO_SEED_QUEUE_INSTALL_ATTEMPT_LIMIT) {
-      setTimeout(attempt, 250);
+  target.afterQueued = function (...args) {
+    const queued = node[AIO_SEED_QUEUE_ACTIVE_KEY];
+    delete node[AIO_SEED_QUEUE_ACTIVE_KEY];
+    if (!queued || Date.now() - queued.at > AIO_SEED_QUEUE_MAX_AGE_MS) {
+      return originalAfterQueued?.apply(this, args);
     }
-  }
-  attempt();
+    if (Number(seedWidget.value) !== Number(queued.seed)) {
+      writeAioSeedValue(node, queued.seed);
+    }
+    return undefined;
+  };
+  Object.defineProperty(target, AIO_SEED_QUEUE_LIFECYCLE_KEY, { value: true });
+  return true;
 }
 
 function graphNodesForPromptStabilization(graph) {
@@ -1522,6 +1453,7 @@ async function decryptPromptWidget(node, widget) {
   try {
     assertSupportedPrivacyPayload(widget.value);
   } catch (error) {
+    if (await resetUnreadablePromptWidget(node, widget, error)) return;
     setPrivacyStatus(node, `Private prompt recovery needed: ${error.message}`);
     console.error("[AIO Image Generate] privacy payload unsupported", error);
     return;
@@ -1538,6 +1470,7 @@ async function decryptPromptWidget(node, widget) {
     rememberPrivacyEnvelope(widget, plaintext, envelope);
     setPrivacyStatus(node, "");
   } catch (error) {
+    if (await resetUnreadablePromptWidget(node, widget, error)) return;
     setPrivacyStatus(node, `Private prompt locked: ${error.message}`);
     console.error("[AIO Image Generate] privacy decrypt failed", error);
   } finally {
@@ -1557,6 +1490,32 @@ function setPromptWidgetText(widget, value) {
       element.textContent = text;
     }
   }
+}
+
+function defaultPromptWidgetValue(widget) {
+  return widget?.name === "positive_prompt" ? DEFAULT_GENERATE_PROMPT : "";
+}
+
+async function resetUnreadablePromptWidget(node, widget, error) {
+  if (!await isUnreadablePrivacyValueError(error)) return false;
+  if (!await confirmUnreadablePrivacyReset()) {
+    setPrivacyStatus(node, "Private prompt could not be decrypted. The encrypted value was preserved.");
+    updatePromptDomPrivacy(node);
+    return true;
+  }
+  if (widget) delete widget[PRIVACY_ENVELOPE_MEMO_KEY];
+  setPromptWidgetText(widget, defaultPromptWidgetValue(widget));
+  if (await isPrivacyKeyUnavailableError(error)) {
+    const targets = isAioKrea2SettingsNode(node) ? connectedGenerateNodesForKreaSettings(node) : [node];
+    for (const target of targets) {
+      const privacyWidget = widgetByName(target, PRIVACY_WIDGET_NAME);
+      if (privacyWidget) privacyWidget.value = false;
+    }
+  }
+  setPrivacyStatus(node, "Unreadable private prompt was reset to its default value.");
+  updatePromptDomPrivacy(node);
+  markNodeDirty(node);
+  return true;
 }
 
 function patchPromptPrivacyWidget(node, widget) {
@@ -3436,7 +3395,6 @@ function patchKrea2SettingsNodeType(nodeType) {
   };
 }
 
-scheduleAioSeedQueuePatch();
 scheduleAioPrivacyGraphToPromptPatch();
 
 app.registerExtension({
@@ -3444,7 +3402,6 @@ app.registerExtension({
   setup() {
     registerAioPrivacyRecoveryDescriptors();
     installAioWidgetThemeBridge();
-    scheduleAioSeedQueuePatch("setup");
     scheduleAioPrivacyGraphToPromptPatch("setup");
     installAioGenerateProgressTextCleanup();
     installAioGenerateRuntimePhaseBridge();
@@ -3456,6 +3413,7 @@ app.registerExtension({
         ensureAioGeneratePrivacyUi(node);
         ensureKrea2SettingsPrivacyUi(node);
         ensureAioGenerateSeedButton(node);
+        installAioSeedQueueLifecycle(node);
         ensureAioGenerateRuntimePhaseUi(node);
       }
     });
@@ -3493,6 +3451,7 @@ app.registerExtension({
     ensureAioGeneratePrivacyUi(node);
     ensureKrea2SettingsPrivacyUi(node);
     ensureAioGenerateSeedButton(node);
+    installAioSeedQueueLifecycle(node);
     ensureAioGenerateRuntimePhaseUi(node);
   },
   loadedGraphNode(node) {
@@ -3502,6 +3461,7 @@ app.registerExtension({
     ensureAioGeneratePrivacyUi(node);
     ensureKrea2SettingsPrivacyUi(node);
     ensureAioGenerateSeedButton(node);
+    installAioSeedQueueLifecycle(node);
     ensureAioGenerateRuntimePhaseUi(node);
   },
 });

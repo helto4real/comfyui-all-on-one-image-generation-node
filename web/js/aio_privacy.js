@@ -8,6 +8,13 @@ const PRIVACY_TOKEN_STORAGE_KEY = "helto_privacy_token";
 const LEGACY_MESSAGE = "Unsupported legacy AIO privacy payload. Re-enter the private value to save it with the shared privacy keystore.";
 const UNSUPPORTED_MESSAGE = "Unsupported AIO privacy payload schema. Use Privacy Recovery to reset or re-enter the private value.";
 const PRIVACY_UNLOCK_CODES = ["PRIVACY_LOCKED", "PRIVACY_TOKEN_REQUIRED", "PRIVACY_KEYSTORE_UNINITIALIZED"];
+const PRIVACY_SETUP_CODES = ["PRIVACY_KEYSTORE_UNINITIALIZED", "PRIVACY_KEY_MISSING", "PRIVACY_KEY_INVALID", "PRIVACY_KEYSTORE_INVALID"];
+const PRIVACY_UNREADABLE_CODES = [
+  ...PRIVACY_SETUP_CODES,
+  "PRIVACY_KEY_MISMATCH",
+  "PRIVACY_DECRYPT_FAILED",
+  "PRIVACY_PAYLOAD_INVALID",
+];
 
 let privacyModulePromise = null;
 const failedEnvelopeFingerprints = new Set();
@@ -58,11 +65,9 @@ export function isAnyAioPrivacyPayload(value) {
 
 export function assertSupportedPrivacyPayload(value) {
   if (isLegacyPrivacyPayload(value)) {
-    schedulePrivacyRecoveryDialog("legacy");
     throw new Error(LEGACY_MESSAGE);
   }
   if (isUnsupportedEncryptedPrivacyPayload(value)) {
-    schedulePrivacyRecoveryDialog("unsupported");
     throw new Error(UNSUPPORTED_MESSAGE);
   }
 }
@@ -94,6 +99,41 @@ export function isPrivacyUnlockRequiredError(error) {
   return PRIVACY_UNLOCK_CODES.some((code) => message.includes(code));
 }
 
+export function isPrivacySetupRequiredError(error) {
+  const message = String(error?.message ?? error ?? "");
+  return PRIVACY_SETUP_CODES.some((code) => message.includes(code));
+}
+
+export async function isUnreadablePrivacyValueError(error) {
+  const privacy = await getSharedPrivacyUi();
+  if (typeof privacy?.isUnreadablePrivacyValueError === "function") {
+    return privacy.isUnreadablePrivacyValueError(error);
+  }
+  if (String(error?.message ?? error ?? "").includes("PRIVACY_LOCKED")) return false;
+  const message = String(error?.message ?? error ?? "").toLowerCase();
+  return PRIVACY_UNREADABLE_CODES.some((code) => message.includes(code.toLowerCase()))
+    || message.includes("different local privacy key")
+    || message.includes("privacy key file is missing")
+    || message.includes("could not decrypt state payload")
+    || message.includes("unsupported legacy aio privacy payload")
+    || message.includes("unsupported aio privacy payload schema");
+}
+
+export async function isPrivacyKeyUnavailableError(error) {
+  const privacy = await getSharedPrivacyUi();
+  if (typeof privacy?.isPrivacyKeyUnavailableError === "function") {
+    return privacy.isPrivacyKeyUnavailableError(error);
+  }
+  return isPrivacySetupRequiredError(error)
+    || String(error?.message ?? error ?? "").toLowerCase().includes("privacy key file is missing");
+}
+
+export async function confirmUnreadablePrivacyReset() {
+  const privacy = await getSharedPrivacyUi();
+  if (typeof privacy?.confirmUnreadablePrivacyReset !== "function") return false;
+  return Boolean(await privacy.confirmUnreadablePrivacyReset());
+}
+
 async function maybeUnlockForError(error) {
   const privacy = await getSharedPrivacyUi();
   const unlockRequired = Boolean(
@@ -123,7 +163,9 @@ export async function fetchPrivacyJson(endpoint, payload = null, retry = true) {
   }
   if (!response.ok || data.ok === false || data.error) {
     const error = new Error(data.error || response.statusText || `HTTP ${response.status}`);
-    if (retry && await maybeUnlockForError(error)) return fetchPrivacyJson(endpoint, payload, false);
+    if (retry && !(endpoint === "decrypt" && isPrivacySetupRequiredError(error)) && await maybeUnlockForError(error)) {
+      return fetchPrivacyJson(endpoint, payload, false);
+    }
     throw error;
   }
   return data;
@@ -188,7 +230,6 @@ export async function decryptState(payload) {
   } catch (error) {
     if (isEncryptedPrivacyPayload(payload) && !isPrivacyUnlockRequiredError(error)) {
       rememberFailedPrivacyEnvelope(payload);
-      schedulePrivacyRecoveryDialog("decrypt-failed");
     }
     throw error;
   }
@@ -196,11 +237,9 @@ export async function decryptState(payload) {
 
 export async function decryptValue(value) {
   if (isLegacyPrivacyPayload(value)) {
-    schedulePrivacyRecoveryDialog("legacy");
     throw new Error(LEGACY_MESSAGE);
   }
   if (isUnsupportedEncryptedPrivacyPayload(value)) {
-    schedulePrivacyRecoveryDialog("unsupported");
     throw new Error(UNSUPPORTED_MESSAGE);
   }
   if (!isEncryptedPrivacyPayload(value)) return value;

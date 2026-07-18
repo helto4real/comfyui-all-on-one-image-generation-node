@@ -1,6 +1,7 @@
 import { app } from "/scripts/app.js";
 import {
   assertSupportedPrivacyPayload,
+  confirmUnreadablePrivacyReset,
   decryptState,
   decryptValue,
   encryptStateSync,
@@ -8,7 +9,9 @@ import {
   getSharedPrivacyUi,
   isAnyAioPrivacyPayload,
   isEncryptedPrivacyPayload,
+  isPrivacyKeyUnavailableError,
   isLegacyPrivacyPayload,
+  isUnreadablePrivacyValueError,
   parsePrivacyPayload,
   privacyFetchHeaders,
 } from "./aio_privacy.js";
@@ -1276,6 +1279,29 @@ function createEditor(node) {
     setStatus("Private prompt builder state reset.");
   };
 
+  async function resetUnreadablePrivateState(error) {
+    if (!await isUnreadablePrivacyValueError(error)) return false;
+    if (!await confirmUnreadablePrivacyReset()) {
+      privacyRestorePending = false;
+      privacyRestoreFailed = true;
+      setStatus("Private prompt builder data could not be decrypted. The encrypted value was preserved.");
+      updatePrivacyClasses();
+      return true;
+    }
+    node._aioIdeogram4RecoveryReset();
+    if (await isPrivacyKeyUnavailableError(error)) {
+      const privacyWidget = widgetByName(node, "privacy_mode");
+      if (privacyWidget) privacyWidget.value = false;
+    }
+    privacyRestorePending = false;
+    privacyRestoreFailed = false;
+    setStatus("Unreadable private prompt builder data was reset to defaults.");
+    updatePrivacyClasses();
+    node.setDirtyCanvas?.(true, true);
+    node.graph?.setDirtyCanvas?.(true, true);
+    return true;
+  }
+
   async function decryptPayloadState(rawPayload, label = "prompt builder") {
     assertSupportedPrivacyPayload(rawPayload);
     if (isLegacyPrivacyPayload(rawPayload)) {
@@ -1292,6 +1318,7 @@ function createEditor(node) {
       setStatus("");
       return state;
     } catch (error) {
+      if (await resetUnreadablePrivateState(error)) return null;
       privacyRestorePending = false;
       privacyRestoreFailed = true;
       setStatus(`Private ${label} locked: ${error.message}`);
@@ -1309,6 +1336,7 @@ function createEditor(node) {
       try {
         assertSupportedPrivacyPayload(widget.value);
       } catch (error) {
+        if (await resetUnreadablePrivateState(error)) return false;
         privacyRestorePending = false;
         privacyRestoreFailed = true;
         setStatus(`Private prompt builder recovery needed: ${error.message}`);
@@ -1323,6 +1351,7 @@ function createEditor(node) {
         widget.value = await decryptValue(widget.value);
         restored = true;
       } catch (error) {
+        if (await resetUnreadablePrivateState(error)) return false;
         privacyRestorePending = false;
         privacyRestoreFailed = true;
         setStatus(`Private prompt builder locked: ${error.message}`);
