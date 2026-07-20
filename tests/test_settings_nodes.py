@@ -1,10 +1,15 @@
+import json
 import pytest
+from helto_privacy import initialize_keystore
 
 from nodes.flux2_klein_settings import AIOFlux2Klein9BSettings
 from nodes.ideogram4_settings import AIOIdeogram4Settings, DEFAULT_UNCONDITIONAL_MODEL
 from nodes.krea2_settings import AIOKrea2Settings
 from nodes.z_image_settings import AIOZImageTurboSettings
+from services import privacy
 import sys
+
+PASSWORD = "correct horse battery"
 
 
 def test_z_settings_returns_family_dict():
@@ -99,14 +104,21 @@ def test_krea2_settings_accepts_inpaint_positive_prompt():
     assert settings["positive_prompt_source"] == "krea2_inpaint_settings"
 
 
-def test_krea2_settings_rejects_protected_input_outside_managed_execution():
-    with pytest.raises(ValueError, match="managed private execution"):
-        AIOKrea2Settings().build_settings(
-            True,
-            1.0,
-            "auto",
-            inpaint_positive_prompt={"encrypted": True},
-        )
+@pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
+def test_krea2_settings_decrypts_private_inpaint_positive_prompt(monkeypatch, tmp_path):
+    monkeypatch.setattr(privacy, "config_dir", lambda: tmp_path)
+    initialize_keystore(PASSWORD)
+    encrypted_prompt = json.dumps(privacy.encrypt_state({"value": "private inpaint prompt"}))
+
+    settings = AIOKrea2Settings().build_settings(
+        True,
+        1.0,
+        "auto",
+        inpaint_positive_prompt=encrypted_prompt,
+    )[0]
+
+    assert settings["positive_prompt_override"] == "private inpaint prompt"
+    assert settings["positive_prompt_source"] == "krea2_inpaint_settings"
 
 
 def test_krea2_settings_accepts_prompt_builder_payload():
@@ -134,20 +146,28 @@ def test_krea2_settings_accepts_prompt_builder_payload():
     assert settings["prompt_builder_multiple_value"] == "16"
 
 
-def test_krea2_settings_requires_managed_private_builder_execution():
+@pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
+def test_krea2_settings_encrypts_private_prompt_builder_override(monkeypatch, tmp_path):
+    monkeypatch.setattr(privacy, "config_dir", lambda: tmp_path)
+    initialize_keystore(PASSWORD)
     prompt = '{"compositional_deconstruction":{"background":"Private beach","elements":[]}}'
 
-    with pytest.raises(ValueError, match="managed references"):
-        AIOKrea2Settings().build_settings(
-            True,
-            1.0,
-            "auto",
-            prompt_builder={
-                "family": "ideogram4",
-                "prompt": prompt,
-                "privacy_mode": True,
-            },
-        )
+    settings = AIOKrea2Settings().build_settings(
+        True,
+        1.0,
+        "auto",
+        prompt_builder={
+            "family": "ideogram4",
+            "prompt": prompt,
+            "privacy_mode": True,
+        },
+    )[0]
+
+    dumped = str(settings["positive_prompt_override"])
+    assert "Private beach" not in dumped
+    assert privacy.is_encrypted_payload(settings["positive_prompt_override"])
+    assert privacy.decrypt_text_if_encrypted(settings["positive_prompt_override"]) == prompt
+    assert settings["prompt_builder_privacy_mode"] is True
 
 
 def test_krea2_prompt_builder_wins_over_inpaint_positive_prompt():
@@ -252,7 +272,10 @@ def test_ideogram4_settings_accepts_prompt_builder_payload():
     assert settings["prompt_builder_multiple_value"] == "16"
 
 
-def test_ideogram4_settings_preserves_managed_private_prompt_in_ram():
+@pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
+def test_ideogram4_settings_encrypts_private_prompt_builder_override(monkeypatch, tmp_path):
+    monkeypatch.setattr(privacy, "config_dir", lambda: tmp_path)
+    initialize_keystore(PASSWORD)
     prompt = '{"compositional_deconstruction":{"background":"Private room","elements":[]}}'
 
     settings = AIOIdeogram4Settings().build_settings(
@@ -272,7 +295,10 @@ def test_ideogram4_settings_preserves_managed_private_prompt_in_ram():
         },
     )[0]
 
-    assert settings["positive_prompt_override"] == prompt
+    dumped = str(settings["positive_prompt_override"])
+    assert "Private room" not in dumped
+    assert privacy.is_encrypted_payload(settings["positive_prompt_override"])
+    assert privacy.decrypt_text_if_encrypted(settings["positive_prompt_override"]) == prompt
     assert settings["prompt_builder_privacy_mode"] is True
 
 

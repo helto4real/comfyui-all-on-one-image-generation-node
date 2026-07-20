@@ -1,7 +1,24 @@
 import { app } from "/scripts/app.js";
 import {
-  requireAioPromptLibrary,
-} from "./aio_managed_privacy.js";
+  assertSupportedPrivacyPayload,
+  confirmUnreadablePrivacyReset,
+  decryptState,
+  decryptValue,
+  encryptStateSync,
+  encryptValueSync,
+  getSharedPrivacyUi,
+  isAnyAioPrivacyPayload,
+  isEncryptedPrivacyPayload,
+  isPrivacyKeyUnavailableError,
+  isLegacyPrivacyPayload,
+  isUnreadablePrivacyValueError,
+  parsePrivacyPayload,
+  privacyFetchHeaders,
+} from "./aio_privacy.js";
+import {
+  appendPrivacyRecoveryMenuOption,
+  registerAioPrivacyRecoveryDescriptors,
+} from "./aio_privacy_recovery.js";
 import { applyHeltoNodeTheme, ensureHeltoTokens, HELTO } from "./aio_helto_theme.js";
 
 const NODE_NAME = "AIOIdeogram4PromptBuilder";
@@ -16,6 +33,7 @@ const DEFAULT_COLOR = "#8ca8ff";
 const DEFAULT_COLOR_UPPER = DEFAULT_COLOR.toUpperCase();
 // Selection highlight on the canvas = Helto gold accent (selection/active).
 const ACTIVE_COLOR = HELTO.accent;
+const LIBRARY_ROUTE = "/aio_image_generate/ideogram4_prompt_library";
 const WORKFLOW_STATE_KEY = "aio_ideogram4_prompt_builder";
 const STATE_PROPERTY = "aio_ideogram4_prompt_builder_state";
 const LIBRARY_ITEM_PROPERTY = "aio_ideogram4_prompt_library_item_id";
@@ -110,7 +128,7 @@ function parseElementsPayload(value) {
 }
 
 function parseStatePayload(value) {
-  if (!value) return null;
+  if (!value || isAnyAioPrivacyPayload(value)) return null;
   if (typeof value === "object") return value;
   try {
     const parsed = JSON.parse(value);
@@ -148,6 +166,37 @@ function cloneJson(value, fallback) {
   } catch {
     return fallback;
   }
+}
+
+async function fetchLibraryJson(url, options = {}, retry = true) {
+  const privacy = await getSharedPrivacyUi();
+  privacy?.ensureStoredPrivacyTokenCookie?.();
+  const requestOptions = {
+    ...options,
+    headers: privacyFetchHeaders(options.headers || {}),
+  };
+  const response = await fetch(url, requestOptions);
+  const text = await response.text();
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(text || response.statusText || `HTTP ${response.status}`);
+  }
+  if (!response.ok || data.ok === false || data.error) {
+    const error = new Error(data.error || response.statusText || `HTTP ${response.status}`);
+    const unlockRequired = Boolean(
+      privacy?.isPrivacyUnlockRequiredError?.(error) ||
+        privacy?.isPrivacyLockedError?.(error)
+    );
+    if (retry && unlockRequired) {
+      const unlocked = await privacy.showPrivacyKeystoreDialog?.("auto");
+      privacy.ensureStoredPrivacyTokenCookie?.();
+      if (unlocked) return fetchLibraryJson(url, options, false);
+    }
+    throw error;
+  }
+  return data;
 }
 
 function iconButton(label, iconName, title) {
@@ -507,6 +556,14 @@ function installStyles() {
     .aio-ideo-library-save-form{display:grid;gap:8px;padding:10px;border:1px solid var(--helto-border);border-radius:var(--helto-radius);background:var(--helto-surface)}
     .aio-ideo-library-save-form input,.aio-ideo-library-save-form textarea{width:100%;padding:7px 9px}
     .aio-ideo-library-save-form textarea{min-height:70px;resize:vertical;font-family:var(--helto-font-mono)}
+    .aio-ideo-library-private-row{display:flex;gap:7px;align-items:center;color:var(--helto-text-dim)}
+    .aio-ideo-library-private-row input[type="checkbox"]{accent-color:var(--helto-accent)}
+    .aio-ideo-library.privacy-mode:not(.is-revealed) .aio-ideo-library-preview,
+    .aio-ideo-library.privacy-mode:not(.is-revealed) .aio-ideo-library-card-meta,
+    .aio-ideo-library.privacy-mode:not(.is-revealed) .aio-ideo-library-detail-meta { color: transparent !important; -webkit-text-fill-color: transparent !important; text-shadow: none !important; }
+    .aio-ideo-library.privacy-mode.is-revealed .aio-ideo-library-preview,
+    .aio-ideo-library.privacy-mode.is-revealed .aio-ideo-library-card-meta,
+    .aio-ideo-library.privacy-mode.is-revealed .aio-ideo-library-detail-meta { color: var(--helto-text-dim); }
   `;
   document.head.appendChild(style);
 }
@@ -520,6 +577,13 @@ function createEditor(node) {
   const coordModeWidget = widgetByName(node, "coord_mode");
   const bboxOrderWidget = widgetByName(node, "bbox_order");
   const privacyWidget = widgetByName(node, PRIVACY_WIDGET_NAME);
+  let privacyReveal = false;
+  const privacyRevealSources = {
+    editor: false,
+    field: false,
+  };
+  const nativePrivacyHoveredElements = new Set();
+  const nativePrivacyFocusedElements = new Set();
   const nativePrivacyElements = new Set();
   for (const widget of [elementsWidget, stylePaletteWidget, brightnessWidget, outputFormatWidget, coordModeWidget, bboxOrderWidget]) {
     if (!widget) continue;
@@ -540,7 +604,27 @@ function createEditor(node) {
   }
 
   function nativeSensitiveWidgetsMasked() {
-    return node.__aioManagedPrivacyLocked === true;
+    return privacyEnabled() && !privacyReveal;
+  }
+
+  function refreshPrivacyRevealState() {
+    privacyRevealSources.field = nativePrivacyHoveredElements.size > 0 || nativePrivacyFocusedElements.size > 0;
+    privacyReveal = Object.values(privacyRevealSources).some(Boolean);
+    return privacyReveal;
+  }
+
+  function setPrivacyRevealSource(source, revealed) {
+    privacyRevealSources[source] = Boolean(revealed);
+    refreshPrivacyRevealState();
+    updatePrivacyClasses();
+    draw();
+  }
+
+  function setNativeFieldReveal(source, element, revealed) {
+    const elements = source === "focus" ? nativePrivacyFocusedElements : nativePrivacyHoveredElements;
+    if (revealed) elements.add(element);
+    else elements.delete(element);
+    setPrivacyRevealSource("field", nativePrivacyHoveredElements.size > 0 || nativePrivacyFocusedElements.size > 0);
   }
 
   function sensitiveWidgetDomElements(widget) {
@@ -558,6 +642,10 @@ function createEditor(node) {
     if (!element || element._aioIdeoPrivacyRevealNode === node) return;
     element._aioIdeoPrivacyRevealCleanup?.();
 
+    const onPointerEnter = () => setNativeFieldReveal("hover", element, true);
+    const onPointerLeave = () => setNativeFieldReveal("hover", element, false);
+    const onFocusIn = () => setNativeFieldReveal("focus", element, true);
+    const onFocusOut = () => setNativeFieldReveal("focus", element, false);
     const onInput = () => {
       syncingExecutionWidgets = true;
       try {
@@ -570,21 +658,41 @@ function createEditor(node) {
       app.graph?.setDirtyCanvas?.(true, true);
     };
 
+    element.addEventListener("pointerenter", onPointerEnter);
+    element.addEventListener("pointerleave", onPointerLeave);
+    element.addEventListener("focusin", onFocusIn);
+    element.addEventListener("focusout", onFocusOut);
     element.addEventListener("input", onInput);
     element.addEventListener("change", onInput);
     element.addEventListener("blur", onInput);
     nativePrivacyElements.add(element);
     element._aioIdeoPrivacyRevealNode = node;
     element._aioIdeoPrivacyRevealCleanup = () => {
+      element.removeEventListener("pointerenter", onPointerEnter);
+      element.removeEventListener("pointerleave", onPointerLeave);
+      element.removeEventListener("focusin", onFocusIn);
+      element.removeEventListener("focusout", onFocusOut);
       element.removeEventListener("input", onInput);
       element.removeEventListener("change", onInput);
       element.removeEventListener("blur", onInput);
       element.classList.remove("aio-ideo-private-field");
       element.removeAttribute("data-aio-ideo-private");
+      nativePrivacyHoveredElements.delete(element);
+      nativePrivacyFocusedElements.delete(element);
       nativePrivacyElements.delete(element);
       delete element._aioIdeoPrivacyRevealNode;
       delete element._aioIdeoPrivacyRevealCleanup;
     };
+  }
+
+  function pruneDisconnectedNativePrivacyElements(currentElements = null) {
+    const keep = currentElements || new Set();
+    for (const element of [...nativePrivacyHoveredElements]) {
+      if (!element.isConnected || (currentElements && !keep.has(element))) nativePrivacyHoveredElements.delete(element);
+    }
+    for (const element of [...nativePrivacyFocusedElements]) {
+      if (!element.isConnected || (currentElements && !keep.has(element))) nativePrivacyFocusedElements.delete(element);
+    }
   }
 
   function updateSensitiveWidgetDomPrivacy() {
@@ -594,8 +702,13 @@ function createEditor(node) {
       for (const element of sensitiveWidgetDomElements(widget)) {
         currentElements.add(element);
         patchSensitiveWidgetDomElement(element, widget);
+        if (element === document.activeElement || element.contains(document.activeElement)) {
+          nativePrivacyFocusedElements.add(element);
+        }
       }
     }
+    pruneDisconnectedNativePrivacyElements(currentElements);
+    refreshPrivacyRevealState();
     const masked = nativeSensitiveWidgetsMasked();
     for (const element of currentElements) {
       element.classList.toggle("aio-ideo-private-field", masked);
@@ -607,13 +720,17 @@ function createEditor(node) {
     for (const element of [...nativePrivacyElements]) {
       element._aioIdeoPrivacyRevealCleanup?.();
     }
+    nativePrivacyHoveredElements.clear();
+    nativePrivacyFocusedElements.clear();
     nativePrivacyElements.clear();
+    refreshPrivacyRevealState();
   }
 
   function directWidgetValue(widget) {
     const value = widget?.value;
     if (value == null) return "";
     if (typeof value === "string") return value;
+    if (isAnyAioPrivacyPayload(value)) return JSON.stringify(parsePrivacyPayload(value));
     return "";
   }
 
@@ -667,7 +784,7 @@ function createEditor(node) {
 
   function syncLiveWidgetTextValue(widget) {
     const domValue = widgetDomTextValue(widget);
-    if (domValue == null) return;
+    if (domValue == null || isAnyAioPrivacyPayload(widget?.value)) return;
     setExecutionWidgetValue(widget, domValue);
   }
 
@@ -679,6 +796,7 @@ function createEditor(node) {
   }
 
   function syncExecutionWidgets() {
+    if (privacyRestorePending || privacyRestoreFailed) return;
     syncingExecutionWidgets = true;
     try {
       syncLiveWidgetTextValues();
@@ -690,6 +808,34 @@ function createEditor(node) {
     } finally {
       syncingExecutionWidgets = false;
     }
+  }
+
+  function serializePrivateValue(widget, value) {
+    if (!privacyEnabled()) return value;
+    assertSupportedPrivacyPayload(widget?.value);
+    if (isEncryptedPrivacyPayload(widget?.value)) {
+      return typeof widget.value === "string" ? widget.value : JSON.stringify(parsePrivacyPayload(widget.value));
+    }
+    try {
+      return encryptValueSync(value ?? "");
+    } catch (error) {
+      setStatus(`Privacy encryption failed: ${error.message}`);
+      throw error;
+    }
+  }
+
+  function existingEncryptedWorkflowPayload() {
+    const candidates = [
+      node._aioIdeogram4LastPrivatePayload,
+      node.properties?.[STATE_PROPERTY],
+      node._aioIdeogram4PendingWorkflowInfo?.[WORKFLOW_STATE_KEY],
+      node._aioIdeogram4PendingWorkflowInfo?.ideo,
+    ];
+    for (const candidate of candidates) {
+      assertSupportedPrivacyPayload(candidate);
+      if (isEncryptedPrivacyPayload(candidate)) return parsePrivacyPayload(candidate);
+    }
+    return null;
   }
 
   function widgetValues() {
@@ -740,17 +886,59 @@ function createEditor(node) {
     active = Math.max(-1, Math.min(boxes.length - 1, Number(state.active ?? active)));
   }
 
+  function workflowStatePayload() {
+    if (privacyEnabled() && (privacyRestorePending || privacyRestoreFailed)) {
+      const existing = existingEncryptedWorkflowPayload();
+      if (existing) return existing;
+      throw new Error("Private prompt builder is locked and no encrypted workflow state is available to preserve.");
+    }
+    const state = currentState();
+    if (!privacyEnabled()) {
+      return state;
+    }
+    try {
+      setStatus("");
+      const envelope = encryptStateSync(state);
+      node._aioIdeogram4LastPrivatePayload = envelope;
+      return envelope;
+    } catch (error) {
+      setStatus(`Privacy encryption failed: ${error.message}`);
+      console.error("[AIO Ideogram 4 Prompt Builder] privacy encryption failed", error);
+      const existing = existingEncryptedWorkflowPayload();
+      if (existing) return existing;
+      throw error;
+    }
+  }
+
   function writeStateProperty() {
-    managedEditHandler?.();
+    node.properties ||= {};
+    const payload = workflowStatePayload();
+    if (payload) node.properties[STATE_PROPERTY] = payload;
   }
 
   function patchSensitiveWidget(widget) {
     if (!widget || widget._aioIdeoPrivacyPatched) return;
+    widget.serialize = true;
+    widget.options ||= {};
+    widget.options.serialize = true;
+    widget.serializeValue = function () {
+      return serializePrivateValue(this, liveWidgetValue(this));
+    };
     widget._aioIdeoPrivacyPatched = true;
   }
 
   for (const name of SENSITIVE_WIDGET_NAMES) {
     patchSensitiveWidget(widgetByName(node, name));
+  }
+  if (elementsWidget) {
+    elementsWidget.serializeValue = function () {
+      return serializePrivateValue(this, serializedElementsValue());
+    };
+  }
+  if (stylePaletteWidget) {
+    stylePaletteWidget.serializeValue = function () {
+      return serializePrivateValue(this, serializedStylePaletteValue());
+    };
   }
   if (outputFormatWidget) {
     outputFormatWidget.serializeValue = function () {
@@ -783,16 +971,25 @@ function createEditor(node) {
   let dragMode = null;
   let dragStart = null;
   let dragBoxStart = null;
+  let privacyRestorePending = false;
+  let privacyRestoreFailed = false;
   let domWidget = null;
   let currentEditorWidth = MIN_WIDTH;
   let currentEditorHeight = EDITOR_HEIGHT;
   let syncingExecutionWidgets = false;
   let serializeActive = false;
+  let workflowSerializationActive = false;
 
   const wrap = document.createElement("div");
   wrap.className = "aio-ideo-wrap";
   wrap.addEventListener("pointerdown", stopEvent);
   wrap.addEventListener("wheel", stopEvent);
+  wrap.addEventListener("pointerenter", () => {
+    setPrivacyRevealSource("editor", true);
+  });
+  wrap.addEventListener("pointerleave", () => {
+    setPrivacyRevealSource("editor", false);
+  });
   const privacyStatus = document.createElement("div");
   privacyStatus.className = "aio-ideo-privacy-status";
   privacyStatus.style.display = "none";
@@ -907,7 +1104,7 @@ function createEditor(node) {
     updateSensitiveWidgetDomPrivacy();
     const privateMode = privacyEnabled();
     wrap.classList.toggle("is-private", privateMode);
-    wrap.classList.toggle("is-privacy-revealed", node.__aioManagedPrivacyLocked !== true);
+    wrap.classList.toggle("is-privacy-revealed", !privateMode || privacyReveal);
   }
 
   function nodeDrivenEditorHeight() {
@@ -983,16 +1180,55 @@ function createEditor(node) {
   };
 
   function serialize() {
-    if (serializeActive) return;
+    if (serializeActive || workflowSerializationActive) return;
     serializeActive = true;
     try {
       syncExecutionWidgets();
-      writeStateProperty();
+      if (!privacyRestorePending && !privacyRestoreFailed) {
+        writeStateProperty();
+      }
       updatePrivacyClasses();
       app.graph?.setDirtyCanvas?.(true, true);
-      managedEditHandler?.();
     } finally {
       serializeActive = false;
+    }
+  }
+
+  function workflowWidgetValue(widget) {
+    if (!widget) return "";
+    if (widget === elementsWidget) return serializePrivateValue(widget, serializedElementsValue());
+    if (widget === stylePaletteWidget) return serializePrivateValue(widget, serializedStylePaletteValue());
+    return serializePrivateValue(widget, liveWidgetValue(widget));
+  }
+
+  function scrubWorkflowWidgets(output) {
+    if (!output || !privacyEnabled() || !Array.isArray(output.widgets_values)) return;
+    for (const name of SENSITIVE_WIDGET_NAMES) {
+      const widget = widgetByName(node, name);
+      const index = node.widgets?.indexOf(widget);
+      if (!widget || index == null || index < 0 || index >= output.widgets_values.length) continue;
+      output.widgets_values[index] = workflowWidgetValue(widget);
+    }
+  }
+
+  function serializeForWorkflow(output) {
+    if (!output) return;
+    if (workflowSerializationActive) return;
+    workflowSerializationActive = true;
+    try {
+      syncExecutionWidgets();
+      const payload = workflowStatePayload();
+      if (payload) {
+        node.properties ||= {};
+        node.properties[STATE_PROPERTY] = payload;
+        if (output.properties && typeof output.properties === "object") {
+          output.properties[STATE_PROPERTY] = payload;
+        }
+        output[WORKFLOW_STATE_KEY] = payload;
+      }
+      scrubWorkflowWidgets(output);
+    } finally {
+      workflowSerializationActive = false;
     }
   }
 
@@ -1014,45 +1250,174 @@ function createEditor(node) {
   function restorePlainState(state, { markDirty = true, restorePrivacyMode = false } = {}) {
     applyState(state, { restorePrivacyMode });
     if (boxes.length && active < 0) active = 0;
+    privacyRestorePending = false;
+    privacyRestoreFailed = false;
     syncControlWidgetsFromState();
     if (markDirty) refresh();
     else repaintRestoredState();
   }
 
-  function restoreFromWorkflow(info) {
-    if (info && typeof info === "object") node._aioIdeogram4PendingWorkflowInfo = info;
+  node._aioIdeogram4RecoveryReset = () => {
+    const widgets = Object.fromEntries(SENSITIVE_WIDGET_NAMES.map((name) => [name, ""]));
+    delete node._aioIdeogram4LastPrivatePayload;
+    if (node.properties) delete node.properties[STATE_PROPERTY];
+    if (node._aioIdeogram4PendingWorkflowInfo) {
+      delete node._aioIdeogram4PendingWorkflowInfo[WORKFLOW_STATE_KEY];
+      delete node._aioIdeogram4PendingWorkflowInfo.ideo;
+    }
+    restorePlainState({
+      version: 1,
+      widgets,
+      elements: [],
+      style_palette: [],
+      bg_brightness: brightnessWidget?.value ?? 25,
+      output_format: outputFormatWidget?.value ?? "compact",
+      coord_mode: coordModeWidget?.value === "absolute" ? "absolute" : "normalized",
+      bbox_order: bboxOrderWidget?.value === "xy" ? "xy" : "yx",
+      active: -1,
+    });
+    setStatus("Private prompt builder state reset.");
+  };
+
+  async function resetUnreadablePrivateState(error) {
+    if (!await isUnreadablePrivacyValueError(error)) return false;
+    if (!await confirmUnreadablePrivacyReset()) {
+      privacyRestorePending = false;
+      privacyRestoreFailed = true;
+      setStatus("Private prompt builder data could not be decrypted. The encrypted value was preserved.");
+      updatePrivacyClasses();
+      return true;
+    }
+    node._aioIdeogram4RecoveryReset();
+    if (await isPrivacyKeyUnavailableError(error)) {
+      const privacyWidget = widgetByName(node, "privacy_mode");
+      if (privacyWidget) privacyWidget.value = false;
+    }
+    privacyRestorePending = false;
+    privacyRestoreFailed = false;
+    setStatus("Unreadable private prompt builder data was reset to defaults.");
+    updatePrivacyClasses();
+    node.setDirtyCanvas?.(true, true);
+    node.graph?.setDirtyCanvas?.(true, true);
+    return true;
   }
 
-  let managedEditHandler = null;
-  node._aioIdeogram4EditorApi = {
-    restoreFromWorkflow,
-    flushManagedEdits() {
-      syncExecutionWidgets();
-      return currentState();
-    },
-    applyManagedState(state) {
-      restorePlainState(state, { markDirty: false, restorePrivacyMode: true });
-    },
-    clearManagedState() {
-      const widgets = Object.fromEntries(SENSITIVE_WIDGET_NAMES.map((name) => [name, ""]));
-      restorePlainState({
-        version: 1,
-        widgets,
-        elements: [],
-        style_palette: [],
-        bg_brightness: brightnessWidget?.value ?? 25,
-        output_format: outputFormatWidget?.value ?? "compact",
-        coord_mode: coordModeWidget?.value === "absolute" ? "absolute" : "normalized",
-        bbox_order: bboxOrderWidget?.value === "xy" ? "xy" : "yx",
-        active: -1,
-      }, { markDirty: false });
-    },
-    setManagedEditHandler(handler) {
-      if (handler !== null && typeof handler !== "function") {
-        throw new Error("Invalid managed privacy edit handler.");
+  async function decryptPayloadState(rawPayload, label = "prompt builder") {
+    assertSupportedPrivacyPayload(rawPayload);
+    if (isLegacyPrivacyPayload(rawPayload)) {
+      throw new Error("Unsupported legacy AIO privacy payload. Re-enter the private value to save it with the shared privacy keystore.");
+    }
+    if (!isEncryptedPrivacyPayload(rawPayload)) {
+      return parseWorkflowStatePayload(rawPayload);
+    }
+    privacyRestorePending = true;
+    node._aioIdeogram4LastPrivatePayload = parsePrivacyPayload(rawPayload);
+    setStatus(`Decrypting private ${label}...`);
+    try {
+      const state = await decryptState(parsePrivacyPayload(rawPayload));
+      setStatus("");
+      return state;
+    } catch (error) {
+      if (await resetUnreadablePrivateState(error)) return null;
+      privacyRestorePending = false;
+      privacyRestoreFailed = true;
+      setStatus(`Private ${label} locked: ${error.message}`);
+      console.error("[AIO Ideogram 4 Prompt Builder] privacy decrypt failed", error);
+      updatePrivacyClasses();
+      return null;
+    }
+  }
+
+  async function restoreEncryptedWidgets() {
+    let restored = false;
+    for (const name of SENSITIVE_WIDGET_NAMES) {
+      const widget = widgetByName(node, name);
+      if (!widget) continue;
+      try {
+        assertSupportedPrivacyPayload(widget.value);
+      } catch (error) {
+        if (await resetUnreadablePrivateState(error)) return false;
+        privacyRestorePending = false;
+        privacyRestoreFailed = true;
+        setStatus(`Private prompt builder recovery needed: ${error.message}`);
+        console.error("[AIO Ideogram 4 Prompt Builder] privacy widget payload unsupported", error);
+        updatePrivacyClasses();
+        return false;
       }
-      managedEditHandler = handler;
-    },
+      if (!isEncryptedPrivacyPayload(widget.value) && !isLegacyPrivacyPayload(widget.value)) continue;
+      privacyRestorePending = true;
+      setStatus("Decrypting private prompt builder widgets...");
+      try {
+        widget.value = await decryptValue(widget.value);
+        restored = true;
+      } catch (error) {
+        if (await resetUnreadablePrivateState(error)) return false;
+        privacyRestorePending = false;
+        privacyRestoreFailed = true;
+        setStatus(`Private prompt builder locked: ${error.message}`);
+        console.error("[AIO Ideogram 4 Prompt Builder] privacy widget decrypt failed", error);
+        updatePrivacyClasses();
+        return false;
+      }
+    }
+    if (!restored) return false;
+
+    boxes = parseElementsPayload(elementsWidget?.value).elements;
+    stylePalette = parseJsonList(stylePaletteWidget?.value);
+    if (boxes.length && active < 0) active = 0;
+    privacyRestorePending = false;
+    privacyRestoreFailed = false;
+    setStatus("");
+    repaintRestoredState();
+    return true;
+  }
+
+  function restoreFromWorkflow(info) {
+    if (!info || typeof info !== "object") return;
+    const rawPayload = info[WORKFLOW_STATE_KEY] || info.ideo || node.properties?.[STATE_PROPERTY];
+    if (isAnyAioPrivacyPayload(rawPayload)) {
+      decryptPayloadState(rawPayload, "prompt builder").then((state) => {
+        if (state) restorePlainState(state);
+      }).catch((error) => {
+        privacyRestorePending = false;
+        privacyRestoreFailed = true;
+        setStatus(`Private prompt builder locked: ${error.message}`);
+        console.error("[AIO Ideogram 4 Prompt Builder] privacy decrypt failed", error);
+        updatePrivacyClasses();
+      });
+      return;
+    }
+
+    let state = parseWorkflowStatePayload(rawPayload);
+    if (!state && Array.isArray(info.widgets_values)) {
+      let restoredBoxes = null;
+      let restoredPalette = null;
+      for (const value of info.widgets_values) {
+        const boxesCandidate = parseElementsPayload(value).elements;
+        if (!restoredBoxes && boxesCandidate.some((box) => box && typeof box === "object" && typeof box.x === "number")) {
+          restoredBoxes = boxesCandidate;
+          continue;
+        }
+        if (!restoredPalette && boxesCandidate.every((color) => typeof color === "string" && color.startsWith("#"))) {
+          restoredPalette = boxesCandidate;
+        }
+      }
+      if (restoredBoxes || restoredPalette) {
+        state = {
+          version: 1,
+          elements: restoredBoxes || boxes,
+          style_palette: restoredPalette || stylePalette,
+          active,
+        };
+      }
+    }
+    if (state) restorePlainState(state);
+    else restoreEncryptedWidgets();
+  }
+
+  node._aioIdeogram4EditorApi = {
+    serializeForWorkflow,
+    restoreFromWorkflow,
   };
 
   function captionText() {
@@ -1107,15 +1472,19 @@ function createEditor(node) {
       name: metadata?.name || promptLibraryName(),
       description: metadata?.description || "",
       tags: Array.isArray(metadata?.tags) ? metadata.tags : [],
-      payload: libraryPayload(),
+      private: metadata?.private ?? privacyEnabled(),
+      prompt: libraryPayload(),
     };
-    const library = await requireAioPromptLibrary();
-    const saved = linkedId
-      ? await library.replace(linkedId, body.payload, body)
-      : await library.create(body.payload, body);
-    const savedItemId = linkedId || saved.recordId;
-    const item = await library.details(savedItemId);
-    if (savedItemId) setLibraryItemId(savedItemId);
+    const url = linkedId
+      ? `${LIBRARY_ROUTE}/prompts/${encodeURIComponent(linkedId)}`
+      : `${LIBRARY_ROUTE}/prompts`;
+    const data = await fetchLibraryJson(url, {
+      method: linkedId ? "PUT" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const item = data.item || {};
+    if (item.id) setLibraryItemId(item.id);
     statusCallback(linkedId ? "Updated saved prompt." : "Saved prompt.");
     app.graph?.setDirtyCanvas?.(true, true);
     return item;
@@ -1124,19 +1493,21 @@ function createEditor(node) {
   async function loadLibraryItem(item, { finish = null, statusCallback = setStatus } = {}) {
     if (!item?.id) return;
     statusCallback("Loading saved prompt...");
-    const library = await requireAioPromptLibrary();
-    const data = await library.use(item.id);
-    const payload = data.payload || data.prompt;
+    const data = await fetchLibraryJson(`${LIBRARY_ROUTE}/prompts/${encodeURIComponent(item.id)}/use`, { method: "POST" });
+    const payload = data.prompt || data.item?.payload || data.item?.prompt;
     const state = payload?.state;
     if (!state || typeof state !== "object") throw new Error("Saved prompt did not include builder state.");
     restorePlainState(state, { restorePrivacyMode: true });
     setLibraryItemId(item.id);
-    statusCallback(`Loaded ${data.name || item.name || "saved prompt"}.`);
+    statusCallback(`Loaded ${data.item?.name || item.name || "saved prompt"}.`);
     finish?.();
   }
 
-  function libraryLoadErrorMessage(error) {
-    return `Saved prompt could not be loaded. ${error.message}`;
+  function libraryLoadErrorMessage(item, error) {
+    if (item?.private || item?.is_private) {
+      return `Private saved prompt cannot be decrypted. It can still be deleted from the library. ${error.message}`;
+    }
+    return error.message;
   }
 
   function showPromptLibrary({ openSave = false } = {}) {
@@ -1144,12 +1515,14 @@ function createEditor(node) {
     existing?.remove();
 
     const overlay = document.createElement("div");
-    overlay.className = "aio-ideo-library";
+    overlay.className = `aio-ideo-library${privacyEnabled() ? " privacy-mode" : ""}`;
     overlay.setAttribute("role", "dialog");
     overlay.setAttribute("aria-modal", "true");
     overlay.setAttribute("aria-label", "Ideogram Prompt Library");
     overlay.addEventListener("pointerdown", stopEvent);
     overlay.addEventListener("wheel", stopEvent);
+    overlay.addEventListener("pointerenter", () => overlay.classList.add("is-revealed"));
+    overlay.addEventListener("pointerleave", () => overlay.classList.remove("is-revealed"));
 
     const panel = document.createElement("div");
     panel.className = "aio-ideo-library-panel";
@@ -1261,13 +1634,13 @@ function createEditor(node) {
         card.className = "aio-ideo-library-card" + (item.id === selectedItem()?.id ? " is-selected" : "");
         const cardTitle = document.createElement("div");
         cardTitle.className = "aio-ideo-library-card-title";
-        cardTitle.textContent = item.name || item.label || "Untitled Ideogram Prompt";
+        cardTitle.textContent = item.name || "Untitled Ideogram Prompt";
         const meta = document.createElement("div");
         meta.className = "aio-ideo-library-card-meta";
-        meta.textContent = item.label || `${item.summary?.element_count ?? 0} regions · ${item.summary?.aspect_ratio || "ratio"}`;
+        meta.textContent = `${item.private ? "Private" : "Public"} · ${item.summary?.element_count ?? 0} regions · ${item.summary?.aspect_ratio || "ratio"}`;
         const preview = document.createElement("div");
         preview.className = "aio-ideo-library-preview";
-        preview.textContent = item.label || item.prompt_preview || "No prompt preview";
+        preview.textContent = item.private ? "Private prompt" : item.prompt_preview || "No prompt preview";
         const actions = document.createElement("div");
         actions.className = "aio-ideo-library-card-actions";
         const loadBtn = iconButton("Load", "load", "Load Saved Prompt");
@@ -1315,13 +1688,13 @@ function createEditor(node) {
       }
       const detailTitle = document.createElement("div");
       detailTitle.className = "aio-ideo-library-detail-title";
-      detailTitle.textContent = item.name || item.label || "Untitled Ideogram Prompt";
+      detailTitle.textContent = item.name || "Untitled Ideogram Prompt";
       const meta = document.createElement("div");
       meta.className = "aio-ideo-library-detail-meta";
-      meta.textContent = item.label || `${item.summary?.prompt_char_count ?? 0} chars · updated ${item.updated_at || "unknown"}`;
+      meta.textContent = `${item.private ? "Private" : "Public"} · ${item.summary?.prompt_char_count ?? 0} chars · updated ${item.updated_at || "unknown"}`;
       const preview = document.createElement("div");
       preview.className = "aio-ideo-library-preview";
-      preview.textContent = item.label || item.prompt_preview || "No prompt preview";
+      preview.textContent = item.private ? "Private prompt is available after load." : item.prompt_preview || "No prompt preview";
       const actions = document.createElement("div");
       actions.className = "aio-ideo-library-actions";
       const loadBtn = textButton("Load", "load");
@@ -1336,18 +1709,16 @@ function createEditor(node) {
         try {
           await loadLibraryItem(item, { finish, statusCallback: setLibraryStatus });
         } catch (error) {
-          setLibraryStatus(libraryLoadErrorMessage(error));
+          setLibraryStatus(libraryLoadErrorMessage(item, error));
         }
       });
       overwriteBtn.addEventListener("click", async () => {
         try {
           await saveCurrentPromptToLibrary({
             itemId: item.id,
-            metadata: {
-              name: item.name,
-              description: item.description,
-              tags: item.tags,
-            },
+            metadata: item.private
+              ? { private: privacyEnabled() }
+              : { name: item.name, description: item.description, tags: item.tags, private: privacyEnabled() },
             statusCallback: setLibraryStatus,
           });
           await refreshLibrary();
@@ -1359,8 +1730,11 @@ function createEditor(node) {
         const name = window.prompt("Rename saved prompt:", item.name || "");
         if (!name) return;
         try {
-          const library = await requireAioPromptLibrary();
-          await library.patch(item.id, { metadata: { name } });
+          await fetchLibraryJson(`${LIBRARY_ROUTE}/prompts/${encodeURIComponent(item.id)}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name }),
+          });
           setLibraryStatus("Renamed prompt.");
           await refreshLibrary();
         } catch (error) {
@@ -1369,8 +1743,7 @@ function createEditor(node) {
       });
       duplicateBtn.addEventListener("click", async () => {
         try {
-          const library = await requireAioPromptLibrary();
-          await library.duplicate(item.id);
+          await fetchLibraryJson(`${LIBRARY_ROUTE}/prompts/${encodeURIComponent(item.id)}/duplicate`, { method: "POST" });
           setLibraryStatus("Duplicated prompt.");
           await refreshLibrary();
         } catch (error) {
@@ -1378,9 +1751,9 @@ function createEditor(node) {
         }
       });
       deleteBtn.addEventListener("click", async () => {
+        if (!window.confirm(`Delete "${item.name || "saved prompt"}"?`)) return;
         try {
-          const library = await requireAioPromptLibrary();
-          await library.delete(item.id);
+          await fetchLibraryJson(`${LIBRARY_ROUTE}/prompts/${encodeURIComponent(item.id)}`, { method: "DELETE" });
           if (libraryItemId() === item.id) setLibraryItemId("");
           state.selectedId = "";
           setLibraryStatus("Deleted prompt.");
@@ -1401,13 +1774,19 @@ function createEditor(node) {
       name.value = promptLibraryName();
       const description = document.createElement("textarea");
       description.placeholder = "Description";
+      const privateLabel = document.createElement("label");
+      privateLabel.className = "aio-ideo-library-private-row";
+      const privateInput = document.createElement("input");
+      privateInput.type = "checkbox";
+      privateInput.checked = privacyEnabled();
+      privateLabel.append(privateInput, document.createTextNode("Private"));
       const actions = document.createElement("div");
       actions.className = "aio-ideo-library-actions";
       const saveBtn = textButton("Save", "save");
       saveBtn.className = "primary";
       const cancelBtn = textButton("Cancel");
       actions.append(cancelBtn, saveBtn);
-      form.append(name, description, actions);
+      form.append(name, description, privateLabel, actions);
       cancelBtn.addEventListener("click", () => {
         state.saveOpen = false;
         render();
@@ -1419,6 +1798,7 @@ function createEditor(node) {
             metadata: {
               name: name.value,
               description: description.value,
+              private: privateInput.checked,
             },
             statusCallback: setLibraryStatus,
           });
@@ -1433,15 +1813,8 @@ function createEditor(node) {
     }
 
     async function refreshLibrary() {
-      const library = await requireAioPromptLibrary();
-      const shells = await library.list();
-      state.items = await Promise.all(shells.map(async (shell) => {
-        try {
-          return await library.details(shell.id);
-        } catch {
-          return shell;
-        }
-      }));
+      const data = await fetchLibraryJson(`${LIBRARY_ROUTE}/items`);
+      state.items = Array.isArray(data.prompts) ? data.prompts : [];
       if (!state.selectedId && state.items.length) state.selectedId = libraryItemId() || state.items[0].id;
       render();
     }
@@ -1450,6 +1823,29 @@ function createEditor(node) {
       setLibraryStatus(error.message || "Could not load prompt library.");
       render();
     });
+  }
+
+  async function restoreEncryptedState() {
+    const rawState =
+      node._aioIdeogram4PendingWorkflowInfo?.[WORKFLOW_STATE_KEY] ||
+      node._aioIdeogram4PendingWorkflowInfo?.ideo ||
+      node.properties?.[STATE_PROPERTY];
+    let state = null;
+    try {
+      state = await decryptPayloadState(rawState, "prompt builder");
+    } catch (error) {
+      privacyRestorePending = false;
+      privacyRestoreFailed = true;
+      setStatus(`Private prompt builder locked: ${error.message}`);
+      console.error("[AIO Ideogram 4 Prompt Builder] privacy decrypt failed", error);
+      updatePrivacyClasses();
+      return;
+    }
+    if (state) {
+      restorePlainState(state, { markDirty: false });
+      return;
+    }
+    await restoreEncryptedWidgets();
   }
 
   function updateCount() {
@@ -1599,7 +1995,7 @@ function createEditor(node) {
   }
 
   function draw() {
-    const isPrivateMasked = node.__aioManagedPrivacyLocked === true;
+    const isPrivateMasked = privacyEnabled() && !privacyReveal;
     const width = canvasLogicalWidth();
     const height = canvasLogicalHeight();
     const dpr = window.devicePixelRatio || 1;
@@ -2032,12 +2428,16 @@ function createEditor(node) {
     updatePrivacyClasses();
     updateLibraryButtons();
     refresh();
+    restoreEncryptedState();
   });
   return wrap;
 }
 
 app.registerExtension({
   name: "AIO.Ideogram4PromptBuilder",
+  setup() {
+    registerAioPrivacyRecoveryDescriptors();
+  },
   async beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData?.name !== NODE_NAME) return;
     if (!nodeType.prototype._aioIdeogram4WorkflowPatched) {
@@ -2051,6 +2451,18 @@ app.registerExtension({
         this._aioIdeogram4EditorApi?.restoreFromWorkflow?.(info);
       };
 
+      const originalOnSerialize = nodeType.prototype.onSerialize;
+      nodeType.prototype.onSerialize = function (output) {
+        const result = originalOnSerialize?.apply(this, arguments);
+        this._aioIdeogram4EditorApi?.serializeForWorkflow?.(output);
+        return result;
+      };
+
+      const originalMenu = nodeType.prototype.getExtraMenuOptions;
+      nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
+        originalMenu?.apply(this, arguments);
+        appendPrivacyRecoveryMenuOption(this, options);
+      };
     }
 
     const original = nodeType.prototype.onNodeCreated;

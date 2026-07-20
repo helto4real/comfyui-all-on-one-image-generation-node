@@ -1,16 +1,13 @@
 [project]
-name = "comfyui-all-on-one-image-generation-node"
-version = "0.1.7"
-description = "Helto all-in-one ComfyUI image generation nodes with managed privacy."
-readme = "README.md"
+name = "comfyui-helto-image-gen-all-in-one"
+version = "0.1.0"
+description = "Classic ComfyUI all-in-one image generation node scaffold."
 requires-python = ">=3.10"
 dependencies = [
-    "helto-privacy==0.4.5",
+    "helto-privacy @ git+https://github.com/helto4real/helto-privacy.git@v0.5.0",
+    "cryptography>=42.0",
 ]
 license = "GPL-3.0-only"
-
-[project.urls]
-Repository = "https://github.com/helto4real/comfyui-all-on-one-image-generation-node"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

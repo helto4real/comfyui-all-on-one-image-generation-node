@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from . import privacy
+
+
 PERFORMANCE_KEYS = (
     "attention_mode",
     "resolved_attention_mode",
@@ -29,11 +32,15 @@ SENSITIVE_SETTINGS_KEYS = (
 
 
 def settings_info_from_settings(settings: dict[str, Any], privacy_mode: bool = False) -> dict[str, Any]:
-    if privacy_mode:
-        raise RuntimeError(
-            "Private run-info requires the shared subject-mode projection."
-        )
-    return dict(settings)
+    info = dict(settings)
+    if not privacy_mode:
+        return info
+    for key in SENSITIVE_SETTINGS_KEYS:
+        value = info.get(key)
+        if value in (None, "") or privacy.is_encrypted_payload(value):
+            continue
+        info[key] = privacy.encrypt_state({"value": str(value)})
+    return info
 
 
 def performance_info_from_settings(settings: dict[str, Any]) -> dict[str, Any]:
@@ -91,60 +98,6 @@ def build_run_info(
     batch: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     settings_info = settings_info_from_settings(settings, privacy_mode=privacy_mode)
-    return build_run_info_candidate(
-        model_type=model_type,
-        display_name=display_name,
-        diffusion_model=diffusion_model,
-        diffusion_model_format=diffusion_model_format,
-        text_encoder=text_encoder,
-        text_encoder_format=text_encoder_format,
-        vae=vae,
-        vae_format=vae_format,
-        width=width,
-        height=height,
-        seed=seed,
-        steps=steps,
-        cfg=cfg,
-        sampler=sampler,
-        scheduler=scheduler,
-        settings=settings_info,
-        warnings=warnings,
-        adapter_version=adapter_version,
-        loras=loras,
-        debug=debug,
-        second_pass=second_pass,
-        batch=batch,
-    )
-
-
-def build_run_info_candidate(
-    *,
-    model_type: str,
-    display_name: str,
-    diffusion_model: str,
-    diffusion_model_format: str,
-    text_encoder: str,
-    text_encoder_format: str,
-    vae: str,
-    vae_format: str,
-    width: int,
-    height: int,
-    seed: int,
-    steps: int,
-    cfg: float,
-    sampler: str,
-    scheduler: str,
-    settings: dict[str, Any],
-    warnings: list[str],
-    adapter_version: str,
-    loras: list[dict[str, Any]] | None = None,
-    debug: dict[str, Any] | None = None,
-    second_pass: dict[str, Any] | None = None,
-    batch: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Build the unredacted product value for shared server projection."""
-
-    settings_info = dict(settings)
     info = {
         "model_type": model_type,
         "display_name": display_name,

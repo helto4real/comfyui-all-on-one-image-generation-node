@@ -10,9 +10,7 @@ Clone or copy this folder into `ComfyUI/custom_nodes`, install its Python depend
 python -m pip install -r ComfyUI/custom_nodes/comfyui-all-on-one-image-generation-node/requirements.txt
 ```
 
-The required package is `helto-privacy`, which supplies the shared privacy runtime and its cryptography dependency. ComfyUI Manager may install `requirements.txt` automatically; the command above is the explicit fallback. Both dependency declarations pin the same exact shared release, and the manager metadata publishes `web/`, including the attested `aio_managed_privacy.js` browser entrypoint.
-
-Privacy is activated as one attested `helto.aio-image-generation` profile. Prompt fields, the Ideogram builder, the private prompt library, run information, recovery, workflow serialization, and queue-time execution all use the shared runtime. The node pack contains no independent privacy codec or token-authenticated privacy routes.
+The required packages are `helto-privacy` and `cryptography`. ComfyUI Manager may install `requirements.txt` automatically; the command above is the explicit fallback.
 
 ## Nodes
 
@@ -104,11 +102,11 @@ The prompt builder's default JSON output is KJ/Ideogram-compatible: compact outp
 
 ## Privacy Mode
 
-`AIO Image Generate` and `Ideogram 4 Prompt Builder` include a `privacy_mode` toggle. When enabled, the shared `helto.aio-image-generation` profile saves prompt text and prompt-builder editor state to workflow JSON as AES-256-GCM envelopes under the `helto.aio-image-generate.v2` schema. The profile also owns subject-mode resolution, queue-time private execution, prompt-library records, run-info projection, and recovery; the node pack has no separate privacy codec or privacy-token routes.
+`AIO Image Generate` and `Ideogram 4 Prompt Builder` include a `privacy_mode` toggle. When enabled, prompt text and prompt-builder editor state are saved to workflow JSON as AES-256-GCM envelopes under the `helto.aio-image-generate.v2` schema, using the shared Helto privacy keystore at `~/.config/helto/privacy_keystore.json`. The frontend also masks private text while the node is not hovered and reveals it while the pointer is inside the node.
 
-Encrypted workflows require the shared Helto privacy keystore to be initialized and unlocked through the shared privacy dialog. Locked and setup-required sessions clear protected runtime fields and fail closed; pointer hover or keyboard focus never authorizes disclosure. Older AIO envelopes under the `helto.aio-image-generate` schema remain supported by the exact shared v1 reader and are rewritten through the verified migration transaction after an authorized unlock.
+Encrypted workflows require the shared privacy keystore to be initialized and unlocked through the Helto privacy dialog. Older AIO envelopes written under the `helto.aio-image-generate` schema are intentionally unsupported by this version and must be re-entered.
 
-Privacy mode prevents prompt text, prompt-builder state, private prompt-library records, run-info debug data, and UI execution-history payloads from being persisted as plaintext. When ComfyUI has an external cache provider, private prompt-producing nodes deliberately bypass its cache. Privacy mode does not protect runtime plaintext after the authorized shared session has been unlocked, or against a process that already controls the ComfyUI server.
+Privacy mode protects prompt text, prompt-builder state, private prompt-library metadata, run-info debug data, and UI execution-history payloads from being stored as plaintext. When ComfyUI has an external cache provider, private prompt-producing nodes deliberately bypass its cache. Privacy mode does not protect against clients or processes that can reach an unlocked ComfyUI server with a valid local privacy token.
 
 All settings nodes expose `attention_mode` (`auto`, `off`, `sage`, `sage3`, `flash`, `xformers`, `pytorch`, `split`, `sub_quad`), `torch_compile_mode` (`auto`, `off`, `on`), `torch_compile_backend` (`inductor`, `cudagraphs`), and `performance_apply_timing` (`after_loras`, `before_loras`). `auto` attention selects the best installed compatible backend, `off` leaves ComfyUI defaults untouched, and `after_loras` applies attention/compile patches to the final LoRA-patched model.
 

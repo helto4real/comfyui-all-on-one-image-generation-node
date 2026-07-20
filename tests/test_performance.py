@@ -128,11 +128,7 @@ def test_attention_reports_off_when_model_options_unavailable(monkeypatch):
 def test_compile_auto_stays_off_without_cuda(monkeypatch):
     fake_torch = SimpleNamespace(compile=lambda model, **kwargs: model, cuda=SimpleNamespace(is_available=lambda: False))
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
-    settings = {
-        "attention_mode": "off",
-        "torch_compile_mode": "auto",
-        "torch_compile_backend": "inductor",
-    }
+    settings = {"torch_compile_mode": "auto", "torch_compile_backend": "inductor"}
     model = FakeModel()
 
     patched = performance.apply_performance_settings(model=model, settings=settings)

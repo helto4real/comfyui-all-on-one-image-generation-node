@@ -3,19 +3,14 @@ import math
 from pathlib import Path
 
 import pytest
+from helto_privacy import initialize_keystore
 
 from nodes.ideogram4_prompt_builder import AIOIdeogram4PromptBuilder
-from nodes import ideogram4_prompt_builder as node_module
+from services import privacy
 from services import ideogram4_prompt_builder as builder
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def test_prompt_library_save_does_not_redeclare_item_id_parameter():
-    source = (ROOT / "web/js/aio_ideogram4_prompt_builder.js").read_text(encoding="utf-8")
-
-    assert "const itemId = linkedId || saved.recordId" not in source
-    assert "const savedItemId = linkedId || saved.recordId" in source
+PASSWORD = "correct horse battery"
 
 
 def test_compact_json_matches_kj_key_order_and_formatting():
@@ -182,37 +177,47 @@ def test_invalid_bbox_coordinate_options_fall_back_to_ideogram_defaults():
     assert caption["compositional_deconstruction"]["elements"][0]["bbox"] == [200, 100, 600, 400]
 
 
-def test_private_prompt_builder_requires_managed_execution():
-    with pytest.raises(ValueError, match="managed reference"):
-        AIOIdeogram4PromptBuilder().build_prompt(
-            high_level_description="Private overview",
-            background="Private room",
-            privacy_mode=True,
-            **{"max side": 1024, "aspect ratio": "1:1", "multiple value": "none"},
-        )
+@pytest.mark.skipif(not privacy.CRYPTO_AVAILABLE, reason="cryptography is not installed")
+def test_private_prompt_builder_encrypts_payload_but_returns_plain_prompt_output(monkeypatch, tmp_path):
+    monkeypatch.setattr(privacy, "config_dir", lambda: tmp_path)
+    initialize_keystore(PASSWORD)
+
+    result = AIOIdeogram4PromptBuilder().build_prompt(
+        high_level_description="Private overview",
+        background="Private room",
+        style="photo",
+        import_mode="when empty",
+        output_format="compact",
+        bg_brightness=25,
+        privacy_mode=True,
+        **{"max side": 1024, "aspect ratio": "1:1", "multiple value": "none"},
+    )["result"]
+
+    payload, prompt_output = result[0], result[1]
+
+    assert "Private overview" not in json.dumps(payload)
+    assert "Private room" not in json.dumps(payload)
+    assert privacy.is_encrypted_payload(payload["prompt"])
+    assert privacy.decrypt_text_if_encrypted(payload["prompt"]) == prompt_output
+    assert "Private overview" in prompt_output
+    assert "Private room" in prompt_output
 
 
 def test_prompt_builder_is_changed_uses_native_cache_for_public_inputs(monkeypatch):
-    monkeypatch.setattr(node_module, "_external_cache_providers_registered", lambda: True)
+    monkeypatch.setattr(privacy, "external_cache_providers_registered", lambda: True)
 
     assert AIOIdeogram4PromptBuilder.IS_CHANGED(privacy_mode=False) is False
 
 
 def test_prompt_builder_is_changed_disables_external_cache_for_private_outputs(monkeypatch):
-    monkeypatch.setattr(node_module, "_external_cache_providers_registered", lambda: True)
+    monkeypatch.setattr(privacy, "external_cache_providers_registered", lambda: True)
 
     assert math.isnan(AIOIdeogram4PromptBuilder.IS_CHANGED(privacy_mode=True))
 
 
 def test_prompt_builder_private_ui_omits_caption_and_boxes(monkeypatch):
-    from nodes import ideogram4_prompt_builder
-
     monkeypatch.setattr(AIOIdeogram4PromptBuilder, "_render_preview", staticmethod(lambda *args: "preview"))
-    monkeypatch.setattr(
-        ideogram4_prompt_builder,
-        "aio_subject_requires_private_execution",
-        lambda _lease, _binding_id: False,
-    )
+    monkeypatch.setattr(privacy, "encrypt_state", lambda state: {"encrypted": True, "state": state})
 
     output = AIOIdeogram4PromptBuilder().build_prompt(
         import_json=json.dumps(
@@ -225,13 +230,11 @@ def test_prompt_builder_private_ui_omits_caption_and_boxes(monkeypatch):
         ),
         import_mode="always",
         privacy_mode=True,
-        _subject_mode_lease=object(),
         **{"max side": 1024, "aspect ratio": "1:1", "multiple value": "none"},
     )
     boxes_output = AIOIdeogram4PromptBuilder().build_prompt(
         bboxes=[{"x": 100, "y": 100, "width": 300, "height": 300}],
         privacy_mode=True,
-        _subject_mode_lease=object(),
         **{"max side": 1000, "aspect ratio": "1:1", "multiple value": "none"},
     )
 
@@ -498,16 +501,60 @@ def test_prompt_builder_frontend_syncs_native_text_and_display_only_palette():
     assert "syncLiveWidgetTextValues();" in source
     assert "syncLiveWidgetTextValue(widget);" in source
     assert "setExecutionWidgetValue(elementsWidget, serializedElementsValue());" in source
-    assert "serializePrivateValue" not in source
+    assert "return serializePrivateValue(this, liveWidgetValue(this));" in source
     assert "function promptPalette(colors)" in source
     assert "values.length === 1 && values[0] === DEFAULT_COLOR_UPPER ? [] : values" in source
     assert "palette: []," in source
     assert 'boxes[active].palette.push("#FFFFFF");' in source
 
 
-def test_prompt_builder_rejects_protected_fields_without_managed_dispatch():
-    with pytest.raises(ValueError, match="managed private execution"):
-        AIOIdeogram4PromptBuilder().build_prompt(
-            background={"encrypted": True},
-            **{"max side": 1024, "aspect ratio": "1:1", "multiple value": "16"},
-        )
+def test_prompt_builder_decrypts_private_fields_without_changing_output(monkeypatch, tmp_path):
+    from nodes import ideogram4_prompt_builder as node_module
+    from services import privacy
+
+    monkeypatch.setattr(node_module.privacy, "config_dir", lambda: tmp_path)
+    initialize_keystore(PASSWORD)
+    monkeypatch.setattr(
+        AIOIdeogram4PromptBuilder,
+        "_render_preview",
+        staticmethod(lambda boxes, width, height, image, brightness: "preview"),
+    )
+    elements = json.dumps(
+        [
+            {
+                "x": 0.1,
+                "y": 0.2,
+                "w": 0.3,
+                "h": 0.4,
+                "type": "obj",
+                "desc": "person",
+            },
+            {
+                "x": 0.5,
+                "y": 0.1,
+                "w": 0.2,
+                "h": 0.2,
+                "type": "text",
+                "text": "PRIVATE",
+                "desc": "sign",
+            }
+        ]
+    )
+    encrypted_background = json.dumps(privacy.encrypt_state({"value": "Private room"}))
+    encrypted_elements = json.dumps(privacy.encrypt_state({"value": elements}))
+
+    payload, prompt, *_ = AIOIdeogram4PromptBuilder().build_prompt(
+        background=encrypted_background,
+        style="none",
+        elements_data=encrypted_elements,
+        privacy_mode=True,
+        **{"max side": 1024, "aspect ratio": "1:1", "multiple value": "16"},
+    )["result"]
+
+    expected = (
+        '{"compositional_deconstruction":{"background":"Private room",'
+        '"elements":[{"type":"obj","bbox":[200,100,600,400],"desc":"person"},'
+        '{"type":"text","bbox":[100,500,300,700],"text":"PRIVATE","desc":"sign"}]}}'
+    )
+    assert privacy.decrypt_text_if_encrypted(payload["prompt"]) == expected
+    assert prompt == expected
